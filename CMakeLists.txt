@@ -183,6 +183,15 @@ if(CELLAR_BUILD_TESTS)
     target_link_libraries(app_db_test SQLite::SQLite3 logger Threads::Threads)
     add_test(NAME app_db COMMAND app_db_test)
 
+    # Regression for C-1/H-1: a pinned app_db handle must survive LRU eviction
+    # (else the app registry's cached pointer dangles → remote use-after-free).
+    # Built with a tiny CEL_APP_MAX_OPEN so eviction triggers in-test.
+    add_executable(app_db_evict_test tests/app_db_evict_test.c src/core/app_db.c)
+    target_include_directories(app_db_evict_test PRIVATE src/core)
+    target_compile_definitions(app_db_evict_test PRIVATE CEL_APP_MAX_OPEN=4)
+    target_link_libraries(app_db_evict_test SQLite::SQLite3 logger Threads::Threads)
+    add_test(NAME app_db_evict COMMAND app_db_evict_test)
+
     # DB-free unit test for the SQLite result -> typed JSON serializer (Phase 1):
     # catalog-typed cells (int/real/bool/json/null/text) and the runtime-typed
     # table-less path. Links result_json.c against an in-memory SQLite db; the

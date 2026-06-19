@@ -65,7 +65,10 @@ static cel_app_t *find_cached(const char *host) {
  * g.mtx. Returns a stable pointer into the cache, or NULL. */
 static cel_app_t *open_into_cache(const char *host, const char *db_path) {
     if (g.count >= CEL_APPS_MAX) { LOG_WARN("apps: registry full (%d)", g.count); return NULL; }
-    app_db_t *db = app_db_get(db_path);
+    /* Pinned: this cache holds the handle for the process lifetime, so it must
+     * never be LRU-evicted/freed underneath us (else a remote use-after-free
+     * driveable by varying the Host header). */
+    app_db_t *db = app_db_get_pinned(db_path);
     if (!db) return NULL;
     sqlite3 *c = app_db_conn_acquire(db);
     if (!c) return NULL;

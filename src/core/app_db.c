@@ -26,6 +26,8 @@ struct app_db {
     pthread_mutex_t write_mtx;
 
     uint64_t last_used;           /* LRU tick, bumped on app_db_get            */
+    int      refs;                /* outstanding references (g_reg.mtx-guarded);
+                                   * a pinned handle is never evicted/freed     */
 };
 
 /* ---- global registry: a bounded, LRU-evicted set of open apps ------------- */
@@ -121,14 +123,15 @@ static void app_free(app_db_t *db)
     free(db);
 }
 
-/* Caller holds g_reg.mtx. Drop the least-recently-used app that has no borrowed
- * connections. Returns true if one was evicted. */
+/* Caller holds g_reg.mtx. Drop the least-recently-used app that is both unpinned
+ * (refs == 0) and has no borrowed connections. Returns true if one was evicted. */
 static bool evict_idle_locked(void)
 {
     int best = -1;
     uint64_t best_tick = UINT64_MAX;
     for (int i = 0; i < g_reg.count; i++) {
         app_db_t *a = g_reg.apps[i];
+        if (a->refs != 0) continue;                 /* pinned — never evict (refs is g_reg.mtx-guarded) */
         pthread_mutex_lock(&a->pool_mtx);
         bool idle = (a->checked_out == 0);
         pthread_mutex_unlock(&a->pool_mtx);
@@ -143,32 +146,54 @@ static bool evict_idle_locked(void)
     return true;
 }
 
-app_db_t *app_db_get(const char *db_path)
+/* Caller holds g_reg.mtx. Find-or-create the app for `db_path`; take a reference
+ * when `pin`. Returns NULL if the registry is full of unevictable apps or OOM. */
+static app_db_t *get_locked(const char *db_path, bool pin)
 {
-    pthread_mutex_lock(&g_reg.mtx);
-
     for (int i = 0; i < g_reg.count; i++) {
         if (strcmp(g_reg.apps[i]->path, db_path) == 0) {
             g_reg.apps[i]->last_used = ++g_reg.tick;
-            app_db_t *hit = g_reg.apps[i];
-            pthread_mutex_unlock(&g_reg.mtx);
-            return hit;
+            if (pin) g_reg.apps[i]->refs++;
+            return g_reg.apps[i];
         }
     }
 
     if (g_reg.count >= CEL_APP_MAX_OPEN && !evict_idle_locked()) {
-        LOG_WARN("app_db: registry full (%d apps, all in use); cannot open %s",
+        LOG_WARN("app_db: registry full (%d apps, none evictable); cannot open %s",
                  g_reg.count, db_path);
-        pthread_mutex_unlock(&g_reg.mtx);
         return NULL;
     }
 
     app_db_t *db = app_new(db_path);
-    if (!db) { pthread_mutex_unlock(&g_reg.mtx); return NULL; }
+    if (!db) return NULL;
     db->last_used = ++g_reg.tick;
+    if (pin) db->refs++;
     g_reg.apps[g_reg.count++] = db;
-    pthread_mutex_unlock(&g_reg.mtx);
     return db;
+}
+
+app_db_t *app_db_get(const char *db_path)
+{
+    pthread_mutex_lock(&g_reg.mtx);
+    app_db_t *d = get_locked(db_path, false);
+    pthread_mutex_unlock(&g_reg.mtx);
+    return d;
+}
+
+app_db_t *app_db_get_pinned(const char *db_path)
+{
+    pthread_mutex_lock(&g_reg.mtx);
+    app_db_t *d = get_locked(db_path, true);
+    pthread_mutex_unlock(&g_reg.mtx);
+    return d;
+}
+
+void app_db_unref(app_db_t *db)
+{
+    if (!db) return;
+    pthread_mutex_lock(&g_reg.mtx);
+    if (db->refs > 0) db->refs--;
+    pthread_mutex_unlock(&g_reg.mtx);
 }
 
 sqlite3 *app_db_conn_acquire(app_db_t *db)

@@ -27,12 +27,15 @@
 #include <stdbool.h>
 
 /* Tunables. CONNS_PER_APP caps concurrent handles (hence readers) for one app;
- * MAX_OPEN_APPS bounds how many app files are held open at once (FD ceiling). */
+ * MAX_OPEN_APPS bounds how many app files are held open at once. It must be >= the
+ * app registry's cap (cel_apps CEL_APPS_MAX) because every routed app is *pinned*
+ * (referenced) here and so is never LRU-evicted — the LRU only reclaims unpinned,
+ * idle handles (e.g. transient direct app_db_get callers / tests). */
 #ifndef CEL_APP_CONNS_PER_APP
 #define CEL_APP_CONNS_PER_APP 4
 #endif
 #ifndef CEL_APP_MAX_OPEN
-#define CEL_APP_MAX_OPEN 64
+#define CEL_APP_MAX_OPEN 1024
 #endif
 
 /* Opaque per-app handle (its file path, connection pool, and write lock). */
@@ -54,11 +57,19 @@ app_db_t *app_db_current(void);
 void      app_db_set_default(app_db_t *db);   /* process-wide fallback */
 
 /* Get (or lazily create) the app whose database file is `db_path`. The file is
- * not opened until the first connection is acquired. The returned pointer is
- * owned by the registry and stays valid until shutdown or LRU eviction (an app
- * with no checked-out connections may be evicted to honor CEL_APP_MAX_OPEN).
- * Returns NULL only if the registry is full of in-use apps. */
+ * not opened until the first connection is acquired. The returned pointer stays
+ * valid until shutdown or LRU eviction (an UNPINNED app with no checked-out
+ * connections may be evicted to honor CEL_APP_MAX_OPEN). Returns NULL only if the
+ * registry is full of pinned/in-use apps. */
 app_db_t *app_db_get(const char *db_path);
+
+/* Like app_db_get but takes a long-lived REFERENCE: the handle will never be
+ * LRU-evicted/freed while any reference is outstanding. A holder that caches the
+ * pointer across requests (the app registry) MUST use this — otherwise eviction
+ * can free a handle still referenced or in-flight on another thread (use-after-
+ * free). Balance each call with app_db_unref (or process shutdown). */
+app_db_t *app_db_get_pinned(const char *db_path);
+void      app_db_unref(app_db_t *db);
 
 /* Borrow a WAL-mode `sqlite3*` for this app, opening one on demand (up to
  * CEL_APP_CONNS_PER_APP). Blocks while the pool is exhausted. Returns NULL if
