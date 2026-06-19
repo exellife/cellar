@@ -107,6 +107,19 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       + the PG-migration tenant tooling (`sql/tenancy/`, migrate.c CLIs, main.c tenant
       commands) come out with the auth/migrate conversion; per-app catalog (drop global
       `g_active`) comes with routing.
+- [~] **Identity layer → per-app SQLite (5b).** `auth.c` fully converted (libpq-free): all
+      flows — login (decoy-hash timing, lockout), register, verify, logout, oauth-link,
+      password reset, email verification, create_user, seed — run against the app's SQLite db
+      via `app_db_current()`. New: `app_db_set_current/current` seam (core); `cel_uuid_v4`
+      (libuuid — SQLite has no `gen_random_uuid()`); `auth_schema.c` (consolidated SQLite
+      identity DDL: TEXT uuids, INTEGER epoch times, 0/1 bools) applied per-app at boot. main.c
+      seeds into the app after it's current; the PG pool now only matters for not-yet-converted
+      mfa.c / migrate.c. Unit-tested (`tests/auth_sqlite_test.c`, ctest `auth_sqlite`: 26
+      checks); boot+seed verified with **no Postgres**. **Seam:** with MFA enabled,
+      `cel_mfa_required_for` (mfa.c, still PG) won't see the SQLite user → MFA bypassed until
+      mfa.c converts. **Next:** mfa.c → SQLite (onto the cel_mfa* tables already in the
+      schema), then migrate.c, then delete db_connection.c / row_json.c / PG schema_catalog
+      path / vestigial `tenant_id` fields.
 - [ ] **App routing + provisioning.** Resolve app from the request (Host/path) → its
       bundle. A small **control-plane DB** (app registry, domain→bundle routing,
       platform admin). Decided: **per-app users** in each `data.db` + a control-plane for

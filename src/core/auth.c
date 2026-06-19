@@ -1,12 +1,12 @@
 #include "auth.h"
 #include "password.h"
-#include "db_connection.h"
+#include "app_db.h"
 #include "session_cache.h"
 #include "mfa.h"
 #include "metrics.h"
 #include "logger.h"
 
-#include <libpq-fe.h>
+#include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,15 +25,62 @@ void cel_auth_init(void) {
         g_decoy_hash[0] = '\0';
 }
 
-/* Run a transaction-control statement (BEGIN/COMMIT/ROLLBACK); true on success.
- * Credential writes now touch two tables (cel_users + cel_identities), so they
- * run in a transaction to stay atomic. */
-static bool tx(PGconn *c, const char *cmd) {
-    PGresult *r = PQexec(c, cmd);
-    bool ok = PQresultStatus(r) == PGRES_COMMAND_OK;
-    PQclear(r);
-    return ok;
+/* ---- SQLite helpers -------------------------------------------------------- */
+
+static long now_epoch(void) { return (long)time(NULL); }
+
+/* Prepare `sql` on `c`, binding n text params (a NULL entry => SQL NULL). On
+ * success *out holds the statement (caller finalizes). Returns an SQLite code. */
+static int q_prep(sqlite3 *c, const char *sql, const char *const *p, int n, sqlite3_stmt **out) {
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(c, sql, -1, &st, NULL);
+    if (rc != SQLITE_OK) { *out = NULL; return rc; }
+    for (int i = 0; i < n; i++) {
+        if (p[i]) sqlite3_bind_text(st, i + 1, p[i], -1, SQLITE_TRANSIENT);
+        else      sqlite3_bind_null(st, i + 1);
+    }
+    *out = st;
+    return SQLITE_OK;
 }
+
+/* Run a statement with text params, expecting no rows back. Returns true if it
+ * stepped to completion (DONE) without error. */
+static bool q_exec(sqlite3 *c, const char *sql, const char *const *p, int n) {
+    sqlite3_stmt *st;
+    if (q_prep(c, sql, p, n, &st) != SQLITE_OK) return false;
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE || rc == SQLITE_ROW;
+}
+
+/* Run a query expected to yield at most one row; copy column 0 (text) into
+ * `out`. Returns 1 if a row was found, 0 if none, -1 on a query error. */
+static int q_one_text(sqlite3 *c, const char *sql, const char *const *p, int n,
+                      char *out, size_t out_size) {
+    sqlite3_stmt *st;
+    if (q_prep(c, sql, p, n, &st) != SQLITE_OK) return -1;
+    int rc = sqlite3_step(st);
+    int ret;
+    if (rc == SQLITE_ROW) {
+        const unsigned char *v = sqlite3_column_text(st, 0);
+        snprintf(out, out_size, "%s", v ? (const char *)v : "");
+        ret = 1;
+    } else if (rc == SQLITE_DONE) {
+        ret = 0;
+    } else {
+        ret = -1;
+    }
+    sqlite3_finalize(st);
+    return ret;
+}
+
+/* Transaction control on `c`; true on success. Multi-statement credential writes
+ * run in a transaction (under the per-app write lock) to stay atomic. */
+static bool tx(sqlite3 *c, const char *cmd) {
+    return sqlite3_exec(c, cmd, NULL, NULL, NULL) == SQLITE_OK;
+}
+
+/* ---- login lockout --------------------------------------------------------- */
 
 /* Per-account login lockout config (0 = disabled, the default). */
 static int g_lockout_n = 0;   /* failures before lock */
@@ -44,124 +91,140 @@ void cel_auth_set_lockout(int limit, int window_seconds) {
     g_lockout_w = (limit > 0 && window_seconds > 0) ? window_seconds : 0;
 }
 
-/* Record one failed login: extend the streak (or start a fresh one if the last
- * failure was outside the window), and lock the account once it hits the limit. */
-static void lockout_record_failure(PGconn *c, const char *user_id, int failed, long last_failed) {
-    time_t now = time(NULL);
+/* Record one failed login on connection `c`: extend the streak (or start fresh
+ * if the last failure was outside the window), and lock the account once it hits
+ * the limit. now/locked_until are computed in C (SQLite has no now()). */
+static void lockout_record_failure(sqlite3 *c, const char *user_id, int failed, long last_failed) {
+    long now = now_epoch();
     int newcount = (last_failed == 0 || (now - last_failed) > g_lockout_w) ? 1 : failed + 1;
-    char cnt[16], lim[16], win[16];
+    char cnt[16], nowbuf[24], locked[24];
     snprintf(cnt, sizeof cnt, "%d", newcount);
-    snprintf(lim, sizeof lim, "%d", g_lockout_n);
-    snprintf(win, sizeof win, "%d", g_lockout_w);
-    const char *p[4] = { user_id, cnt, lim, win };
-    PQclear(PQexecParams(c,
-        "UPDATE cel_users SET failed_login_count=$2::int, last_failed_login_at=now(), "
-        "locked_until = CASE WHEN $2::int >= $3::int "
-        "THEN now() + ($4::int * interval '1 second') ELSE NULL END "
-        "WHERE id=$1::uuid",
-        4, NULL, p, NULL, NULL, 0));
+    snprintf(nowbuf, sizeof nowbuf, "%ld", now);
+    bool lock = newcount >= g_lockout_n;
+    if (lock) snprintf(locked, sizeof locked, "%ld", now + g_lockout_w);
+    const char *p[4] = { cnt, nowbuf, lock ? locked : NULL, user_id };
+    q_exec(c, "UPDATE cel_users SET failed_login_count=?1, last_failed_login_at=?2, "
+              "locked_until=?3 WHERE id=?4", p, 4);
 }
 
-static void lockout_reset(PGconn *c, const char *user_id) {
+static void lockout_reset(sqlite3 *c, const char *user_id) {
     const char *p[1] = { user_id };
-    PQclear(PQexecParams(c,
-        "UPDATE cel_users SET failed_login_count=0, last_failed_login_at=NULL, locked_until=NULL "
-        "WHERE id=$1::uuid",
-        1, NULL, p, NULL, NULL, 0));
+    q_exec(c, "UPDATE cel_users SET failed_login_count=0, last_failed_login_at=NULL, "
+              "locked_until=NULL WHERE id=?1", p, 1);
 }
 
 int cel_auth_unlock(const char *email) {
     if (!email || !*email) return -1;
-    PGconn *c = db_connection_acquire();
-    if (!c) return -1;
-    const char *p[1] = { email };
-    PGresult *r = PQexecParams(c,
-        "UPDATE cel_users SET failed_login_count=0, last_failed_login_at=NULL, locked_until=NULL "
-        "WHERE email=$1",
-        1, NULL, p, NULL, NULL, 0);
-    int n = (PQresultStatus(r) == PGRES_COMMAND_OK) ? atoi(PQcmdTuples(r)) : -1;
-    PQclear(r);
-    db_connection_release(c);
+    app_db_t *app = app_db_current();
+    if (!app) return -1;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    int n = -1;
+    if (c) {
+        const char *p[1] = { email };
+        if (q_exec(c, "UPDATE cel_users SET failed_login_count=0, last_failed_login_at=NULL, "
+                      "locked_until=NULL WHERE email=?1", p, 1))
+            n = sqlite3_changes(c);
+        app_db_conn_release(app, c);
+    }
+    app_db_write_unlock(app);
     return n;
 }
+
+/* ---- login ----------------------------------------------------------------- */
 
 int cel_auth_login(const char *email, const char *password, int ttl_seconds,
                    char *out_token, size_t token_size,
                    char *out_challenge, size_t challenge_size,
                    cel_user_t *out_user) {
-    PGconn *c = db_connection_acquire();
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    sqlite3 *c = app_db_conn_acquire(app);
     if (!c) return CEL_AUTH_DBERR;
     int rc = CEL_AUTH_DBERR;
 
-    /* Resolve the password IDENTITY (provider_uid = email) and its user. This is
-     * the same shape a federated login uses (provider='google', uid=the 'sub'). */
-    const char *p[1] = { email };
-    PGresult *r = PQexecParams(c,
-        "SELECT u.id::text, i.secret, u.role, u.is_active, u.email, "
-        "to_jsonb(u) ->> 'tenant_id', (u.email_verified_at IS NOT NULL), "
-        "(u.locked_until IS NOT NULL AND u.locked_until > now()), u.failed_login_count, "
-        "COALESCE(EXTRACT(EPOCH FROM u.last_failed_login_at)::bigint, 0) "
-        "FROM cel_identities i JOIN cel_users u ON u.id = i.user_id "
-        "WHERE i.provider = 'password' AND i.provider_uid = $1",
-        1, NULL, p, NULL, NULL, 0);
-    if (PQresultStatus(r) != PGRES_TUPLES_OK) { PQclear(r); goto out; }
-    if (PQntuples(r) != 1) {
-        PQclear(r);
+    /* Resolve the password IDENTITY (provider_uid = email) and its user. Same
+     * shape a federated login uses (provider='google', uid=the 'sub'). */
+    char uid[37] = {0}, hash[256] = {0}, role[32] = {0}, uemail[256] = {0};
+    bool active = false, email_verified = false, locked = false;
+    int failed = 0; long last_failed = 0;
+    bool found = false;
+    {
+        const char *p[1] = { email };
+        sqlite3_stmt *st;
+        if (q_prep(c,
+            "SELECT u.id, i.secret, u.role, u.is_active, u.email, "
+            "(u.email_verified_at IS NOT NULL), u.locked_until, "
+            "u.failed_login_count, COALESCE(u.last_failed_login_at, 0) "
+            "FROM cel_identities i JOIN cel_users u ON u.id = i.user_id "
+            "WHERE i.provider='password' AND i.provider_uid=?1", p, 1, &st) != SQLITE_OK) {
+            app_db_conn_release(app, c); return CEL_AUTH_DBERR;
+        }
+        int step = sqlite3_step(st);
+        if (step == SQLITE_ROW) {
+            found = true;
+            snprintf(uid,    sizeof uid,    "%s", (const char *)sqlite3_column_text(st, 0));
+            if (sqlite3_column_type(st, 1) != SQLITE_NULL)
+                snprintf(hash, sizeof hash, "%s", (const char *)sqlite3_column_text(st, 1));
+            snprintf(role,   sizeof role,   "%s", (const char *)sqlite3_column_text(st, 2));
+            active = sqlite3_column_int(st, 3) != 0;
+            snprintf(uemail, sizeof uemail, "%s", (const char *)sqlite3_column_text(st, 4));
+            email_verified = sqlite3_column_int(st, 5) != 0;
+            if (sqlite3_column_type(st, 6) != SQLITE_NULL)
+                locked = sqlite3_column_int64(st, 6) > now_epoch();
+            failed      = sqlite3_column_int(st, 7);
+            last_failed = (long)sqlite3_column_int64(st, 8);
+        }
+        sqlite3_finalize(st);
+    }
+    app_db_conn_release(app, c);
+
+    if (!found) {
         if (g_decoy_hash[0]) cel_password_verify(g_decoy_hash, password);  /* equalize timing */
         rc = CEL_AUTH_INVALID;
         goto out;
     }
 
-    {
-        /* Copy what we need, then free the result before the lockout UPDATEs. */
-        char uid[37], hash[256], role[32], uemail[256], tenant[37];
-        snprintf(uid,    sizeof uid,    "%s", PQgetvalue(r, 0, 0));
-        snprintf(hash,   sizeof hash,   "%s", PQgetisnull(r, 0, 1) ? "" : PQgetvalue(r, 0, 1));
-        snprintf(role,   sizeof role,   "%s", PQgetvalue(r, 0, 2));
-        bool active = strcmp(PQgetvalue(r, 0, 3), "t") == 0;
-        snprintf(uemail, sizeof uemail, "%s", PQgetvalue(r, 0, 4));
-        snprintf(tenant, sizeof tenant, "%s", PQgetisnull(r, 0, 5) ? "" : PQgetvalue(r, 0, 5));
-        bool email_verified = strcmp(PQgetvalue(r, 0, 6), "t") == 0;
-        bool locked      = strcmp(PQgetvalue(r, 0, 7), "t") == 0;
-        int  failed      = atoi(PQgetvalue(r, 0, 8));
-        long last_failed = atol(PQgetvalue(r, 0, 9));
-        PQclear(r);
+    /* Always verify (even when inactive or the secret is absent) so timing
+     * doesn't distinguish the cases — a null secret falls back to the decoy. */
+    bool ok;
+    if (hash[0]) {
+        ok = cel_password_verify(hash, password);
+    } else {
+        if (g_decoy_hash[0]) cel_password_verify(g_decoy_hash, password);
+        ok = false;
+    }
 
-        /* Always verify (even when inactive or the secret is absent) so timing
-         * doesn't distinguish the cases — a null secret falls back to the decoy. */
-        bool ok;
-        if (hash[0]) {
-            ok = cel_password_verify(hash, password);
-        } else {
-            if (g_decoy_hash[0]) cel_password_verify(g_decoy_hash, password);
-            ok = false;
-        }
-
-        if (g_lockout_n > 0) {
-            if (locked) { rc = CEL_AUTH_LOCKED; goto out; }   /* locked even if pw is right */
-            if (!active || !ok) {
-                lockout_record_failure(c, uid, failed, last_failed);
-                rc = CEL_AUTH_INVALID;
-                goto out;
-            }
-            if (failed > 0) lockout_reset(c, uid);            /* clear the streak on success */
-        } else if (!active || !ok) {
+    if (g_lockout_n > 0) {
+        if (locked) { rc = CEL_AUTH_LOCKED; goto out; }   /* locked even if pw is right */
+        if (!active || !ok) {
+            app_db_write_lock(app);
+            sqlite3 *wc = app_db_conn_acquire(app);
+            if (wc) { lockout_record_failure(wc, uid, failed, last_failed); app_db_conn_release(app, wc); }
+            app_db_write_unlock(app);
             rc = CEL_AUTH_INVALID;
             goto out;
         }
-
-        snprintf(out_user->id,    sizeof out_user->id,    "%s", uid);
-        snprintf(out_user->email, sizeof out_user->email, "%s", uemail);
-        snprintf(out_user->role,  sizeof out_user->role,  "%s", role);
-        snprintf(out_user->tenant_id, sizeof out_user->tenant_id, "%s", tenant);
-        out_user->email_verified = email_verified;
+        if (failed > 0) {                                 /* clear the streak on success */
+            app_db_write_lock(app);
+            sqlite3 *wc = app_db_conn_acquire(app);
+            if (wc) { lockout_reset(wc, uid); app_db_conn_release(app, wc); }
+            app_db_write_unlock(app);
+        }
+    } else if (!active || !ok) {
+        rc = CEL_AUTH_INVALID;
+        goto out;
     }
-    db_connection_release(c);   /* the sub-calls below manage their own connections */
-    c = NULL;
+
+    snprintf(out_user->id,    sizeof out_user->id,    "%s", uid);
+    snprintf(out_user->email, sizeof out_user->email, "%s", uemail);
+    snprintf(out_user->role,  sizeof out_user->role,  "%s", role);
+    out_user->tenant_id[0] = '\0';
+    out_user->email_verified = email_verified;
 
     /* Second factor? A confirmed TOTP enrollment (with MFA enabled) means we issue
      * a one-time challenge instead of a session; the caller completes the login via
-     * cel_mfa_verify_login. Otherwise mint the session immediately, as before. */
+     * cel_mfa_verify_login. Otherwise mint the session immediately. */
     if (cel_mfa_required_for(out_user->id)) {
         rc = (cel_mfa_create_challenge(out_user->id, out_challenge, challenge_size) == 0)
                  ? CEL_AUTH_MFA_REQUIRED : CEL_AUTH_DBERR;
@@ -169,40 +232,42 @@ int cel_auth_login(const char *email, const char *password, int ttl_seconds,
     }
     rc = cel_auth_issue_session(out_user->id, ttl_seconds, out_token, token_size);
 out:
-    db_connection_release(c);   /* safe on NULL */
     if      (rc == CEL_AUTH_OK)                                  cel_metric_inc(CEL_M_LOGIN_OK);
     else if (rc == CEL_AUTH_INVALID || rc == CEL_AUTH_LOCKED)    cel_metric_inc(CEL_M_LOGIN_FAIL);
     return rc;
 }
 
 /* Mint a session for an already-authenticated user (shared by the password path,
- * MFA verify, and future federated login). Token stored hashed; raw returned. */
+ * MFA verify, and federated login). Token stored hashed; raw returned. */
 int cel_auth_issue_session(const char *user_id, int ttl_seconds,
                            char *out_token, size_t token_size) {
     if (cel_random_token_hex(out_token, token_size, TOKEN_BYTES) != 0) return CEL_AUTH_DBERR;
     char thash[65];
     if (cel_token_hash(out_token, thash, sizeof thash) != 0) return CEL_AUTH_DBERR;
 
-    PGconn *c = db_connection_acquire();
-    if (!c) return CEL_AUTH_DBERR;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
     int rc = CEL_AUTH_DBERR;
-
-    char ttl[16];
-    snprintf(ttl, sizeof ttl, "%d", ttl_seconds);
-    const char *ins[3] = { thash, user_id, ttl };
-    PGresult *r = PQexecParams(c,
-        "INSERT INTO cel_sessions(token, user_id, expires_at) "
-        "VALUES($1, $2::uuid, now() + ($3::int * interval '1 second'))",
-        3, NULL, ins, NULL, NULL, 0);
-    bool ok = PQresultStatus(r) == PGRES_COMMAND_OK;
-    PQclear(r);
-    if (ok) {
-        const char *up[1] = { user_id };
-        PQclear(PQexecParams(c, "UPDATE cel_users SET last_login_at=now() WHERE id=$1::uuid",
-                             1, NULL, up, NULL, NULL, 0));
-        rc = CEL_AUTH_OK;
+    if (c) {
+        char exp[24], now[24];
+        snprintf(exp, sizeof exp, "%ld", now_epoch() + ttl_seconds);
+        snprintf(now, sizeof now, "%ld", now_epoch());
+        if (tx(c, "BEGIN")) {
+            const char *ins[3] = { thash, user_id, exp };
+            bool ok = q_exec(c, "INSERT INTO cel_sessions(token, user_id, expires_at) "
+                                "VALUES(?1, ?2, ?3)", ins, 3);
+            if (ok) {
+                const char *up[2] = { now, user_id };
+                q_exec(c, "UPDATE cel_users SET last_login_at=?1 WHERE id=?2", up, 2);
+            }
+            rc = (ok && tx(c, "COMMIT")) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
+            if (rc != CEL_AUTH_OK) tx(c, "ROLLBACK");
+        }
+        app_db_conn_release(app, c);
     }
-    db_connection_release(c);
+    app_db_write_unlock(app);
     return rc;
 }
 
@@ -212,107 +277,87 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
                          char *out_token, size_t token_size,
                          char *out_challenge, size_t challenge_size, cel_user_t *out_user) {
     if (!provider || !*provider || !sub || !*sub) return CEL_AUTH_INVALID;
-    PGconn *c = db_connection_acquire();
-    if (!c) return CEL_AUTH_DBERR;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
     int rc = CEL_AUTH_DBERR;
     char user_id[37] = {0};
 
     /* 1. an existing federated identity resolves straight to its user. */
     {
         const char *p[2] = { provider, sub };
-        PGresult *r = PQexecParams(c,
-            "SELECT user_id::text FROM cel_identities WHERE provider=$1 AND provider_uid=$2",
-            2, NULL, p, NULL, NULL, 0);
-        bool ok = PQresultStatus(r) == PGRES_TUPLES_OK;
-        if (ok && PQntuples(r) == 1) snprintf(user_id, sizeof user_id, "%s", PQgetvalue(r, 0, 0));
-        PQclear(r);
-        if (!ok) goto out;
+        int f = q_one_text(c, "SELECT user_id FROM cel_identities WHERE provider=?1 AND provider_uid=?2",
+                           p, 2, user_id, sizeof user_id);
+        if (f < 0) goto out;
     }
 
-    /* 2. an account may already exist for this verified email. Auto-LINK the
-     *    federated identity to it ONLY when the provider is explicitly trusted for
-     *    the email's domain (email_link_trusted) — never on the provider's
-     *    email_verified claim alone, which a loose/hostile IdP can forge to take
-     *    over the account (H-3). An untrusted email collision is REFUSED, not
-     *    silently merged; the user must link via an authenticated flow instead. */
+    /* 2. an account may already exist for this verified email. Auto-LINK ONLY when
+     *    the provider is explicitly trusted for the email's domain (H-3) — never on
+     *    the provider's email_verified claim alone. An untrusted collision is
+     *    REFUSED, not silently merged. */
     if (!user_id[0] && email_verified && email && *email) {
-        const char *p[1] = { email };
-        PGresult *r = PQexecParams(c, "SELECT id::text FROM cel_users WHERE email=$1",
-                                   1, NULL, p, NULL, NULL, 0);
-        bool found = (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1);
         char existing[37] = {0};
-        if (found) snprintf(existing, sizeof existing, "%s", PQgetvalue(r, 0, 0));
-        bool query_ok = (PQresultStatus(r) == PGRES_TUPLES_OK);
-        PQclear(r);
-        if (!query_ok) goto out;
-        if (found) {
+        const char *p[1] = { email };
+        int f = q_one_text(c, "SELECT id FROM cel_users WHERE email=?1", p, 1, existing, sizeof existing);
+        if (f < 0) goto out;
+        if (f == 1) {
             if (!email_link_trusted) { rc = CEL_AUTH_INVALID; goto out; }  /* refuse silent merge */
             snprintf(user_id, sizeof user_id, "%s", existing);
-            const char *ins[3] = { user_id, provider, sub };
-            PQclear(PQexecParams(c,
-                "INSERT INTO cel_identities(user_id, provider, provider_uid) VALUES($1::uuid,$2,$3) "
-                "ON CONFLICT (provider, provider_uid) DO NOTHING",
-                3, NULL, ins, NULL, NULL, 0));
+            char iid[37]; cel_uuid_v4(iid, sizeof iid);
+            const char *ins[4] = { iid, user_id, provider, sub };
+            q_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid) "
+                      "VALUES(?1,?2,?3,?4) ON CONFLICT(provider, provider_uid) DO NOTHING", ins, 4);
         }
     }
 
     /* 3. otherwise auto-provision — only if signup is allowed (a role) and we have
-     *    an email for the account. No account + can't provision => INVALID. */
+     *    an email. No account + can't provision => INVALID. */
     if (!user_id[0]) {
         if (!provision_role || !*provision_role || !email || !*email) { rc = CEL_AUTH_INVALID; goto out; }
         if (!tx(c, "BEGIN")) goto out;
-        bool committed = false;
-        const char *up[2] = { email, provision_role };
-        PGresult *r = PQexecParams(c,
-            "INSERT INTO cel_users(email, role) VALUES($1,$2) RETURNING id::text",
-            2, NULL, up, NULL, NULL, 0);
-        if (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1) {
-            snprintf(user_id, sizeof user_id, "%s", PQgetvalue(r, 0, 0));
-            PQclear(r);
-            const char *ins[3] = { user_id, provider, sub };
-            PGresult *r2 = PQexecParams(c,
-                "INSERT INTO cel_identities(user_id, provider, provider_uid) VALUES($1::uuid,$2,$3)",
-                3, NULL, ins, NULL, NULL, 0);
-            bool ok2 = PQresultStatus(r2) == PGRES_COMMAND_OK;
-            PQclear(r2);
-            if (ok2) committed = tx(c, "COMMIT");
-        } else {
-            PQclear(r);
+        char nid[37]; cel_uuid_v4(nid, sizeof nid);
+        const char *up[3] = { nid, email, provision_role };
+        bool ok = q_exec(c, "INSERT INTO cel_users(id, email, role) VALUES(?1,?2,?3)", up, 3);
+        if (ok) {
+            snprintf(user_id, sizeof user_id, "%s", nid);
+            char iid[37]; cel_uuid_v4(iid, sizeof iid);
+            const char *ins[4] = { iid, user_id, provider, sub };
+            ok = q_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid) "
+                           "VALUES(?1,?2,?3,?4)", ins, 4);
         }
-        if (!committed) { tx(c, "ROLLBACK"); goto out; }   /* rc stays DBERR */
+        if (!ok || !tx(c, "COMMIT")) { tx(c, "ROLLBACK"); goto out; }   /* rc stays DBERR */
     }
 
-    /* A provider-verified email confirms the account's email only when the provider
-     * is trusted for that domain — never stamp local email_verified_at from an
-     * unauthenticated/untrusted federated claim (H-3). */
+    /* A provider-verified email confirms the account's email only when trusted. */
     if (email_verified && email && *email && email_link_trusted) {
-        const char *uv[2] = { user_id, email };
-        PQclear(PQexecParams(c,
-            "UPDATE cel_users SET email_verified_at = COALESCE(email_verified_at, now()) "
-            "WHERE id=$1::uuid AND email=$2",
-            2, NULL, uv, NULL, NULL, 0));
+        char now[24]; snprintf(now, sizeof now, "%ld", now_epoch());
+        const char *uv[3] = { now, user_id, email };
+        q_exec(c, "UPDATE cel_users SET email_verified_at=COALESCE(email_verified_at, ?1) "
+                  "WHERE id=?2 AND email=?3", uv, 3);
     }
 
-    db_connection_release(c);
-    c = NULL;
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
+    app = NULL;
 
-    /* Second factor (H-2): federated login converges on the SAME session as the
-     * password path, so it must honor the SAME MFA gate. A confirmed TOTP
-     * enrollment means we issue a one-time challenge instead of a session — the
-     * client finishes via cel_mfa_verify_login. Without this, enrolling TOTP and
-     * then signing in via OAuth bypassed the second factor entirely. */
+    /* Second factor (H-2): federated login honors the SAME MFA gate as the
+     * password path — a confirmed TOTP enrollment issues a challenge, not a
+     * session; the client finishes via cel_mfa_verify_login. */
     if (out_challenge && challenge_size && cel_mfa_required_for(user_id)) {
-        rc = (cel_mfa_create_challenge(user_id, out_challenge, challenge_size) == 0)
-                 ? CEL_AUTH_MFA_REQUIRED : CEL_AUTH_DBERR;
-        goto out;
+        return (cel_mfa_create_challenge(user_id, out_challenge, challenge_size) == 0)
+                   ? CEL_AUTH_MFA_REQUIRED : CEL_AUTH_DBERR;
     }
     rc = cel_auth_issue_session(user_id, ttl_seconds, out_token, token_size);
     if (rc == CEL_AUTH_OK) {
         if (cel_auth_verify(out_token, out_user) != CEL_AUTH_OK) rc = CEL_AUTH_DBERR;
         else cel_metric_inc(CEL_M_LOGIN_OK);
     }
+    return rc;
 out:
-    db_connection_release(c);   /* safe on NULL */
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
     return rc;
 }
 
@@ -321,9 +366,15 @@ int cel_auth_register(const char *email, const char *password, const char *role,
                       cel_user_t *out_user) {
     char hash[256];
     if (cel_password_hash(password, hash, sizeof hash) != 0) return CEL_AUTH_DBERR;
+    char thash[65];
+    if (cel_random_token_hex(out_token, token_size, TOKEN_BYTES) != 0) return CEL_AUTH_DBERR;
+    if (cel_token_hash(out_token, thash, sizeof thash) != 0) return CEL_AUTH_DBERR;
 
-    PGconn *c = db_connection_acquire();
-    if (!c) return CEL_AUTH_DBERR;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
     int rc = CEL_AUTH_DBERR;
     bool in_txn = false;
 
@@ -332,62 +383,41 @@ int cel_auth_register(const char *email, const char *password, const char *role,
     if (!tx(c, "BEGIN")) goto out;
     in_txn = true;
 
-    /* 1. the account row (no credential here anymore). `to_jsonb ->> 'tenant_id'`
-     * yields the value in pooled mode and NULL in single-tenant. */
+    char uid[37]; cel_uuid_v4(uid, sizeof uid);
+
+    /* 1. the account row. */
     {
-        const char *p[2] = { email, role };
-        PGresult *r = PQexecParams(c,
-            "INSERT INTO cel_users(email, role) VALUES($1, $2) "
-            "RETURNING id::text, to_jsonb(cel_users) ->> 'tenant_id'",
-            2, NULL, p, NULL, NULL, 0);
-        if (PQresultStatus(r) != PGRES_TUPLES_OK) {
-            const char *ss = PQresultErrorField(r, PG_DIAG_SQLSTATE);
-            if (ss && !strcmp(ss, "23505")) rc = CEL_AUTH_CONFLICT;   /* unique_violation */
-            else LOG_ERROR("register failed: %s", PQerrorMessage(c));
-            PQclear(r);
+        const char *p[3] = { uid, email, role };
+        if (!q_exec(c, "INSERT INTO cel_users(id, email, role) VALUES(?1, ?2, ?3)", p, 3)) {
+            if (sqlite3_extended_errcode(c) == SQLITE_CONSTRAINT_UNIQUE) rc = CEL_AUTH_CONFLICT;
+            else LOG_ERROR("register failed: %s", sqlite3_errmsg(c));
             goto out;
         }
-        snprintf(out_user->id,    sizeof out_user->id,    "%s", PQgetvalue(r, 0, 0));
+        snprintf(out_user->id,    sizeof out_user->id,    "%s", uid);
         snprintf(out_user->email, sizeof out_user->email, "%s", email);
         snprintf(out_user->role,  sizeof out_user->role,  "%s", role);
-        snprintf(out_user->tenant_id, sizeof out_user->tenant_id, "%s",
-                 PQgetisnull(r, 0, 1) ? "" : PQgetvalue(r, 0, 1));
-        out_user->email_verified = false;   /* freshly registered — not yet verified */
-        PQclear(r);
+        out_user->tenant_id[0] = '\0';
+        out_user->email_verified = false;
     }
 
     /* 2. the password identity (provider='password', uid=email). */
     {
-        const char *p[3] = { out_user->id, email, hash };
-        PGresult *r = PQexecParams(c,
-            "INSERT INTO cel_identities(user_id, provider, provider_uid, secret) "
-            "VALUES($1::uuid, 'password', $2, $3)",
-            3, NULL, p, NULL, NULL, 0);
-        bool ok = PQresultStatus(r) == PGRES_COMMAND_OK;
-        if (!ok) {
-            const char *ss = PQresultErrorField(r, PG_DIAG_SQLSTATE);
-            if (ss && !strcmp(ss, "23505")) rc = CEL_AUTH_CONFLICT;
-            else LOG_ERROR("register identity failed: %s", PQerrorMessage(c));
+        char iid[37]; cel_uuid_v4(iid, sizeof iid);
+        const char *p[4] = { iid, uid, email, hash };
+        if (!q_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid, secret) "
+                       "VALUES(?1, ?2, 'password', ?3, ?4)", p, 4)) {
+            if (sqlite3_extended_errcode(c) == SQLITE_CONSTRAINT_UNIQUE) rc = CEL_AUTH_CONFLICT;
+            else LOG_ERROR("register identity failed: %s", sqlite3_errmsg(c));
+            goto out;
         }
-        PQclear(r);
-        if (!ok) goto out;
     }
 
-    /* 3. the auto-login session (token hash stored; raw token returned to caller). */
-    if (cel_random_token_hex(out_token, token_size, TOKEN_BYTES) != 0) goto out;
+    /* 3. the auto-login session (token hash stored; raw token returned). */
     {
-        char thash[65];
-        if (cel_token_hash(out_token, thash, sizeof thash) != 0) goto out;
-        char ttl[16];
-        snprintf(ttl, sizeof ttl, "%d", ttl_seconds);
-        const char *ins[3] = { thash, out_user->id, ttl };
-        PGresult *r2 = PQexecParams(c,
-            "INSERT INTO cel_sessions(token, user_id, expires_at) "
-            "VALUES($1, $2::uuid, now() + ($3::int * interval '1 second'))",
-            3, NULL, ins, NULL, NULL, 0);
-        bool ok = PQresultStatus(r2) == PGRES_COMMAND_OK;
-        PQclear(r2);
-        if (!ok) goto out;
+        char exp[24]; snprintf(exp, sizeof exp, "%ld", now_epoch() + ttl_seconds);
+        const char *ins[3] = { thash, uid, exp };
+        if (!q_exec(c, "INSERT INTO cel_sessions(token, user_id, expires_at) "
+                       "VALUES(?1, ?2, ?3)", ins, 3)) goto out;
     }
 
     if (!tx(c, "COMMIT")) goto out;
@@ -395,67 +425,46 @@ int cel_auth_register(const char *email, const char *password, const char *role,
     rc = CEL_AUTH_OK;
 out:
     if (in_txn) tx(c, "ROLLBACK");
-    db_connection_release(c);
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
     return rc;
 }
 
 int cel_auth_create_user(const char *email, const char *password, const char *role,
                          const char *tenant_id, char *out_id, size_t out_id_size) {
+    (void)tenant_id;   /* isolation is the app's file boundary — no tenant column */
     char hash[256];
     if (cel_password_hash(password, hash, sizeof hash) != 0) return CEL_AUTH_DBERR;
 
-    PGconn *c = db_connection_acquire();
-    if (!c) return CEL_AUTH_DBERR;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
     int rc = CEL_AUTH_DBERR;
     bool in_txn = false;
-    char uid[37] = {0};
+    char uid[37]; cel_uuid_v4(uid, sizeof uid);
 
     if (!tx(c, "BEGIN")) goto out;
     in_txn = true;
 
-    /* 1. the account (optionally bound to a tenant in pooled mode). */
     {
-        bool with_tenant = tenant_id && tenant_id[0];
-        PGresult *r;
-        if (with_tenant) {
-            const char *p[3] = { email, role, tenant_id };
-            r = PQexecParams(c,
-                "INSERT INTO cel_users(email, role, tenant_id) "
-                "VALUES($1, $2, $3::uuid) RETURNING id::text",
-                3, NULL, p, NULL, NULL, 0);
-        } else {
-            const char *p[2] = { email, role };
-            r = PQexecParams(c,
-                "INSERT INTO cel_users(email, role) VALUES($1, $2) RETURNING id::text",
-                2, NULL, p, NULL, NULL, 0);
-        }
-        if (PQresultStatus(r) != PGRES_TUPLES_OK) {
-            const char *ss = PQresultErrorField(r, PG_DIAG_SQLSTATE);
-            if (ss && !strcmp(ss, "23505")) rc = CEL_AUTH_CONFLICT;       /* dup email */
-            else if (ss && !strcmp(ss, "23503")) rc = CEL_AUTH_INVALID;   /* bad tenant FK */
-            else LOG_ERROR("create user failed: %s", PQerrorMessage(c));
-            PQclear(r);
+        const char *p[3] = { uid, email, role };
+        if (!q_exec(c, "INSERT INTO cel_users(id, email, role) VALUES(?1, ?2, ?3)", p, 3)) {
+            if (sqlite3_extended_errcode(c) == SQLITE_CONSTRAINT_UNIQUE) rc = CEL_AUTH_CONFLICT;
+            else LOG_ERROR("create user failed: %s", sqlite3_errmsg(c));
             goto out;
         }
-        snprintf(uid, sizeof uid, "%s", PQgetvalue(r, 0, 0));
-        PQclear(r);
     }
-
-    /* 2. the password identity for the new account. */
     {
-        const char *p[3] = { uid, email, hash };
-        PGresult *r = PQexecParams(c,
-            "INSERT INTO cel_identities(user_id, provider, provider_uid, secret) "
-            "VALUES($1::uuid, 'password', $2, $3)",
-            3, NULL, p, NULL, NULL, 0);
-        bool ok = PQresultStatus(r) == PGRES_COMMAND_OK;
-        if (!ok) {
-            const char *ss = PQresultErrorField(r, PG_DIAG_SQLSTATE);
-            if (ss && !strcmp(ss, "23505")) rc = CEL_AUTH_CONFLICT;
-            else LOG_ERROR("create identity failed: %s", PQerrorMessage(c));
+        char iid[37]; cel_uuid_v4(iid, sizeof iid);
+        const char *p[4] = { iid, uid, email, hash };
+        if (!q_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid, secret) "
+                       "VALUES(?1, ?2, 'password', ?3, ?4)", p, 4)) {
+            if (sqlite3_extended_errcode(c) == SQLITE_CONSTRAINT_UNIQUE) rc = CEL_AUTH_CONFLICT;
+            else LOG_ERROR("create identity failed: %s", sqlite3_errmsg(c));
+            goto out;
         }
-        PQclear(r);
-        if (!ok) goto out;
     }
 
     if (!tx(c, "COMMIT")) goto out;
@@ -464,42 +473,43 @@ int cel_auth_create_user(const char *email, const char *password, const char *ro
     rc = CEL_AUTH_OK;
 out:
     if (in_txn) tx(c, "ROLLBACK");
-    db_connection_release(c);
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
     return rc;
 }
 
 int cel_auth_verify(const char *token, cel_user_t *out_user) {
-    PGconn *c = db_connection_acquire();
+    char thash[65];
+    if (cel_token_hash(token, thash, sizeof thash) != 0) return CEL_AUTH_INVALID;
+
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    sqlite3 *c = app_db_conn_acquire(app);
     if (!c) return CEL_AUTH_DBERR;
     int rc = CEL_AUTH_DBERR;
 
-    char thash[65];
-    if (cel_token_hash(token, thash, sizeof thash) != 0) { db_connection_release(c); return CEL_AUTH_INVALID; }
-    const char *p[1] = { thash };
-    /* `to_jsonb(u) ->> 'tenant_id'` yields the column's value when cel_users has a
-     * tenant_id column (pooled mode) and NULL when it doesn't (single-tenant) —
-     * so the same query works in both deployments without dynamic SQL. */
-    PGresult *r = PQexecParams(c,
-        "SELECT u.id::text, u.email, u.role, to_jsonb(u) ->> 'tenant_id', "
-        "(u.email_verified_at IS NOT NULL) "
+    char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", now_epoch());
+    const char *p[2] = { thash, nowbuf };
+    sqlite3_stmt *st;
+    if (q_prep(c,
+        "SELECT u.id, u.email, u.role, (u.email_verified_at IS NOT NULL) "
         "FROM cel_sessions s JOIN cel_users u ON u.id = s.user_id "
-        "WHERE s.token=$1 AND s.expires_at > now() AND u.is_active",
-        1, NULL, p, NULL, NULL, 0);
-    if (PQresultStatus(r) != PGRES_TUPLES_OK) { PQclear(r); goto out; }
-    if (PQntuples(r) != 1) { PQclear(r); rc = CEL_AUTH_INVALID; goto out; }
-
-    snprintf(out_user->id,    sizeof out_user->id,    "%s", PQgetvalue(r, 0, 0));
-    snprintf(out_user->email, sizeof out_user->email, "%s", PQgetvalue(r, 0, 1));
-    snprintf(out_user->role,  sizeof out_user->role,  "%s", PQgetvalue(r, 0, 2));
-    snprintf(out_user->tenant_id, sizeof out_user->tenant_id, "%s",
-             PQgetisnull(r, 0, 3) ? "" : PQgetvalue(r, 0, 3));
-    out_user->email_verified = strcmp(PQgetvalue(r, 0, 4), "t") == 0;
-    PQclear(r);
-    /* NB: token verification is read-only and runs on every request — we no longer
-     * write last_seen_at here (it made every authed request a write). */
-    rc = CEL_AUTH_OK;
-out:
-    db_connection_release(c);
+        "WHERE s.token=?1 AND s.expires_at > ?2 AND u.is_active=1", p, 2, &st) != SQLITE_OK) {
+        app_db_conn_release(app, c); return CEL_AUTH_DBERR;
+    }
+    int step = sqlite3_step(st);
+    if (step == SQLITE_ROW) {
+        snprintf(out_user->id,    sizeof out_user->id,    "%s", (const char *)sqlite3_column_text(st, 0));
+        snprintf(out_user->email, sizeof out_user->email, "%s", (const char *)sqlite3_column_text(st, 1));
+        snprintf(out_user->role,  sizeof out_user->role,  "%s", (const char *)sqlite3_column_text(st, 2));
+        out_user->tenant_id[0] = '\0';
+        out_user->email_verified = sqlite3_column_int(st, 3) != 0;
+        rc = CEL_AUTH_OK;
+    } else if (step == SQLITE_DONE) {
+        rc = CEL_AUTH_INVALID;
+    }
+    sqlite3_finalize(st);
+    app_db_conn_release(app, c);
     return rc;
 }
 
@@ -514,28 +524,35 @@ int cel_auth_logout(const char *token) {
     cel_session_cache_evict(token);   /* revoke immediately on this instance */
     char thash[65];
     if (cel_token_hash(token, thash, sizeof thash) != 0) return CEL_AUTH_INVALID;
-    PGconn *c = db_connection_acquire();
-    if (!c) return CEL_AUTH_DBERR;
-    const char *p[1] = { thash };
-    PGresult *r = PQexecParams(c,
-        "DELETE FROM cel_sessions WHERE token=$1", 1, NULL, p, NULL, NULL, 0);
-    int rc = (PQresultStatus(r) == PGRES_COMMAND_OK) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
-    PQclear(r);
-    db_connection_release(c);
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    int rc = CEL_AUTH_DBERR;
+    if (c) {
+        const char *p[1] = { thash };
+        rc = q_exec(c, "DELETE FROM cel_sessions WHERE token=?1", p, 1) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
+        app_db_conn_release(app, c);
+    }
+    app_db_write_unlock(app);
     return rc;
 }
 
 int cel_auth_revoke_user_sessions(const char *email) {
     if (!email || !*email) return -1;
-    PGconn *c = db_connection_acquire();
-    if (!c) return -1;
-    const char *p[1] = { email };
-    PGresult *r = PQexecParams(c,
-        "DELETE FROM cel_sessions WHERE user_id = (SELECT id FROM cel_users WHERE email=$1)",
-        1, NULL, p, NULL, NULL, 0);
-    int n = (PQresultStatus(r) == PGRES_COMMAND_OK) ? atoi(PQcmdTuples(r)) : -1;
-    PQclear(r);
-    db_connection_release(c);
+    app_db_t *app = app_db_current();
+    if (!app) return -1;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    int n = -1;
+    if (c) {
+        const char *p[1] = { email };
+        if (q_exec(c, "DELETE FROM cel_sessions WHERE user_id = "
+                      "(SELECT id FROM cel_users WHERE email=?1)", p, 1))
+            n = sqlite3_changes(c);
+        app_db_conn_release(app, c);
+    }
+    app_db_write_unlock(app);
     /* The cache can't evict by user, so clear it (same-instance; other instances
      * re-validate within the cache TTL). */
     if (n >= 0) cel_session_cache_clear();
@@ -545,41 +562,36 @@ int cel_auth_revoke_user_sessions(const char *email) {
 #define RESET_TTL_SECONDS 3600   /* a password-reset link is good for 1 hour */
 
 int cel_auth_create_password_reset(const char *email, char *out_token, size_t token_size) {
-    PGconn *c = db_connection_acquire();
-    if (!c) return CEL_AUTH_DBERR;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
     int rc = CEL_AUTH_DBERR;
 
     /* Only an account that actually has a password identity can reset a password. */
     char user_id[37] = {0};
     {
         const char *p[1] = { email };
-        PGresult *r = PQexecParams(c,
-            "SELECT u.id::text FROM cel_identities i JOIN cel_users u ON u.id = i.user_id "
-            "WHERE i.provider='password' AND i.provider_uid=$1",
-            1, NULL, p, NULL, NULL, 0);
-        bool ok = PQresultStatus(r) == PGRES_TUPLES_OK;
-        if (ok && PQntuples(r) == 1) snprintf(user_id, sizeof user_id, "%s", PQgetvalue(r, 0, 0));
-        PQclear(r);
-        if (!ok) goto out;
-        if (!user_id[0]) { rc = CEL_AUTH_INVALID; goto out; }   /* no account — caller still 200 */
+        int f = q_one_text(c,
+            "SELECT u.id FROM cel_identities i JOIN cel_users u ON u.id = i.user_id "
+            "WHERE i.provider='password' AND i.provider_uid=?1", p, 1, user_id, sizeof user_id);
+        if (f < 0) goto out;
+        if (f == 0) { rc = CEL_AUTH_INVALID; goto out; }   /* no account — caller still 200 */
     }
 
     if (cel_random_token_hex(out_token, token_size, TOKEN_BYTES) != 0) goto out;
     {
         char h[65];
         if (cel_token_hash(out_token, h, sizeof h) != 0) goto out;
-        char ttl[16];
-        snprintf(ttl, sizeof ttl, "%d", RESET_TTL_SECONDS);
-        const char *ins[3] = { h, user_id, ttl };
-        PGresult *w = PQexecParams(c,
-            "INSERT INTO cel_password_resets(token, user_id, expires_at) "
-            "VALUES($1, $2::uuid, now() + ($3::int * interval '1 second'))",
-            3, NULL, ins, NULL, NULL, 0);
-        rc = (PQresultStatus(w) == PGRES_COMMAND_OK) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
-        PQclear(w);
+        char exp[24]; snprintf(exp, sizeof exp, "%ld", now_epoch() + RESET_TTL_SECONDS);
+        const char *ins[3] = { h, user_id, exp };
+        rc = q_exec(c, "INSERT INTO cel_password_resets(token, user_id, expires_at) "
+                       "VALUES(?1, ?2, ?3)", ins, 3) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
     }
 out:
-    db_connection_release(c);
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
     return rc;
 }
 
@@ -589,8 +601,11 @@ int cel_auth_perform_password_reset(const char *token, const char *new_password)
     char h[65];
     if (cel_token_hash(token, h, sizeof h) != 0) return CEL_AUTH_INVALID;
 
-    PGconn *c = db_connection_acquire();
-    if (!c) return CEL_AUTH_DBERR;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
     int rc = CEL_AUTH_DBERR;
     bool in_txn = false;
     char user_id[37] = {0};
@@ -598,43 +613,31 @@ int cel_auth_perform_password_reset(const char *token, const char *new_password)
     if (!tx(c, "BEGIN")) goto out;
     in_txn = true;
 
-    /* Atomically claim the token (unexpired + unused) — concurrent redeems can't
-     * both win because of the used_at IS NULL gate under the row lock. */
+    /* Atomically claim the token (unexpired + unused), returning its user. */
     {
-        const char *p[1] = { h };
-        PGresult *r = PQexecParams(c,
-            "UPDATE cel_password_resets SET used_at=now() "
-            "WHERE token=$1 AND used_at IS NULL AND expires_at > now() "
-            "RETURNING user_id::text",
-            1, NULL, p, NULL, NULL, 0);
-        if (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1)
-            snprintf(user_id, sizeof user_id, "%s", PQgetvalue(r, 0, 0));
-        PQclear(r);
-        if (!user_id[0]) { rc = CEL_AUTH_INVALID; goto out; }
+        char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", now_epoch());
+        const char *p[2] = { h, nowbuf };
+        int f = q_one_text(c,
+            "UPDATE cel_password_resets SET used_at=unixepoch() "
+            "WHERE token=?1 AND used_at IS NULL AND expires_at > ?2 "
+            "RETURNING user_id", p, 2, user_id, sizeof user_id);
+        if (f != 1 || !user_id[0]) { rc = CEL_AUTH_INVALID; goto out; }
     }
 
     /* Set the new secret on the password identity. */
     {
         const char *up[2] = { hash, user_id };
-        PGresult *r = PQexecParams(c,
-            "UPDATE cel_identities SET secret=$1 WHERE user_id=$2::uuid AND provider='password'",
-            2, NULL, up, NULL, NULL, 0);
-        bool ok = (PQresultStatus(r) == PGRES_COMMAND_OK && atoi(PQcmdTuples(r)) == 1);
-        PQclear(r);
-        if (!ok) { rc = CEL_AUTH_INVALID; goto out; }
+        if (!q_exec(c, "UPDATE cel_identities SET secret=?1 "
+                       "WHERE user_id=?2 AND provider='password'", up, 2) || sqlite3_changes(c) != 1) {
+            rc = CEL_AUTH_INVALID; goto out;
+        }
     }
 
-    /* Revoke existing sessions — a reset logs the user out everywhere. */
+    /* Revoke sessions + pending MFA challenges, clear lockout (full recovery, L-5). */
     {
         const char *us[1] = { user_id };
-        PQclear(PQexecParams(c, "DELETE FROM cel_sessions WHERE user_id=$1::uuid",
-                             1, NULL, us, NULL, NULL, 0));
-        /* L-5: a reset is a full account recovery. Also drop any pending MFA
-         * challenges (invalidate an in-flight two-step login) and clear an account
-         * lockout — otherwise a locked-out user who resets their password is still
-         * refused, defeating "reset your password to regain access". */
-        PQclear(PQexecParams(c, "DELETE FROM cel_mfa_challenges WHERE user_id=$1::uuid",
-                             1, NULL, us, NULL, NULL, 0));
+        q_exec(c, "DELETE FROM cel_sessions WHERE user_id=?1", us, 1);
+        q_exec(c, "DELETE FROM cel_mfa_challenges WHERE user_id=?1", us, 1);
         lockout_reset(c, user_id);
     }
 
@@ -644,7 +647,8 @@ int cel_auth_perform_password_reset(const char *token, const char *new_password)
     rc = CEL_AUTH_OK;
 out:
     if (in_txn) tx(c, "ROLLBACK");
-    db_connection_release(c);
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
     return rc;
 }
 
@@ -653,43 +657,42 @@ out:
 int cel_auth_create_email_verification(const char *user_id,
                                        char *out_token, size_t token_size,
                                        char *out_email, size_t email_size) {
-    PGconn *c = db_connection_acquire();
-    if (!c) return CEL_AUTH_DBERR;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
     int rc = CEL_AUTH_DBERR;
 
     /* Look up the account email + whether it's already verified. */
     bool already = false;
     {
         const char *p[1] = { user_id };
-        PGresult *r = PQexecParams(c,
-            "SELECT email, (email_verified_at IS NOT NULL) FROM cel_users WHERE id=$1::uuid",
-            1, NULL, p, NULL, NULL, 0);
-        bool ok = PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1;
-        if (ok) {
-            snprintf(out_email, email_size, "%s", PQgetvalue(r, 0, 0));
-            already = strcmp(PQgetvalue(r, 0, 1), "t") == 0;
+        sqlite3_stmt *st;
+        if (q_prep(c, "SELECT email, (email_verified_at IS NOT NULL) FROM cel_users WHERE id=?1",
+                   p, 1, &st) != SQLITE_OK) goto out;
+        int step = sqlite3_step(st);
+        if (step == SQLITE_ROW) {
+            snprintf(out_email, email_size, "%s", (const char *)sqlite3_column_text(st, 0));
+            already = sqlite3_column_int(st, 1) != 0;
         }
-        PQclear(r);
-        if (!ok) { rc = CEL_AUTH_INVALID; goto out; }
+        sqlite3_finalize(st);
+        if (step != SQLITE_ROW) { rc = CEL_AUTH_INVALID; goto out; }
     }
     if (already) { rc = CEL_AUTH_CONFLICT; goto out; }   /* nothing to do */
 
     if (cel_random_token_hex(out_token, token_size, TOKEN_BYTES) != 0) goto out;
     {
-        char h[65];
-        if (cel_token_hash(out_token, h, sizeof h) != 0) goto out;
-        char ttl[16];
-        snprintf(ttl, sizeof ttl, "%d", VERIFY_TTL_SECONDS);
-        const char *ins[3] = { h, user_id, ttl };
-        PGresult *w = PQexecParams(c,
-            "INSERT INTO cel_email_verifications(token, user_id, expires_at) "
-            "VALUES($1, $2::uuid, now() + ($3::int * interval '1 second'))",
-            3, NULL, ins, NULL, NULL, 0);
-        rc = (PQresultStatus(w) == PGRES_COMMAND_OK) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
-        PQclear(w);
+        char hbuf[65];
+        if (cel_token_hash(out_token, hbuf, sizeof hbuf) != 0) goto out;
+        char exp[24]; snprintf(exp, sizeof exp, "%ld", now_epoch() + VERIFY_TTL_SECONDS);
+        const char *ins[3] = { hbuf, user_id, exp };
+        rc = q_exec(c, "INSERT INTO cel_email_verifications(token, user_id, expires_at) "
+                       "VALUES(?1, ?2, ?3)", ins, 3) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
     }
 out:
-    db_connection_release(c);
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
     return rc;
 }
 
@@ -697,8 +700,11 @@ int cel_auth_verify_email(const char *token) {
     char h[65];
     if (cel_token_hash(token, h, sizeof h) != 0) return CEL_AUTH_INVALID;
 
-    PGconn *c = db_connection_acquire();
-    if (!c) return CEL_AUTH_DBERR;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
     int rc = CEL_AUTH_DBERR;
     bool in_txn = false;
     char user_id[37] = {0};
@@ -708,28 +714,20 @@ int cel_auth_verify_email(const char *token) {
 
     /* Atomically claim the token (unexpired + unused). */
     {
-        const char *p[1] = { h };
-        PGresult *r = PQexecParams(c,
-            "UPDATE cel_email_verifications SET used_at=now() "
-            "WHERE token=$1 AND used_at IS NULL AND expires_at > now() "
-            "RETURNING user_id::text",
-            1, NULL, p, NULL, NULL, 0);
-        if (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1)
-            snprintf(user_id, sizeof user_id, "%s", PQgetvalue(r, 0, 0));
-        PQclear(r);
-        if (!user_id[0]) { rc = CEL_AUTH_INVALID; goto out; }
+        char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", now_epoch());
+        const char *p[2] = { h, nowbuf };
+        int f = q_one_text(c,
+            "UPDATE cel_email_verifications SET used_at=unixepoch() "
+            "WHERE token=?1 AND used_at IS NULL AND expires_at > ?2 "
+            "RETURNING user_id", p, 2, user_id, sizeof user_id);
+        if (f != 1 || !user_id[0]) { rc = CEL_AUTH_INVALID; goto out; }
     }
 
     /* Mark the email verified (idempotent: keep the first verification time). */
     {
         const char *up[1] = { user_id };
-        PGresult *r = PQexecParams(c,
-            "UPDATE cel_users SET email_verified_at = COALESCE(email_verified_at, now()) "
-            "WHERE id=$1::uuid",
-            1, NULL, up, NULL, NULL, 0);
-        bool ok = PQresultStatus(r) == PGRES_COMMAND_OK;
-        PQclear(r);
-        if (!ok) goto out;
+        if (!q_exec(c, "UPDATE cel_users SET email_verified_at=COALESCE(email_verified_at, unixepoch()) "
+                       "WHERE id=?1", up, 1)) goto out;
     }
 
     if (!tx(c, "COMMIT")) goto out;
@@ -738,7 +736,8 @@ int cel_auth_verify_email(const char *token) {
     rc = CEL_AUTH_OK;
 out:
     if (in_txn) tx(c, "ROLLBACK");
-    db_connection_release(c);
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
     return rc;
 }
 
@@ -746,8 +745,11 @@ int cel_auth_seed_user(const char *email, const char *password, const char *role
     char hash[256];
     if (cel_password_hash(password, hash, sizeof hash) != 0) return -1;
 
-    PGconn *c = db_connection_acquire();
-    if (!c) return -1;
+    app_db_t *app = app_db_current();
+    if (!app) return -1;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return -1; }
     int rc = -1;
     bool in_txn = false;
     char uid[37] = {0};
@@ -758,31 +760,25 @@ int cel_auth_seed_user(const char *email, const char *password, const char *role
     /* Upsert the account (role/active refreshed on re-seed); RETURNING gives the
      * id whether the row was inserted or updated. */
     {
-        const char *p[2] = { email, role };
-        PGresult *r = PQexecParams(c,
-            "INSERT INTO cel_users(email, role) VALUES($1, $2) "
-            "ON CONFLICT(email) DO UPDATE SET role=excluded.role, is_active=true "
-            "RETURNING id::text",
-            2, NULL, p, NULL, NULL, 0);
-        bool ok = (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1);
-        if (ok) snprintf(uid, sizeof uid, "%s", PQgetvalue(r, 0, 0));
-        else LOG_ERROR("seed user failed: %s", PQerrorMessage(c));
-        PQclear(r);
-        if (!ok) goto out;
+        char nid[37]; cel_uuid_v4(nid, sizeof nid);
+        const char *p[3] = { nid, email, role };
+        int f = q_one_text(c,
+            "INSERT INTO cel_users(id, email, role) VALUES(?1, ?2, ?3) "
+            "ON CONFLICT(email) DO UPDATE SET role=excluded.role, is_active=1 "
+            "RETURNING id", p, 3, uid, sizeof uid);
+        if (f != 1 || !uid[0]) { LOG_ERROR("seed user failed: %s", sqlite3_errmsg(c)); goto out; }
     }
 
     /* Upsert the password identity (re-seed updates the stored hash). */
     {
-        const char *p[3] = { uid, email, hash };
-        PGresult *r = PQexecParams(c,
-            "INSERT INTO cel_identities(user_id, provider, provider_uid, secret) "
-            "VALUES($1::uuid, 'password', $2, $3) "
-            "ON CONFLICT(provider, provider_uid) DO UPDATE SET secret=excluded.secret",
-            3, NULL, p, NULL, NULL, 0);
-        bool ok = PQresultStatus(r) == PGRES_COMMAND_OK;
-        if (!ok) LOG_ERROR("seed identity failed: %s", PQerrorMessage(c));
-        PQclear(r);
-        if (!ok) goto out;
+        char iid[37]; cel_uuid_v4(iid, sizeof iid);
+        const char *p[4] = { iid, uid, email, hash };
+        if (!q_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid, secret) "
+                       "VALUES(?1, ?2, 'password', ?3, ?4) "
+                       "ON CONFLICT(provider, provider_uid) DO UPDATE SET secret=excluded.secret", p, 4)) {
+            LOG_ERROR("seed identity failed: %s", sqlite3_errmsg(c));
+            goto out;
+        }
     }
 
     if (!tx(c, "COMMIT")) goto out;
@@ -790,7 +786,8 @@ int cel_auth_seed_user(const char *email, const char *password, const char *role
     rc = 0;
 out:
     if (in_txn) tx(c, "ROLLBACK");
-    db_connection_release(c);
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
     return rc;
 }
 

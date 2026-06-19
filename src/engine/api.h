@@ -28,11 +28,6 @@ cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req);
 cel_api_result_t cel_api_get(const cel_identity_t *who, const cJSON *req);
 cel_api_result_t cel_api_schema(const cel_identity_t *who);
 
-/* Set the app (its SQLite database) the data ops execute against. Interim:
- * called once at startup with the single default app; request routing will
- * resolve this per-request to the addressed bundle in a later step. */
-void cel_api_set_app(app_db_t *db);
-
 /* login is public (no identity required). With TOTP 2FA enabled, a user who has a
  * confirmed enrollment gets 200 + {status:"mfa_required", challenge} instead of a
  * token; the client completes login by POSTing the challenge + code to mfa_verify. */

@@ -44,6 +44,12 @@ int  app_db_global_init(void);
 /* Close every open app and free the registry. Safe to call once at shutdown. */
 void app_db_global_shutdown(void);
 
+/* The process's "current" app — the interim single-app handle shared by the data
+ * API and the auth/identity layer until request routing resolves a bundle per
+ * request. Set once at startup. app_db_current() returns NULL before it's set. */
+void      app_db_set_current(app_db_t *db);
+app_db_t *app_db_current(void);
+
 /* Get (or lazily create) the app whose database file is `db_path`. The file is
  * not opened until the first connection is acquired. The returned pointer is
  * owned by the registry and stays valid until shutdown or LRU eviction (an app

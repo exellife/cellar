@@ -37,12 +37,30 @@ static struct {
     bool            inited;
 } g_reg = { .mtx = PTHREAD_MUTEX_INITIALIZER };
 
+/* The interim single "current" app (see header). Guarded by the registry mutex. */
+static app_db_t *g_current = NULL;
+
 int app_db_global_init(void)
 {
     pthread_mutex_lock(&g_reg.mtx);
     g_reg.inited = true;
     pthread_mutex_unlock(&g_reg.mtx);
     return 0;
+}
+
+void app_db_set_current(app_db_t *db)
+{
+    pthread_mutex_lock(&g_reg.mtx);
+    g_current = db;
+    pthread_mutex_unlock(&g_reg.mtx);
+}
+
+app_db_t *app_db_current(void)
+{
+    pthread_mutex_lock(&g_reg.mtx);
+    app_db_t *d = g_current;
+    pthread_mutex_unlock(&g_reg.mtx);
+    return d;
 }
 
 /* Open and configure one connection for `path`. Caller holds no locks that the

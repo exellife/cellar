@@ -15,6 +15,7 @@
 #include "core/db_connection.h"
 #include "core/password.h"
 #include "core/auth.h"
+#include "core/auth_schema.h"
 #include "core/session_cache.h"
 #include "core/rate_limit.h"
 #include "core/metrics.h"
@@ -616,42 +617,48 @@ int main(int argc, char **argv) {
     cel_http_set_max_body((size_t)env_int("CEL_MAX_BODY", 1024 * 1024));
 
     cel_catalog_t *catalog = NULL;
+    /* The Postgres pool is now only needed by the not-yet-converted modules
+     * (mfa.c when MFA is enabled, migrate.c CLIs). The data API and auth run on
+     * SQLite below, so a missing PG no longer disables auth — just MFA/migrate. */
     bool db_ready = (init_db() == 0);
     if (db_ready) {
-        LOG_INFO("database pool ready");
+        LOG_INFO("database pool ready (mfa/migrate — transitional)");
         const char *am = getenv("CEL_AUTO_MIGRATE");
-        bool auto_migrate = am && (*am == '1' || *am == 't' || *am == 'T' || *am == 'y' || *am == 'Y');
-        /* Seeding writes to cel_users, which migration 001 creates — so if seeding
-         * is requested we must migrate first (else the seed silently fails on a
-         * fresh DB). Auto-migrate also covers the no-seed case. (Postgres auth store
-         * — transitional, until auth moves into each app's SQLite bundle.) */
-        bool want_seed = getenv("CEL_SEED_ADMIN") || getenv("CEL_SEED_USERS");
-        if (auto_migrate || want_seed) {
+        if (am && (*am == '1' || *am == 't' || *am == 'T' || *am == 'y' || *am == 'Y')) {
             int applied = 0;
             if (cel_migrate_run(0, 0, &applied) == 0) LOG_INFO("migrate: %d applied on boot", applied);
-            else LOG_ERROR("boot migrate failed — seeding/serving may not work");
+            else LOG_ERROR("boot migrate failed");
         }
-        maybe_seed_admin();
-        maybe_seed_users();
     } else {
-        LOG_WARN("database unavailable — auth opcodes will return errors");
+        LOG_WARN("Postgres pool unavailable — MFA/migrate CLIs degraded (auth runs on SQLite)");
     }
 
     cel_policy_init(getenv("CEL_POLICY_FILE"));   /* NULL -> built-in role defaults */
 
-    /* Open the app's SQLite database — the per-app data engine (Step 5). Interim:
-     * one global app from CEL_DATA_DB until request routing resolves a bundle per
-     * request. Its introspected schema is the active catalog the data API serves;
-     * auth still runs on the Postgres pool above (transitional hybrid). */
+    /* Open the app's SQLite database — the per-app data + identity engine (Step 5).
+     * Interim: one global app from CEL_DATA_DB until request routing resolves a
+     * bundle per request. We apply the auth "base migration" (the cel_* identity
+     * tables), introspect the user schema as the active catalog the data API
+     * serves, and make this the process's current app — both api.c and auth.c run
+     * every query against it. */
     app_db_global_init();
     const char *data_db = env_str("CEL_DATA_DB", "cellar.db");
     app_db_t *app = app_db_get(data_db);
     if (app) {
         sqlite3 *sc = app_db_conn_acquire(app);
-        if (sc) { catalog = cel_catalog_build_sqlite(sc); app_db_conn_release(app, sc); }
+        if (sc) {
+            cel_auth_schema_apply(sc);                 /* per-app identity tables (idempotent) */
+            catalog = cel_catalog_build_sqlite(sc);    /* user tables only (cel_* excluded) */
+            app_db_conn_release(app, sc);
+        }
         cel_catalog_set_active(catalog);
-        cel_api_set_app(app);
+        app_db_set_current(app);
         LOG_INFO("app database: %s (%d table(s))", data_db, catalog ? catalog->ntables : 0);
+
+        /* Seed the admin / dev users into the app's identity tables now that the
+         * app is current (auth writes go here). */
+        maybe_seed_admin();
+        maybe_seed_users();
     } else {
         LOG_ERROR("could not open app database '%s' — data API will be unavailable", data_db);
     }

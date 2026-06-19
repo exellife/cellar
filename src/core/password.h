@@ -25,4 +25,9 @@ int cel_random_token_hex(char *out, size_t out_size, size_t nbytes);
  * Returns 0 on success, -1 on error. */
 int cel_token_hash(const char *token, char *out, size_t out_size);
 
+/* Write a random v4 UUID (36 chars + NUL) into `out` (>= 37 bytes). SQLite has
+ * no gen_random_uuid(), so primary keys for the auth tables are minted here.
+ * Returns 0 on success, -1 on error. */
+int cel_uuid_v4(char *out, size_t out_size);
+
 #endif /* CEL_PASSWORD_H */

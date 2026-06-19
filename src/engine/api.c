@@ -16,11 +16,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The app this process serves. Interim: one global app, set at startup by main,
- * until request routing resolves Host/path → bundle (a later step). Every data
- * query runs against this app's SQLite file. */
-static app_db_t *g_app = NULL;
-void cel_api_set_app(app_db_t *db) { g_app = db; }
+/* The app every data query runs against is the process's current app
+ * (app_db_current(), set at startup). Interim: one global app until request
+ * routing resolves Host/path → bundle per request. */
 
 #define SESSION_TTL_SECONDS (24 * 3600)
 #define MIN_PASSWORD_LEN 8
@@ -88,12 +86,13 @@ static const char *sqlite_err_message(int rc) {
  * write is reported, not silently treated as an empty result. */
 static cJSON *run_rows(const cel_query_t *q, const cel_table_t *t, int is_write,
                        int *http, char *errmsg, size_t errlen) {
-    if (!g_app) { *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable"); return NULL; }
+    app_db_t *app = app_db_current();
+    if (!app) { *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable"); return NULL; }
 
-    if (is_write) app_db_write_lock(g_app);
-    sqlite3 *c = app_db_conn_acquire(g_app);
+    if (is_write) app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
     if (!c) {
-        if (is_write) app_db_write_unlock(g_app);
+        if (is_write) app_db_write_unlock(app);
         *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable");
         return NULL;
     }
@@ -103,8 +102,8 @@ static cJSON *run_rows(const cel_query_t *q, const cel_table_t *t, int is_write,
     if (rc != SQLITE_OK) {
         LOG_ERROR("query prepare failed [%d]: %s | sql=%s", rc, sqlite3_errmsg(c), q->sql);
         *http = 500; if (errmsg) snprintf(errmsg, errlen, "query failed");
-        app_db_conn_release(g_app, c);
-        if (is_write) app_db_write_unlock(g_app);
+        app_db_conn_release(app, c);
+        if (is_write) app_db_write_unlock(app);
         return NULL;
     }
     /* params are pushed in order with no reuse → bind params[i] to ?(i+1) */
@@ -124,8 +123,8 @@ static cJSON *run_rows(const cel_query_t *q, const cel_table_t *t, int is_write,
         if (rows) { cJSON_Delete(rows); rows = NULL; }
     }
 
-    app_db_conn_release(g_app, c);
-    if (is_write) app_db_write_unlock(g_app);
+    app_db_conn_release(app, c);
+    if (is_write) app_db_write_unlock(app);
     return rows;
 }
 
@@ -991,8 +990,9 @@ cel_api_result_t cel_api_create_user(const cel_identity_t *who, const cJSON *req
  * they are safe to quote; the values are bound. */
 static bool rt_membership(const char *via_table, const char *via_ref, const char *via_user,
                           const char *key_val, const char *user_id) {
-    if (!g_app) return false;
-    sqlite3 *c = app_db_conn_acquire(g_app);
+    app_db_t *app = app_db_current();
+    if (!app) return false;
+    sqlite3 *c = app_db_conn_acquire(app);
     if (!c) return false;
     char sql[512];
     snprintf(sql, sizeof sql,
@@ -1006,7 +1006,7 @@ static bool rt_membership(const char *via_table, const char *via_ref, const char
         ok = (sqlite3_step(st) == SQLITE_ROW);
     }
     sqlite3_finalize(st);
-    app_db_conn_release(g_app, c);
+    app_db_conn_release(app, c);
     return ok;
 }
 

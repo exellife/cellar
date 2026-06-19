@@ -241,6 +241,17 @@ if(CELLAR_BUILD_TESTS)
     target_link_libraries(query_exec_sqlite_test SQLite::SQLite3 cjson logger)
     add_test(NAME query_exec_sqlite COMMAND query_exec_sqlite_test)
 
+    # The identity layer on per-app SQLite (Phase 1 step 5b): register / login /
+    # verify / logout / password-reset / create-user / seed against a throwaway
+    # SQLite app. MFA stubbed off in the test, so no Postgres. libpq-free.
+    add_executable(auth_sqlite_test tests/auth_sqlite_test.c
+        src/core/auth.c src/core/auth_schema.c src/core/app_db.c
+        src/core/password.c src/core/session_cache.c src/core/metrics.c)
+    target_include_directories(auth_sqlite_test PRIVATE src/core src)
+    target_link_libraries(auth_sqlite_test SQLite::SQLite3 logger Threads::Threads
+        ${SODIUM_LIB} ${UUID_LIB})
+    add_test(NAME auth_sqlite COMMAND auth_sqlite_test)
+
     # DB-free unit test for the declarative-roles authorization engine (#50):
     # built-in defaults stay byte-for-byte, and a "_roles" config bundle defines
     # a custom role vocabulary. Links policy.c (auth stubbed in the test).

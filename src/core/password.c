@@ -2,6 +2,7 @@
 
 #include <sodium.h>
 #include <string.h>
+#include <uuid/uuid.h>
 
 int cel_crypto_init(void) {
     return sodium_init() < 0 ? -1 : 0;
@@ -36,5 +37,13 @@ int cel_random_token_hex(char *out, size_t out_size, size_t nbytes) {
     if (out_size < nbytes * 2 + 1) return -1;
     randombytes_buf(buf, nbytes);
     sodium_bin2hex(out, out_size, buf, nbytes);
+    return 0;
+}
+
+int cel_uuid_v4(char *out, size_t out_size) {
+    if (out_size < 37) return -1;
+    uuid_t u;
+    uuid_generate_random(u);          /* libuuid; CSPRNG-backed */
+    uuid_unparse_lower(u, out);       /* 36 chars + NUL */
     return 0;
 }
