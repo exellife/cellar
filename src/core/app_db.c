@@ -1,0 +1,238 @@
+/* ============================================================================
+ * cellar — per-app SQLite handle layer (see app_db.h for the contract)
+ * ============================================================================ */
+#include "app_db.h"
+#include "logger.h"
+
+#include <pthread.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* ---- one app: its file, a pool of WAL handles, and a writer lock ---------- */
+struct app_db {
+    char     path[4096];
+
+    /* Connection pool. `conns[i]` is opened lazily; `in_use[i]` marks a borrow.
+     * Guarded by pool_mtx; pool_cv wakes a waiter when a connection is freed. */
+    sqlite3        *conns[CEL_APP_CONNS_PER_APP];
+    bool            in_use[CEL_APP_CONNS_PER_APP];
+    int             nconns;       /* how many of the slots have been opened    */
+    int             checked_out;  /* how many are borrowed right now           */
+    pthread_mutex_t pool_mtx;
+    pthread_cond_t  pool_cv;
+
+    /* Per-app writer serialization (design §6): one writer per file at a time. */
+    pthread_mutex_t write_mtx;
+
+    uint64_t last_used;           /* LRU tick, bumped on app_db_get            */
+};
+
+/* ---- global registry: a bounded, LRU-evicted set of open apps ------------- */
+static struct {
+    app_db_t       *apps[CEL_APP_MAX_OPEN];
+    int             count;
+    uint64_t        tick;
+    pthread_mutex_t mtx;
+    bool            inited;
+} g_reg = { .mtx = PTHREAD_MUTEX_INITIALIZER };
+
+int app_db_global_init(void)
+{
+    pthread_mutex_lock(&g_reg.mtx);
+    g_reg.inited = true;
+    pthread_mutex_unlock(&g_reg.mtx);
+    return 0;
+}
+
+/* Open and configure one connection for `path`. Caller holds no locks that the
+ * PRAGMAs need. Returns an open handle or NULL (after logging). */
+static sqlite3 *open_conn(const char *path)
+{
+    sqlite3 *c = NULL;
+    /* NOMUTEX: each handle is used by one thread at a time (the pool guarantees
+     * it), so SQLite skips its internal per-call mutex. CREATE so a brand-new
+     * app's data.db is materialized on first write. */
+    int rc = sqlite3_open_v2(path, &c,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX,
+                             NULL);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR("app_db: open %s failed: %s", path, c ? sqlite3_errmsg(c) : sqlite3_errstr(rc));
+        sqlite3_close(c);
+        return NULL;
+    }
+
+    /* Block (rather than erroring) for up to 5s if another connection holds the
+     * write lock — paired with per-app write serialization this is just slack. */
+    sqlite3_busy_timeout(c, 5000);
+
+    /* WAL: concurrent readers + a single writer; NORMAL sync is WAL-durable
+     * enough (a crash can lose the last commit, not corrupt the file); enforce
+     * foreign keys (off by default in SQLite). */
+    char *err = NULL;
+    static const char *pragmas =
+        "PRAGMA journal_mode=WAL;"
+        "PRAGMA synchronous=NORMAL;"
+        "PRAGMA foreign_keys=ON;"
+        "PRAGMA busy_timeout=5000;";
+    if (sqlite3_exec(c, pragmas, NULL, NULL, &err) != SQLITE_OK) {
+        LOG_ERROR("app_db: PRAGMA setup on %s failed: %s", path, err ? err : "?");
+        sqlite3_free(err);
+        sqlite3_close(c);
+        return NULL;
+    }
+    return c;
+}
+
+static app_db_t *app_new(const char *path)
+{
+    app_db_t *db = calloc(1, sizeof *db);
+    if (!db) return NULL;
+    snprintf(db->path, sizeof db->path, "%s", path);
+    pthread_mutex_init(&db->pool_mtx, NULL);
+    pthread_cond_init(&db->pool_cv, NULL);
+    pthread_mutex_init(&db->write_mtx, NULL);
+    return db;
+}
+
+static void app_free(app_db_t *db)
+{
+    for (int i = 0; i < db->nconns; i++)
+        if (db->conns[i]) sqlite3_close(db->conns[i]);
+    pthread_mutex_destroy(&db->pool_mtx);
+    pthread_cond_destroy(&db->pool_cv);
+    pthread_mutex_destroy(&db->write_mtx);
+    free(db);
+}
+
+/* Caller holds g_reg.mtx. Drop the least-recently-used app that has no borrowed
+ * connections. Returns true if one was evicted. */
+static bool evict_idle_locked(void)
+{
+    int best = -1;
+    uint64_t best_tick = UINT64_MAX;
+    for (int i = 0; i < g_reg.count; i++) {
+        app_db_t *a = g_reg.apps[i];
+        pthread_mutex_lock(&a->pool_mtx);
+        bool idle = (a->checked_out == 0);
+        pthread_mutex_unlock(&a->pool_mtx);
+        if (idle && a->last_used < best_tick) { best_tick = a->last_used; best = i; }
+    }
+    if (best < 0) return false;
+
+    app_db_t *victim = g_reg.apps[best];
+    g_reg.apps[best] = g_reg.apps[--g_reg.count];   /* swap-remove */
+    LOG_DEBUG("app_db: evicting idle app %s", victim->path);
+    app_free(victim);
+    return true;
+}
+
+app_db_t *app_db_get(const char *db_path)
+{
+    pthread_mutex_lock(&g_reg.mtx);
+
+    for (int i = 0; i < g_reg.count; i++) {
+        if (strcmp(g_reg.apps[i]->path, db_path) == 0) {
+            g_reg.apps[i]->last_used = ++g_reg.tick;
+            app_db_t *hit = g_reg.apps[i];
+            pthread_mutex_unlock(&g_reg.mtx);
+            return hit;
+        }
+    }
+
+    if (g_reg.count >= CEL_APP_MAX_OPEN && !evict_idle_locked()) {
+        LOG_WARN("app_db: registry full (%d apps, all in use); cannot open %s",
+                 g_reg.count, db_path);
+        pthread_mutex_unlock(&g_reg.mtx);
+        return NULL;
+    }
+
+    app_db_t *db = app_new(db_path);
+    if (!db) { pthread_mutex_unlock(&g_reg.mtx); return NULL; }
+    db->last_used = ++g_reg.tick;
+    g_reg.apps[g_reg.count++] = db;
+    pthread_mutex_unlock(&g_reg.mtx);
+    return db;
+}
+
+sqlite3 *app_db_conn_acquire(app_db_t *db)
+{
+    pthread_mutex_lock(&db->pool_mtx);
+    for (;;) {
+        /* 1. an already-open, free handle */
+        for (int i = 0; i < db->nconns; i++) {
+            if (!db->in_use[i]) {
+                db->in_use[i] = true;
+                db->checked_out++;
+                sqlite3 *c = db->conns[i];
+                pthread_mutex_unlock(&db->pool_mtx);
+                return c;
+            }
+        }
+        /* 2. room to open a new one */
+        if (db->nconns < CEL_APP_CONNS_PER_APP) {
+            int slot = db->nconns;
+            sqlite3 *c = open_conn(db->path);   /* under pool_mtx: simple + race-free */
+            if (!c) { pthread_mutex_unlock(&db->pool_mtx); return NULL; }
+            db->conns[slot] = c;
+            db->in_use[slot] = true;
+            db->nconns++;
+            db->checked_out++;
+            pthread_mutex_unlock(&db->pool_mtx);
+            return c;
+        }
+        /* 3. pool exhausted — wait for a release */
+        pthread_cond_wait(&db->pool_cv, &db->pool_mtx);
+    }
+}
+
+void app_db_conn_release(app_db_t *db, sqlite3 *conn)
+{
+    pthread_mutex_lock(&db->pool_mtx);
+    for (int i = 0; i < db->nconns; i++) {
+        if (db->conns[i] == conn) {
+            db->in_use[i] = false;
+            db->checked_out--;
+            pthread_cond_signal(&db->pool_cv);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&db->pool_mtx);
+}
+
+void app_db_write_lock(app_db_t *db)   { pthread_mutex_lock(&db->write_mtx); }
+void app_db_write_unlock(app_db_t *db) { pthread_mutex_unlock(&db->write_mtx); }
+
+int app_db_exec(app_db_t *db, const char *sql, char **errmsg)
+{
+    app_db_write_lock(db);
+    sqlite3 *c = app_db_conn_acquire(db);
+    if (!c) {
+        app_db_write_unlock(db);
+        if (errmsg) *errmsg = NULL;
+        return SQLITE_CANTOPEN;
+    }
+    int rc = sqlite3_exec(c, sql, NULL, NULL, errmsg);
+    app_db_conn_release(db, c);
+    app_db_write_unlock(db);
+    return rc;
+}
+
+const char *app_db_path(const app_db_t *db) { return db->path; }
+
+int app_db_open_count(void)
+{
+    pthread_mutex_lock(&g_reg.mtx);
+    int n = g_reg.count;
+    pthread_mutex_unlock(&g_reg.mtx);
+    return n;
+}
+
+void app_db_global_shutdown(void)
+{
+    pthread_mutex_lock(&g_reg.mtx);
+    for (int i = 0; i < g_reg.count; i++) app_free(g_reg.apps[i]);
+    g_reg.count = 0;
+    g_reg.inited = false;
+    pthread_mutex_unlock(&g_reg.mtx);
+}

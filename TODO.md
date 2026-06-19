@@ -41,10 +41,21 @@ pgforge and builds *as* pgforge — the rename and the engine pivot are the work
 Reuse: portico (transport), `opcode_dispatcher`, `logger`, the generic-opcode CRUD
 pattern, and the policy-engine concept. Rewrite the DB layer:
 
-- [ ] **`db_connection.c` → per-app SQLite layer.** Open-by-file, an LRU cache of
+- [~] **`db_connection.c` → per-app SQLite layer.** Open-by-file, an LRU cache of
       `sqlite3*` handles, WAL mode, and a **per-app write queue** so one write-heavy app
       can't starve others (SQLite is single-writer per file; never touch the event
       thread — every call runs on the worker pool).
+      **Foundation done:** new module `src/core/app_db.{c,h}` — open-by-file (lazy, WAL +
+      `synchronous=NORMAL` + `foreign_keys=ON` + busy_timeout), per-app pooled handles
+      (`NOMUTEX`, concurrent readers), per-app `write_mtx` serialization, bounded LRU
+      registry of open apps (FD ceiling), file isolation. Unit-tested (`tests/app_db_test.c`,
+      ctest `app_db`: 14 checks incl. concurrent writers/readers). **Still to do:** retire
+      the libpq `db_connection.c` once the consumers (catalog, query_builder, api, auth,
+      mfa, migrate, row_json) move onto `app_db`; wire it into the `opcode_dispatcher`
+      worker pool; pair with the per-app `lua_State` (Phase 2).
+      _SQLite sourcing:_ built against system libsqlite3 (3.45.1; dev files staged from the
+      Ubuntu `.deb` into gitignored `build-deps/sqlite`, since sqlite.org is unreachable
+      here and there's no sudo). CMake discovers it via `-DSQLITE3_ROOT` / `libsqlite3-dev`.
 - [ ] **`schema_catalog.c` → PRAGMA introspection.** `sqlite_master` +
       `PRAGMA table_info / foreign_key_list / index_list` instead of `information_schema`;
       the catalog becomes **per-app** (replaces today's single global `g_active`).
@@ -88,6 +99,9 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
 - [ ] **Per-app routing** — subdomain-per-app (SNI forward each) vs path prefix.
 - [ ] **Vendor SQLite:** add the amalgamation (`sqlite3.c`, public domain) under
       `third_party/`; decide `STRICT` tables + CHECK constraints for type fidelity.
+      _Status:_ deferred — sqlite.org is unreachable in this env, so v1 links **system
+      libsqlite3** (`libsqlite3-dev`, or staged `build-deps/sqlite`). The C code is
+      identical either way; swap to a committed amalgamation when the network allows.
 - [ ] **Naming convention** for the rebranded symbols (`cel_*` / `CEL_*`?).
 
 ---

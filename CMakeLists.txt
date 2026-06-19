@@ -47,6 +47,30 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
+# SQLite — the per-app data engine (Phase 1: Postgres → file-per-app SQLite).
+# Uses system libsqlite3-dev when installed; pass -DSQLITE3_ROOT=<prefix> to
+# point at a local/staged copy (headers in <prefix>/include, lib in
+# <prefix>/lib) — the repo defaults to build-deps/sqlite for that. Vendoring the
+# amalgamation under third_party/ is still an open decision (design §14).
+# ---------------------------------------------------------------------------
+find_path(SQLITE3_INCLUDE_DIR sqlite3.h
+    HINTS ${SQLITE3_ROOT}/include
+    PATHS ${CMAKE_SOURCE_DIR}/build-deps/sqlite/include)
+find_library(SQLITE3_LIBRARY NAMES sqlite3
+    HINTS ${SQLITE3_ROOT}/lib
+    PATHS ${CMAKE_SOURCE_DIR}/build-deps/sqlite/lib)
+if(NOT SQLITE3_INCLUDE_DIR OR NOT SQLITE3_LIBRARY)
+    message(FATAL_ERROR "SQLite not found. Install libsqlite3-dev, or pass "
+            "-DSQLITE3_ROOT=<prefix> (headers in <prefix>/include, lib in <prefix>/lib).")
+endif()
+add_library(SQLite::SQLite3 UNKNOWN IMPORTED)
+set_target_properties(SQLite::SQLite3 PROPERTIES
+    IMPORTED_LOCATION "${SQLITE3_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${SQLITE3_INCLUDE_DIR}"
+    INTERFACE_LINK_LIBRARIES "${CMAKE_DL_LIBS};m")   # static libsqlite3.a needs dl + libm
+message(STATUS "cellar: SQLite -> ${SQLITE3_LIBRARY} (include ${SQLITE3_INCLUDE_DIR})")
+
+# ---------------------------------------------------------------------------
 # portico — the HTTP/1.1 + WebSocket transport library (sibling project).
 # Provides the WebSocket core (replaces the old vendored lib/wslib) plus the
 # HTTP layer used by the REST front door. Override PORTICO_DIR to relocate.
@@ -146,6 +170,7 @@ target_link_libraries(cellar PRIVATE
     opcode_dispatcher
     logger
     cjson
+    SQLite::SQLite3
     PostgreSQL::PostgreSQL
     OpenSSL::Crypto
     CURL::libcurl
@@ -177,6 +202,15 @@ if(CELLAR_BUILD_TESTS)
     target_include_directories(query_builder_test PRIVATE src/engine)
     target_link_libraries(query_builder_test cjson)
     add_test(NAME query_builder COMMAND query_builder_test)
+
+    # DB-free unit test for the per-app SQLite handle layer (Phase 1 foundation):
+    # open-by-file, the connection pool, per-app write serialization, concurrent
+    # readers, the get-by-path cache, and isolation between app files. Creates
+    # throwaway SQLite files under /tmp; needs no Postgres.
+    add_executable(app_db_test tests/app_db_test.c src/core/app_db.c)
+    target_include_directories(app_db_test PRIVATE src/core)
+    target_link_libraries(app_db_test SQLite::SQLite3 logger Threads::Threads)
+    add_test(NAME app_db COMMAND app_db_test)
 
     # DB-free unit test for the declarative-roles authorization engine (#50):
     # built-in defaults stay byte-for-byte, and a "_roles" config bundle defines
