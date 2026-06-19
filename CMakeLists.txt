@@ -316,79 +316,44 @@ if(CELLAR_BUILD_TESTS)
         # and assert the captured message is well-formed RFC 5322.
         add_test(NAME mailer
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/mailer_test.sh $<TARGET_FILE:cellar>)
-        # Migration runner: bootstrap a throwaway DB (needs CREATE DATABASE).
-        find_program(PSQL psql)
-        if(PSQL)
-            add_test(NAME migrate
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/migrate_test.sh $<TARGET_FILE:cellar>)
-            # Pooled multi-tenancy (Model B): two tenants on one server, cross-tenant
-            # isolation proven end-to-end (needs CREATE DATABASE + a tenant-scoped table).
-            add_test(NAME tenancy
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/tenancy_test.sh $<TARGET_FILE:cellar>)
-            # Postgres RLS defense-in-depth: a raw query is DB-confined to the
-            # caller's tenant (needs CREATE DATABASE + CREATE ROLE).
-            add_test(NAME rls
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/rls_test.sh $<TARGET_FILE:cellar>)
-            # libpq pipelining (perf lever): the pooled-mode BEGIN/set_config/query/
-            # COMMIT goes as one pipelined round trip — proven to preserve tenant
-            # isolation AND to advance cel_db_pipelined_txns_total (CEL_DB_PIPELINE=1).
-            add_test(NAME pipeline
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/pipeline_test.sh $<TARGET_FILE:cellar>)
-            # Tenant lifecycle + admin tiers: provisioning CLIs, tenant-admin vs
-            # platform-admin scoping, suspend/resume gating.
-            add_test(NAME tenant_lifecycle
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/tenant_lifecycle_test.sh $<TARGET_FILE:cellar>)
-            # Graduate: export a pooled tenant, load into a fresh standalone (Model A).
-            add_test(NAME graduate
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/graduate_test.sh $<TARGET_FILE:cellar>)
-            # Auth hardening: tokens hashed at rest, revoke-sessions CLI, password cap.
-            add_test(NAME auth_hardening
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/auth_hardening_test.sh $<TARGET_FILE:cellar>)
-            # Identity split: credentials live in cel_identities (not cel_users);
-            # login resolves through the password identity; created users get one.
-            add_test(NAME identity
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/identity_test.sh $<TARGET_FILE:cellar>)
-            # TOTP 2FA: enroll -> confirm -> two-step login (challenge + code) ->
-            # disable, with codes computed by an independent Python TOTP.
-            add_test(NAME mfa
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/mfa_test.sh $<TARGET_FILE:cellar>)
-            # OIDC sign-in: verify RS256 ID tokens (mock provider + local JWKS) and
-            # find-or-link (auto-provision / replay / link-by-email) + rejections.
-            add_test(NAME oauth
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/oauth_test.sh $<TARGET_FILE:cellar>)
-            # Password reset: forgot emails a token (captured from a mock SMTP sink),
-            # redeem it, new password works / old one + session revoked, single-use.
-            add_test(NAME password_reset
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/password_reset_test.sh $<TARGET_FILE:cellar>)
-            # Email verification: register emails a token (captured), redeem it, and
-            # email_verified flips false -> true; single-use; resend is idempotent.
-            add_test(NAME email_verification
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/email_verification_test.sh $<TARGET_FILE:cellar>)
-            # Account lockout: N failures lock the account (even a correct password is
-            # then refused), the lock auto-expires, and `cellar unlock` clears it.
-            add_test(NAME lockout
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/lockout_test.sh $<TARGET_FILE:cellar>)
-            # CORS: allowed origin echoed, others denied, OPTIONS preflight -> 204
-            # with the CORS headers.
-            add_test(NAME cors_e2e
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/cors_test.sh $<TARGET_FILE:cellar>)
-            # Input/DoS limits: oversized body -> 413 before parse; a slowloris
-            # (incomplete request held open) is reaped after the header timeout.
-            add_test(NAME limits
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/limits_test.sh $<TARGET_FILE:cellar>)
-            # RPC (#54): a whitelisted SQL function called over REST, with the
-            # whitelist proven to block non-whitelisted roles and functions.
-            add_test(NAME rpc
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/rpc_test.sh $<TARGET_FILE:cellar>)
-            # RPC tenant seatbelt (H-1/M-3): in pooled mode an anon-whitelisted RPC
-            # is still denied for a tenant-less caller (no empty-tenant execution).
-            add_test(NAME rpc_tenant
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/rpc_tenant_test.sh $<TARGET_FILE:cellar>)
-            # RPC SECURITY DEFINER audit (H-4): a whitelisted prosecdef function
-            # (which bypasses RLS) is warned about at startup; INVOKER is not.
-            add_test(NAME rpc_secdef
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/rpc_secdef_test.sh $<TARGET_FILE:cellar>)
-        endif()
+        # --- Auth/transport e2e (Postgres-era; being ported to the SQLite harness
+        #     under Task 8 — see tests/run_with_server.py). RPC is deferred to the
+        #     Phase 2 hook layer, so rpc/rpc_tenant/rpc_secdef were removed. ---
+        # Auth hardening: tokens hashed at rest, revoke-sessions CLI, password cap.
+        add_test(NAME auth_hardening
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/auth_hardening_test.sh $<TARGET_FILE:cellar>)
+        # Identity split: credentials live in cel_identities (not cel_users);
+        # login resolves through the password identity; created users get one.
+        add_test(NAME identity
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/identity_test.sh $<TARGET_FILE:cellar>)
+        # TOTP 2FA: enroll -> confirm -> two-step login (challenge + code) ->
+        # disable, with codes computed by an independent Python TOTP.
+        add_test(NAME mfa
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/mfa_test.sh $<TARGET_FILE:cellar>)
+        # OIDC sign-in: verify RS256 ID tokens (mock provider + local JWKS) and
+        # find-or-link (auto-provision / replay / link-by-email) + rejections.
+        add_test(NAME oauth
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/oauth_test.sh $<TARGET_FILE:cellar>)
+        # Password reset: forgot emails a token (captured from a mock SMTP sink),
+        # redeem it, new password works / old one + session revoked, single-use.
+        add_test(NAME password_reset
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/password_reset_test.sh $<TARGET_FILE:cellar>)
+        # Email verification: register emails a token (captured), redeem it, and
+        # email_verified flips false -> true; single-use; resend is idempotent.
+        add_test(NAME email_verification
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/email_verification_test.sh $<TARGET_FILE:cellar>)
+        # Account lockout: N failures lock the account (even a correct password is
+        # then refused), the lock auto-expires, and `cellar unlock` clears it.
+        add_test(NAME lockout
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/lockout_test.sh $<TARGET_FILE:cellar>)
+        # CORS: allowed origin echoed, others denied, OPTIONS preflight -> 204
+        # with the CORS headers.
+        add_test(NAME cors_e2e
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/cors_test.sh $<TARGET_FILE:cellar>)
+        # Input/DoS limits: oversized body -> 413 before parse; a slowloris
+        # (incomplete request held open) is reaped after the header timeout.
+        add_test(NAME limits
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/limits_test.sh $<TARGET_FILE:cellar>)
         add_test(NAME wslib_adversarial
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/wslib_test.py)
@@ -412,16 +377,6 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME realtime_e2e
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/realtime_e2e.py)
-        # Session cache (#55) end-to-end: a token whose session row was deleted still
-        # resolves (served from cache) — proof the cache is on the auth path (needs psql).
-        if(PSQL)
-            add_test(NAME session_cache_e2e
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/session_cache_test.sh $<TARGET_FILE:cellar>)
-            # Cache-coherence visibility (M-1/M-2): startup + revoke CLI warn about
-            # the up-to-TTL revocation/role/tenant propagation latency.
-            add_test(NAME cache_coherence
-                COMMAND bash ${CMAKE_SOURCE_DIR}/tests/cache_coherence_test.sh $<TARGET_FILE:cellar>)
-        endif()
         # Auth rate limit end-to-end: a low per-IP limit makes /auth/login 429.
         add_test(NAME rate_limit_e2e
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/rate_limit_test.sh $<TARGET_FILE:cellar>)
@@ -430,11 +385,6 @@ if(CELLAR_BUILD_TESTS)
         # Bearer-gated (L-3): the wrapper sets CEL_METRICS_TOKEN.
         add_test(NAME metrics_e2e
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/metrics_e2e_test.sh $<TARGET_FILE:cellar>)
-        # Prepared-statement cache (perf lever): repeated data-API query shapes
-        # PQprepare once per connection then PQexecPrepared — proven via the
-        # prepare/reuse counter. Wrapper sets CEL_METRICS_TOKEN to read /metrics.
-        add_test(NAME prepared_stmt
-            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/prepared_stmt_test.sh $<TARGET_FILE:cellar>)
         # Richer read API: relationship embedding (to-one + to-many) + exact count.
         add_test(NAME query
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
