@@ -1,7 +1,7 @@
 [Unit]
-Description=cellar — schema-driven Postgres backend
+Description=cellar — schema-driven SQLite backend
 Documentation=https://github.com/exellife/cellar
-After=network-online.target postgresql.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -10,14 +10,16 @@ User=cellar
 Group=cellar
 # Configuration lives in this env file (CEL_* variables). See cellar.env.example.
 EnvironmentFile=/etc/cellar/cellar.env
-# Apply any pending migrations before starting (fails the unit if the DB is down).
-ExecStartPre=/usr/local/bin/cellar migrate
+# The app's SQLite database lives here (systemd creates /var/lib/cellar, owned by
+# the service user). Point CEL_DATA_DB at a file under it; the schema is applied
+# on startup. The web UI and identity tables need no separate migration step.
+StateDirectory=cellar
 ExecStart=/usr/local/bin/cellar
 Restart=on-failure
 RestartSec=2
 
-# --- hardening: cellar needs no filesystem writes (assets+migrations embedded,
-#     logs go to journald), so lock the sandbox down. ---
+# --- hardening: cellar writes only its SQLite database (under StateDirectory);
+#     web assets are embedded and logs go to journald, so lock the rest down. ---
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

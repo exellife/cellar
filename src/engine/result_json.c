@@ -7,8 +7,9 @@
 static cJSON *blob_to_hex_json(const void *bytes, int n) {
     static const char hexd[] = "0123456789abcdef";
     const unsigned char *b = bytes;
+    if (n < 0) n = 0;
     char stackbuf[256];
-    char *buf = (n >= 0 && (size_t)n * 2 + 1 <= sizeof stackbuf)
+    char *buf = ((size_t)n * 2 + 1 <= sizeof stackbuf)
                     ? stackbuf : malloc((size_t)n * 2 + 1);
     if (!buf) return cJSON_CreateString("");
     for (int i = 0; i < n; i++) {

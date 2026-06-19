@@ -2,6 +2,7 @@
 #include "logger.h"
 
 #include <sqlite3.h>
+#include <stdio.h>
 
 /* Regular (non-STRICT) tables: INTEGER-affinity columns coerce the text the auth
  * layer binds ("1718…") into integers losslessly, so the binder stays uniform.
@@ -82,12 +83,39 @@ static const char *AUTH_SCHEMA =
     "  created_at INTEGER NOT NULL DEFAULT (unixepoch())"
     ");";
 
-int cel_auth_schema_apply(struct sqlite3 *db) {
+/* Bump this when the cel_* infra schema changes, and add the matching ALTER step
+ * in cel_auth_schema_apply below. Tracked per app via SQLite's PRAGMA
+ * user_version, so a newer cellar can evolve an existing app's bundle in place. */
+#define CEL_AUTH_SCHEMA_VERSION 1
+
+static long user_version(struct sqlite3 *db) {
+    sqlite3_stmt *st = NULL;
+    long v = 0;
+    if (sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW)
+        v = (long)sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return v;
+}
+
+static int exec_or_log(struct sqlite3 *db, const char *sql) {
     char *err = NULL;
-    if (sqlite3_exec(db, AUTH_SCHEMA, NULL, NULL, &err) != SQLITE_OK) {
+    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
         LOG_ERROR("auth schema: %s", err ? err : "unknown error");
         sqlite3_free(err);
         return -1;
     }
     return 0;
+}
+
+int cel_auth_schema_apply(struct sqlite3 *db) {
+    long v = user_version(db);
+    if (v >= CEL_AUTH_SCHEMA_VERSION) return 0;   /* already current */
+
+    if (v < 1 && exec_or_log(db, AUTH_SCHEMA) != 0) return -1;
+    /* future: if (v < 2 && exec_or_log(db, AUTH_SCHEMA_V2_ALTERS) != 0) return -1; */
+
+    char stamp[48];
+    snprintf(stamp, sizeof stamp, "PRAGMA user_version = %d", CEL_AUTH_SCHEMA_VERSION);
+    return exec_or_log(db, stamp);
 }

@@ -12,7 +12,6 @@
 #include "opcode_dispatcher.h"
 #include "logger.h"
 #include "core/protocol.h"
-#include "core/db_connection.h"
 #include "core/password.h"
 #include "core/auth.h"
 #include "core/auth_schema.h"
@@ -23,7 +22,6 @@
 #include "core/oauth.h"
 #include "core/mailer.h"
 #include "core/cors.h"
-#include "core/migrate.h"
 
 #include <curl/curl.h>
 #include "engine/schema_catalog.h"
@@ -179,7 +177,7 @@ static void on_disconnect(int fd, void *user_data) {
  * them (keeps core/metrics a dependency-free leaf). Active connections come from
  * portico (mechanism); the rest from our own subsystems. */
 static void metrics_gauges(cel_gauges_t *g) {
-    db_connection_pool_stats(&g->db_pool_size, &g->db_pool_in_use);
+    g->db_pool_size = 0; g->db_pool_in_use = 0;   /* no shared pool — one SQLite file per app */
     g->realtime_subscriptions = cel_realtime_count();
     g->active_connections     = portico_active_connections(g_server);
 }
@@ -237,35 +235,6 @@ static const char *env_str(const char *name, const char *fallback) {
     return (v && *v) ? v : fallback;
 }
 
-/* Bring up the libpq connection pool from CEL_DB_* env vars.
- * Returns 0 on success; non-zero leaves login disabled but the server runs. */
-static int init_db(void) {
-    /* Only emit password=... when explicitly provided; otherwise let libpq fall
-     * back to ~/.pgpass / PGPASSWORD (an empty password= field disables that). */
-    const char *pw = env_str("CEL_DB_PASSWORD", "");
-    char pwfield[256] = "";
-    if (*pw) snprintf(pwfield, sizeof pwfield, "password=%s ", pw);
-
-    /* A CEL_DB_HOST starting with '/' is a Unix-domain socket directory (e.g.
-     * /var/run/postgresql) — cheaper than TCP for a co-located Postgres. TCP
-     * keepalive params are meaningless on a socket, so omit them there. */
-    const char *host = env_str("CEL_DB_HOST", "localhost");
-    int is_socket = (host[0] == '/');
-    const char *keepalives = is_socket ? ""
-        : "keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=5";
-
-    char conninfo[512];
-    snprintf(conninfo, sizeof conninfo,
-             "host=%s port=%s dbname=%s user=%s %s%s",
-             host,
-             env_str("CEL_DB_PORT", "5432"),
-             env_str("CEL_DB_NAME", "cellar"),
-             env_str("CEL_DB_USER", "postgres"),
-             pwfield, keepalives);
-    LOG_INFO("Database transport: %s (host=%s)", is_socket ? "unix-socket" : "tcp", host);
-    return db_connection_pool_init(conninfo, env_int("CEL_DB_POOL", 8));
-}
-
 /* Optional first-run seeding: CEL_SEED_ADMIN="email:password". */
 static void maybe_seed_admin(void) {
     const char *spec = getenv("CEL_SEED_ADMIN");
@@ -305,139 +274,32 @@ static void maybe_seed_users(void) {
     free(dup);
 }
 
-/* `cellar migrate [status] [--demo]` — apply embedded migrations and exit.
- * --demo also applies the sample-data migrations (sql/demo). */
-static int run_migrate_command(int argc, char **argv) {
-    int status = 0, with_demo = 0, with_tenancy = 0;
-    for (int i = 2; i < argc; i++) {
-        if (!strcmp(argv[i], "status")) status = 1;
-        else if (!strcmp(argv[i], "--demo") || !strcmp(argv[i], "demo")) with_demo = 1;
-        else if (!strcmp(argv[i], "--tenancy") || !strcmp(argv[i], "tenancy")) with_tenancy = 1;
-    }
+/* Open the app's SQLite database for a one-shot admin CLI: init the registry,
+ * open CEL_DATA_DB, apply the auth schema, and make it the current app so the
+ * cel_auth_* / cel_mfa_* helpers below operate on it. Returns 0 when ready. */
+static int cli_open_app(void) {
     const char *lvl = getenv("CEL_LOG_LEVEL");
     logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
-    if (init_db() != 0) { LOG_ERROR("migrate: database unavailable"); logger_shutdown(); return 1; }
-
-    int rc;
-    if (status) {
-        rc = cel_migrate_status(with_demo, with_tenancy);
-    } else {
-        int applied = 0;
-        rc = cel_migrate_run(with_demo, with_tenancy, &applied);
-        if (rc == 0) LOG_INFO("migrate: up to date (%d applied this run)", applied);
-    }
-    db_connection_pool_cleanup();
-    logger_shutdown();
-    return rc == 0 ? 0 : 1;
-}
-
-/* `cellar tenancy-protect` — enable Postgres RLS + the tenant-isolation policy on
- * every tenant-scoped table (pooled-mode defense-in-depth). Re-run after adding
- * new tenant tables. Requires CEL_TENANT_COLUMN (pooled mode). */
-static int run_tenancy_protect_command(void) {
-    const char *lvl = getenv("CEL_LOG_LEVEL");
-    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
-    const char *col = getenv("CEL_TENANT_COLUMN");
-    if (!col || !*col) {
-        LOG_ERROR("tenancy-protect: pooled mode not enabled (set CEL_TENANT_COLUMN)");
-        logger_shutdown();
-        return 1;
-    }
-    if (init_db() != 0) { LOG_ERROR("tenancy-protect: database unavailable"); logger_shutdown(); return 1; }
-    int rc = cel_tenancy_protect(col);
-    db_connection_pool_cleanup();
-    logger_shutdown();
-    return rc == 0 ? 0 : 1;
-}
-
-/* Common setup for the pooled-mode admin CLIs: init logger, require pooled mode,
- * open the DB pool. Returns 0 when ready, else a process exit code. */
-static int tenancy_cli_setup(void) {
-    const char *lvl = getenv("CEL_LOG_LEVEL");
-    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
-    const char *col = getenv("CEL_TENANT_COLUMN");
-    if (!col || !*col) {
-        LOG_ERROR("this command requires pooled mode (set CEL_TENANT_COLUMN)");
-        logger_shutdown();
-        return 1;
-    }
-    if (init_db() != 0) { LOG_ERROR("database unavailable"); logger_shutdown(); return 1; }
+    app_db_global_init();
+    app_db_t *app = app_db_get(env_str("CEL_DATA_DB", "cellar.db"));
+    if (!app) { LOG_ERROR("could not open app database"); logger_shutdown(); return 1; }
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (c) { cel_auth_schema_apply(c); app_db_conn_release(app, c); }
+    app_db_set_current(app);
     return 0;
 }
-static int tenancy_cli_done(int ok) {
-    db_connection_pool_cleanup();
+static int cli_done(int ok) {
+    app_db_global_shutdown();
     logger_shutdown();
     return ok ? 0 : 1;
 }
 
-/* `cellar create-platform-admin <email> <password>` — the GLOBAL admin, created
- * out-of-band only (never via signup): role=platform_admin, tenant_id NULL. This
- * is the boundary that stops a tenant from escalating to platform. */
-static int run_create_platform_admin(int argc, char **argv) {
-    if (argc < 4) { fprintf(stderr, "usage: cellar create-platform-admin <email> <password>\n"); return 2; }
-    int s = tenancy_cli_setup(); if (s) return s;
-    int ok = (cel_auth_seed_user(argv[2], argv[3], "platform_admin") == 0);
-    if (ok) LOG_INFO("platform admin '%s' created", argv[2]);
-    return tenancy_cli_done(ok);
-}
-
-/* `cellar create-tenant <name> <admin-email> <admin-password>` — provision a
- * tenant and its first tenant-admin (role=admin, scoped to the new tenant). */
-static int run_create_tenant(int argc, char **argv) {
-    if (argc < 5) { fprintf(stderr, "usage: cellar create-tenant <name> <admin-email> <admin-password>\n"); return 2; }
-    int s = tenancy_cli_setup(); if (s) return s;
-    char tid[37] = {0};
-    int ok = (cel_tenant_create(argv[2], tid, sizeof tid) == 0)
-          && (cel_auth_seed_user(argv[3], argv[4], "admin") == 0)
-          && (cel_tenant_assign_user(argv[3], tid) == 0);
-    if (ok) LOG_INFO("tenant '%s' (%s) created with admin '%s'", argv[2], tid, argv[3]);
-    return tenancy_cli_done(ok);
-}
-
-/* `cellar {suspend,resume}-tenant <name-or-id>` — toggle a tenant's access. */
-static int run_set_tenant_active(int argc, char **argv, int active) {
-    if (argc < 3) { fprintf(stderr, "usage: cellar %s <tenant-name-or-id>\n", argv[1]); return 2; }
-    int s = tenancy_cli_setup(); if (s) return s;
-    int n = 0;
-    int ok = (cel_tenant_set_active(argv[2], active, &n) == 0);
-    if (ok) {
-        LOG_INFO("tenant '%s' %s (%d users affected)", argv[2], active ? "resumed" : "suspended", n);
-        int sct = env_int("CEL_SESSION_CACHE_TTL", 0);   /* M-2: warn about cache latency */
-        if (sct > 0)
-            LOG_WARN("a running server with the session cache enabled may still honor the "
-                     "previous tenant state for up to %ds (CEL_SESSION_CACHE_TTL)", sct);
-    }
-    return tenancy_cli_done(ok);
-}
-
-/* `cellar export-tenant <name-or-id>` — write a tenant's data as a loadable SQL
- * script to STDOUT (the graduate-to-standalone escape hatch). Runs at ERROR log
- * level so only the script lands on stdout (info/warn would otherwise too). */
-static int run_export_tenant(int argc, char **argv) {
-    if (argc < 3) { fprintf(stderr, "usage: cellar export-tenant <tenant-name-or-id>\n"); return 2; }
-    logger_init(LOG_LEVEL_ERROR, NULL, 0);
-    const char *col = getenv("CEL_TENANT_COLUMN");
-    if (!col || !*col) {
-        fprintf(stderr, "export-tenant: requires pooled mode (set CEL_TENANT_COLUMN)\n");
-        logger_shutdown(); return 1;
-    }
-    if (init_db() != 0) { fprintf(stderr, "export-tenant: database unavailable\n"); logger_shutdown(); return 1; }
-    int rc = cel_tenant_export(argv[2], col);
-    db_connection_pool_cleanup();
-    logger_shutdown();
-    return rc == 0 ? 0 : 1;
-}
-
 /* `cellar revoke-sessions <email>` — force-logout: delete every session for a
- * user (e.g. after a credential compromise). Works in single-tenant or pooled
- * mode. NOTE: clears the serving instance's cache only if run in-process; a CLI
- * run deletes the DB rows, and any running server re-validates within its cache
- * TTL (0 = immediate). */
+ * user (e.g. after a credential compromise). NOTE: a CLI run deletes the rows;
+ * a running server re-validates within its session-cache TTL (0 = immediate). */
 static int run_revoke_sessions(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: cellar revoke-sessions <email>\n"); return 2; }
-    const char *lvl = getenv("CEL_LOG_LEVEL");
-    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
-    if (init_db() != 0) { LOG_ERROR("database unavailable"); logger_shutdown(); return 1; }
+    if (cli_open_app() != 0) return 1;
     int n = cel_auth_revoke_user_sessions(argv[2]);
     if (n >= 0) {
         LOG_INFO("revoked %d session(s) for '%s'", n, argv[2]);
@@ -446,40 +308,30 @@ static int run_revoke_sessions(int argc, char **argv) {
             LOG_WARN("a running server with the session cache enabled may still honor these "
                      "tokens for up to %ds (CEL_SESSION_CACHE_TTL)", sct);
     } else        LOG_ERROR("revoke failed for '%s'", argv[2]);
-    db_connection_pool_cleanup();
-    logger_shutdown();
-    return n >= 0 ? 0 : 1;
+    return cli_done(n >= 0);
 }
 
 /* `cellar mfa-reset <email>` — admin lockout recovery: remove a user's TOTP
  * enrollment so they can log in with just their password (and re-enroll). */
 static int run_mfa_reset(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: cellar mfa-reset <email>\n"); return 2; }
-    const char *lvl = getenv("CEL_LOG_LEVEL");
-    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
-    if (init_db() != 0) { LOG_ERROR("database unavailable"); logger_shutdown(); return 1; }
+    if (cli_open_app() != 0) return 1;
     int n = cel_mfa_reset(argv[2]);
     if (n >= 0) LOG_INFO("reset 2FA for '%s' (%d enrollment(s) removed)", argv[2], n);
     else        LOG_ERROR("mfa-reset failed for '%s'", argv[2]);
-    db_connection_pool_cleanup();
-    logger_shutdown();
-    return n >= 0 ? 0 : 1;
+    return cli_done(n >= 0);
 }
 
 /* `cellar unlock <email>` — clear an account lockout / reset its failure count
  * (admin recovery when a user is locked out). */
 static int run_unlock(int argc, char **argv) {
     if (argc < 3) { fprintf(stderr, "usage: cellar unlock <email>\n"); return 2; }
-    const char *lvl = getenv("CEL_LOG_LEVEL");
-    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
-    if (init_db() != 0) { LOG_ERROR("database unavailable"); logger_shutdown(); return 1; }
+    if (cli_open_app() != 0) return 1;
     int n = cel_auth_unlock(argv[2]);
     if (n > 0)       LOG_INFO("unlocked '%s'", argv[2]);
     else if (n == 0) LOG_WARN("no such user '%s'", argv[2]);
     else             LOG_ERROR("unlock failed for '%s'", argv[2]);
-    db_connection_pool_cleanup();
-    logger_shutdown();
-    return n >= 0 ? 0 : 1;
+    return cli_done(n >= 0);
 }
 
 /* `cellar send-test-mail <to>` — verify the SMTP configuration by sending a test
@@ -509,20 +361,6 @@ static int run_send_test_mail(int argc, char **argv) {
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   /* line-buffer logs even when redirected */
 
-    if (argc >= 2 && strcmp(argv[1], "migrate") == 0)
-        return run_migrate_command(argc, argv);
-    if (argc >= 2 && strcmp(argv[1], "export-tenant") == 0)
-        return run_export_tenant(argc, argv);
-    if (argc >= 2 && strcmp(argv[1], "tenancy-protect") == 0)
-        return run_tenancy_protect_command();
-    if (argc >= 2 && strcmp(argv[1], "create-platform-admin") == 0)
-        return run_create_platform_admin(argc, argv);
-    if (argc >= 2 && strcmp(argv[1], "create-tenant") == 0)
-        return run_create_tenant(argc, argv);
-    if (argc >= 2 && strcmp(argv[1], "suspend-tenant") == 0)
-        return run_set_tenant_active(argc, argv, 0);
-    if (argc >= 2 && strcmp(argv[1], "resume-tenant") == 0)
-        return run_set_tenant_active(argc, argv, 1);
     if (argc >= 2 && strcmp(argv[1], "revoke-sessions") == 0)
         return run_revoke_sessions(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "mfa-reset") == 0)
@@ -617,21 +455,6 @@ int main(int argc, char **argv) {
     cel_http_set_max_body((size_t)env_int("CEL_MAX_BODY", 1024 * 1024));
 
     cel_catalog_t *catalog = NULL;
-    /* The Postgres pool is now only needed by the not-yet-converted modules
-     * (mfa.c when MFA is enabled, migrate.c CLIs). The data API and auth run on
-     * SQLite below, so a missing PG no longer disables auth — just MFA/migrate. */
-    bool db_ready = (init_db() == 0);
-    if (db_ready) {
-        LOG_INFO("database pool ready (mfa/migrate — transitional)");
-        const char *am = getenv("CEL_AUTO_MIGRATE");
-        if (am && (*am == '1' || *am == 't' || *am == 'T' || *am == 'y' || *am == 'Y')) {
-            int applied = 0;
-            if (cel_migrate_run(0, 0, &applied) == 0) LOG_INFO("migrate: %d applied on boot", applied);
-            else LOG_ERROR("boot migrate failed");
-        }
-    } else {
-        LOG_WARN("Postgres pool unavailable — MFA/migrate CLIs degraded (auth runs on SQLite)");
-    }
 
     cel_policy_init(getenv("CEL_POLICY_FILE"));   /* NULL -> built-in role defaults */
 
@@ -746,7 +569,7 @@ int main(int argc, char **argv) {
     cel_oauth_cleanup();
     curl_global_cleanup();
     cel_policy_cleanup();
-    if (db_ready) db_connection_pool_cleanup();
+    app_db_global_shutdown();
     logger_shutdown();
     return 0;
 }

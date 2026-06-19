@@ -27,3 +27,8 @@ config/policies.local.json
 
 # downloaded packages (e.g. staged SQLite dev files)
 *.deb
+
+# app SQLite databases (created at runtime)
+*.db
+*.db-wal
+*.db-shm

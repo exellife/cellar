@@ -20,10 +20,9 @@ option(CELLAR_BUILD_TESTS "Enable CTest integration (python harness)" ON)
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
-option(CELLAR_STATIC "Statically link bundled deps (libsodium, libuuid); libpq stays dynamic" OFF)
+option(CELLAR_STATIC "Statically link bundled deps (libsodium, libuuid)" OFF)
 
 find_package(Threads REQUIRED)
-find_package(PostgreSQL REQUIRED)       # provides PostgreSQL::PostgreSQL (libpq, dynamic)
 find_package(PkgConfig REQUIRED)
 
 # cJSON is vendored (single-file, MIT) — no libcjson runtime dependency. portico
@@ -126,43 +125,16 @@ add_custom_command(
     COMMENT "Embedding web/ admin UI assets"
     VERBATIM)
 
-# Embed migrations into the binary (so cellar can bootstrap a DB).
-file(GLOB MIG_FILES      CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/sql/migrations/*.sql)
-file(GLOB DEMO_MIG_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/sql/demo/*.sql)
-file(GLOB TENANCY_MIG_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/sql/tenancy/*.sql)
-set(MIGRATIONS_C         ${CMAKE_BINARY_DIR}/generated/sql_migrations.c)
-set(DEMO_MIGRATIONS_C    ${CMAKE_BINARY_DIR}/generated/sql_demo_migrations.c)
-set(TENANCY_MIGRATIONS_C ${CMAKE_BINARY_DIR}/generated/sql_tenancy_migrations.c)
-add_custom_command(
-    OUTPUT ${MIGRATIONS_C}
-    COMMAND ${CMAKE_COMMAND} -DMIGDIR=${CMAKE_SOURCE_DIR}/sql/migrations
-            -DOUTFILE=${MIGRATIONS_C} -DARRAY=CEL_MIGRATIONS
-            -P ${CMAKE_SOURCE_DIR}/cmake/embed_migrations.cmake
-    DEPENDS ${MIG_FILES} ${CMAKE_SOURCE_DIR}/cmake/embed_migrations.cmake
-    COMMENT "Embedding sql/migrations (core)" VERBATIM)
-add_custom_command(
-    OUTPUT ${DEMO_MIGRATIONS_C}
-    COMMAND ${CMAKE_COMMAND} -DMIGDIR=${CMAKE_SOURCE_DIR}/sql/demo
-            -DOUTFILE=${DEMO_MIGRATIONS_C} -DARRAY=CEL_DEMO_MIGRATIONS
-            -P ${CMAKE_SOURCE_DIR}/cmake/embed_migrations.cmake
-    DEPENDS ${DEMO_MIG_FILES} ${CMAKE_SOURCE_DIR}/cmake/embed_migrations.cmake
-    COMMENT "Embedding sql/demo" VERBATIM)
-add_custom_command(
-    OUTPUT ${TENANCY_MIGRATIONS_C}
-    COMMAND ${CMAKE_COMMAND} -DMIGDIR=${CMAKE_SOURCE_DIR}/sql/tenancy
-            -DOUTFILE=${TENANCY_MIGRATIONS_C} -DARRAY=CEL_TENANCY_MIGRATIONS
-            -P ${CMAKE_SOURCE_DIR}/cmake/embed_migrations.cmake
-    DEPENDS ${TENANCY_MIG_FILES} ${CMAKE_SOURCE_DIR}/cmake/embed_migrations.cmake
-    COMMENT "Embedding sql/tenancy (pooled)" VERBATIM)
+# Note: the old SQL-migration embedding is gone — each app's SQLite bundle owns
+# its schema, and cellar's own identity tables are applied per-app at runtime by
+# auth_schema.c (version-stamped via PRAGMA user_version).
 
 file(GLOB_RECURSE CELLAR_SOURCES CONFIGURE_DEPENDS src/*.c)
-add_executable(cellar ${CELLAR_SOURCES} ${WEB_ASSETS_C} ${MIGRATIONS_C} ${DEMO_MIGRATIONS_C} ${TENANCY_MIGRATIONS_C})
+add_executable(cellar ${CELLAR_SOURCES} ${WEB_ASSETS_C})
 target_include_directories(cellar PRIVATE src src/core)
 # OpenSSL: HMAC-SHA1 for TOTP (RFC 6238) + RS256 verification for OIDC ID tokens.
-# Already in-process via portico's TLS / libpq.
 find_package(OpenSSL REQUIRED)
 # libcurl: fetch OIDC providers' JWKS (public keys) over HTTPS for OAuth sign-in.
-# Runtime libcurl.so is near-universal; linked dynamically like libpq.
 find_package(CURL REQUIRED)
 
 target_link_libraries(cellar PRIVATE
@@ -171,7 +143,6 @@ target_link_libraries(cellar PRIVATE
     logger
     cjson
     SQLite::SQLite3
-    PostgreSQL::PostgreSQL
     OpenSSL::Crypto
     CURL::libcurl
     ${SODIUM_LIB}

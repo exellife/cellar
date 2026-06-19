@@ -121,9 +121,21 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       closed. Extracted the SQLite bind/exec helpers into `src/core/db_sqlite.{c,h}`
       (`cel_db_prep/exec/one_text`, `cel_now_epoch`), shared by auth + mfa (+ migrate next);
       auth.c refactored onto them. Tested: `tests/mfa_sqlite_test.c` (ctest `mfa_sqlite`,
-      end-to-end with real TOTP codes). 15/15 C unit tests green. **Next:** migrate.c → SQLite,
-      then delete db_connection.c / row_json.c / PG schema_catalog path / vestigial `tenant_id`
-      fields / PG tenant tooling.
+      end-to-end with real TOTP codes). 15/15 C unit tests green.
+- [x] **Drop migrate.c + Postgres entirely (5b-final).** Decided (file-per-app → no global
+      schema to version): **deleted** `migrate.{c,h}`, `db_connection.{c,h}`, `row_json.{c,h}`,
+      the PG `cel_catalog_build` path, `sql/migrations|demo|tenancy/`, `cmake/embed_migrations.cmake`,
+      and the migrate/tenant CLIs (`migrate`, `tenancy-protect`, `create-{tenant,platform-admin}`,
+      `{suspend,resume,export}-tenant`). main.c lost `init_db`/the PG pool; `revoke-sessions` /
+      `mfa-reset` / `unlock` now open the SQLite app (`cli_open_app`). Schema setup is per app:
+      `auth_schema.c` is **version-stamped via `PRAGMA user_version`** (v1 today; future cellar
+      versions append ALTER steps to evolve existing bundles); the user's app schema is owned by
+      its `data.db`. CMake dropped `find_package(PostgreSQL)` + the link → **the binary no longer
+      links libpq** (`ldd | grep pq` = 0). dist/ templates updated (CEL_DATA_DB, StateDirectory,
+      no `migrate` pre-start). Net −1646 lines; 15/15 unit tests green; boots/seeds/runs admin
+      CLIs on SQLite with no Postgres. **The Postgres→SQLite engine pivot is functionally
+      complete — no hybrid remains.** (Leftover cleanup: vestigial `tenant_id` struct fields in
+      auth.h/policy.h; README still describes the Postgres era.)
 - [ ] **App routing + provisioning.** Resolve app from the request (Host/path) → its
       bundle. A small **control-plane DB** (app registry, domain→bundle routing,
       platform admin). Decided: **per-app users** in each `data.db` + a control-plane for

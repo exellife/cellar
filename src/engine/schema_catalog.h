@@ -54,11 +54,6 @@ typedef struct {
     int          ntables;
 } cel_catalog_t;
 
-/* Introspect the connected database into a fresh catalog. Acquires a pooled
- * connection internally. Returns NULL on failure. Caller owns the result.
- * (Postgres path — being retired as the SQLite pivot lands.) */
-cel_catalog_t *cel_catalog_build(void);
-
 /* Introspect an open SQLite database into a fresh catalog (per-app; design §5):
  * user tables from sqlite_master + PRAGMA table_info / foreign_key_list, column
  * types mapped from SQLite declared-type affinity. Internal cel_* and sqlite_*
