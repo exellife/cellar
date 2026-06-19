@@ -7,7 +7,21 @@ Picks a free port, seeds an admin, waits for the listener, runs
   python3 <test_script.py> ws://127.0.0.1:<port>/
 and forwards the script's exit code. Dumps the server log on failure.
 """
-import os, sys, socket, subprocess, time, tempfile
+import os, sys, socket, subprocess, time, tempfile, sqlite3, shutil
+
+def make_app_db():
+    """Create a throwaway per-app SQLite database with the demo user tables the
+    server-boot tests use (the engine applies the cel_* identity schema itself).
+    Returns (dir, db_path)."""
+    d = tempfile.mkdtemp(prefix="cellar-app-")
+    con = sqlite3.connect(os.path.join(d, "data.db"))
+    con.executescript(
+        "CREATE TABLE IF NOT EXISTS notes("
+        "  id INTEGER PRIMARY KEY, owner_id TEXT, title TEXT);"
+        "CREATE TABLE IF NOT EXISTS products("
+        "  id INTEGER PRIMARY KEY, name TEXT NOT NULL, price REAL);")
+    con.close()
+    return d, os.path.join(d, "data.db")
 
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0))
@@ -32,12 +46,13 @@ def main():
         return 2
     binary, script = sys.argv[1], sys.argv[2]
     port = free_port()
+    app_dir, app_db = make_app_db()
 
     env = dict(os.environ)
     env.update(
         CEL_PORT=str(port),
         CEL_LOG_LEVEL=env.get("CEL_LOG_LEVEL", "warn"),
-        CEL_DB_NAME=env.get("CEL_DB_NAME", "cellar"),
+        CEL_DATA_DB=env.get("CEL_DATA_DB", app_db),
         # Seed users per role (two editors, to exercise row-level ownership).
         CEL_SEED_USERS=env.get("CEL_SEED_USERS",
             "admin@cellar.dev:s3cret-admin:admin;"
@@ -75,6 +90,7 @@ def main():
         sys.stderr.write("\n----- server log -----\n")
         sys.stderr.write(open(log.name).read())
     os.unlink(log.name)
+    shutil.rmtree(app_dir, ignore_errors=True)
     return rc
 
 if __name__ == "__main__":
