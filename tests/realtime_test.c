@@ -17,6 +17,11 @@ static void chk(const char *label, int cond) {
     if (!cond) failures++;
 }
 
+/* Two app identities (the per-app handle a subscription belongs to). Publish only
+ * reaches subscribers of the publishing app. */
+#define APP1 ((const void *)1)
+#define APP2 ((const void *)2)
+
 /* ---- mock transport: record (fd, json) per publish ---- */
 #define MAXCAP 64
 static struct { int fd; char json[512]; } g_cap[MAXCAP];
@@ -38,11 +43,11 @@ static bool mock_member(const cel_subscription_t *sub) { (void)sub; g_member_cal
 
 static cel_subscription_t S; /* scratch builder */
 static const cel_subscription_t *sub_none(const char *table) {
-    memset(&S, 0, sizeof S); snprintf(S.table, sizeof S.table, "%s", table); S.npreds = 0;
+    memset(&S, 0, sizeof S); S.app = APP1; snprintf(S.table, sizeof S.table, "%s", table); S.npreds = 0;
     return &S;
 }
 static const cel_subscription_t *sub_eq(const char *table, const char *col, const char *val) {
-    memset(&S, 0, sizeof S); snprintf(S.table, sizeof S.table, "%s", table);
+    memset(&S, 0, sizeof S); S.app = APP1; snprintf(S.table, sizeof S.table, "%s", table);
     S.preds[0].is_or = false;
     snprintf(S.preds[0].column, sizeof S.preds[0].column, "%s", col);
     snprintf(S.preds[0].value,  sizeof S.preds[0].value,  "%s", val);
@@ -57,7 +62,7 @@ static const cel_subscription_t *sub_eq2(const char *table, const char *c1, cons
     S.npreds = 2; return &S;
 }
 static const cel_subscription_t *sub_or(const char *table, const char *a, const char *b, const char *val) {
-    memset(&S, 0, sizeof S); snprintf(S.table, sizeof S.table, "%s", table);
+    memset(&S, 0, sizeof S); S.app = APP1; snprintf(S.table, sizeof S.table, "%s", table);
     S.preds[0].is_or = true; S.preds[0].ncols = 2;
     snprintf(S.preds[0].cols[0], sizeof S.preds[0].cols[0], "%s", a);
     snprintf(S.preds[0].cols[1], sizeof S.preds[0].cols[1], "%s", b);
@@ -114,7 +119,7 @@ int main(void) {
     /* owner u1's row -> fd1 (owner match) + fd4 (all); not 2/3/5 */
     reset_cap();
     cJSON *m1 = row1("owner_id", "u1");
-    cel_realtime_publish("messages", "INSERT", m1);
+    cel_realtime_publish(APP1, "messages", "INSERT", m1);
     chk("u1 -> fd1", got(1));   chk("u1 -> fd4", got(4));
     chk("u1 !-> fd2", !got(2)); chk("u1 !-> fd3", !got(3)); chk("u1 !-> fd5", !got(5));
     chk("payload has op", strstr(g_cap[0].json, "INSERT") != NULL);
@@ -123,7 +128,7 @@ int main(void) {
     /* OR: a row where driver_id=u3 -> fd3 + fd4 */
     reset_cap();
     cJSON *m2 = row1("driver_id", "u3");
-    cel_realtime_publish("messages", "UPDATE", m2);
+    cel_realtime_publish(APP1, "messages", "UPDATE", m2);
     chk("u3 -> fd3", got(3)); chk("u3 -> fd4", got(4)); chk("u3 !-> fd1", !got(1));
     cJSON_Delete(m2);
 
@@ -131,20 +136,20 @@ int main(void) {
     reset_cap();
     cJSON *m3 = cJSON_CreateObject();
     cJSON_AddStringToObject(m3, "tenant_id", "t1"); cJSON_AddStringToObject(m3, "owner_id", "u5");
-    cel_realtime_publish("messages", "INSERT", m3);
+    cel_realtime_publish(APP1, "messages", "INSERT", m3);
     chk("t1/u5 -> fd5", got(5)); chk("t1/u5 -> fd4", got(4));
     cJSON_Delete(m3);
     reset_cap();
     cJSON *m4 = cJSON_CreateObject();
     cJSON_AddStringToObject(m4, "tenant_id", "t2"); cJSON_AddStringToObject(m4, "owner_id", "u5");
-    cel_realtime_publish("messages", "INSERT", m4);
+    cel_realtime_publish(APP1, "messages", "INSERT", m4);
     chk("wrong tenant !-> fd5", !got(5));   /* owner matches but tenant doesn't */
     cJSON_Delete(m4);
 
     /* different table -> nobody (subs are per-table) */
     reset_cap();
     cJSON *m5 = row1("owner_id", "u1");
-    cel_realtime_publish("orders", "INSERT", m5);
+    cel_realtime_publish(APP1, "orders", "INSERT", m5);
     chk("other table -> none", g_ncap == 0);
     cJSON_Delete(m5);
 
@@ -152,7 +157,7 @@ int main(void) {
     cel_realtime_subscribe(1, sub_eq("messages", "owner_id", "u9"));
     reset_cap();
     cJSON *m6 = row1("owner_id", "u1");
-    cel_realtime_publish("messages", "INSERT", m6);
+    cel_realtime_publish(APP1, "messages", "INSERT", m6);
     chk("after replace u1 !-> fd1", !got(1));
     cJSON_Delete(m6);
 
@@ -160,7 +165,7 @@ int main(void) {
     cel_realtime_drop_conn(4);
     reset_cap();
     cJSON *m7 = row1("owner_id", "u2");
-    cel_realtime_publish("messages", "INSERT", m7);
+    cel_realtime_publish(APP1, "messages", "INSERT", m7);
     chk("u2 -> fd2", got(2)); chk("after drop, !-> fd4", !got(4));
     cJSON_Delete(m7);
 
@@ -168,9 +173,23 @@ int main(void) {
     cel_realtime_unsubscribe(2, "messages");
     reset_cap();
     cJSON *m8 = row1("owner_id", "u2");
-    cel_realtime_publish("messages", "INSERT", m8);
+    cel_realtime_publish(APP1, "messages", "INSERT", m8);
     chk("after unsubscribe, !-> fd2", !got(2));
     cJSON_Delete(m8);
+
+    /* ---- C-2: app isolation — a subscriber of app B never sees app A's writes,
+     * even on an identically-named table with a matching predicate ---- */
+    sub_eq("messages", "owner_id", "u1"); S.app = APP2;   /* same table+pred, different app */
+    cel_realtime_subscribe(20, &S);
+    reset_cap();
+    cJSON *x1 = row1("owner_id", "u1");
+    cel_realtime_publish(APP1, "messages", "INSERT", x1);  /* app A writes */
+    chk("cross-app: APP1 write !-> APP2 sub (fd20)", !got(20));
+    reset_cap();
+    cel_realtime_publish(APP2, "messages", "INSERT", x1);  /* app B writes */
+    chk("same-app: APP2 write -> APP2 sub (fd20)", got(20));
+    cJSON_Delete(x1);
+    cel_realtime_drop_conn(20);
 
     /* ---- M-5: VIA subscriptions are re-authorized against membership on publish ---- */
     cel_realtime_init(mock_send, mock_member);          /* now with a membership re-check */
@@ -179,7 +198,7 @@ int main(void) {
     /* still a member -> the flat predicate matches AND the re-check passes -> delivered */
     g_member_ok = 1; g_member_calls = 0; reset_cap();
     cJSON *v1 = row1("conv_id", "cX");
-    cel_realtime_publish("messages", "INSERT", v1);
+    cel_realtime_publish(APP1, "messages", "INSERT", v1);
     chk("VIA member -> delivered", got(10));
     chk("VIA membership re-checked on publish", g_member_calls == 1);
     cJSON_Delete(v1);
@@ -188,7 +207,7 @@ int main(void) {
      * delivered. This is the M-5 fix: a removed participant stops receiving. */
     g_member_ok = 0; reset_cap();
     cJSON *v2 = row1("conv_id", "cX");
-    cel_realtime_publish("messages", "INSERT", v2);
+    cel_realtime_publish(APP1, "messages", "INSERT", v2);
     chk("VIA non-member !-> delivered (M-5)", !got(10));
     cJSON_Delete(v2);
 
@@ -196,7 +215,7 @@ int main(void) {
     cel_realtime_init(mock_send, NULL);
     g_member_ok = 1; reset_cap();
     cJSON *v3 = row1("conv_id", "cX");
-    cel_realtime_publish("messages", "INSERT", v3);
+    cel_realtime_publish(APP1, "messages", "INSERT", v3);
     chk("VIA fails closed without member cb", !got(10));
     cJSON_Delete(v3);
 

@@ -121,7 +121,7 @@ long cel_realtime_count(void) { return (long)atomic_load(&g_count); }
 
 /* ---- delivery ------------------------------------------------------------- */
 
-void cel_realtime_publish(const char *table, const char *op, const cJSON *row) {
+void cel_realtime_publish(const void *app, const char *table, const char *op, const cJSON *row) {
     if (atomic_load(&g_count) == 0 || !g_send || !row) return;
     cel_metric_inc(CEL_M_RT_EVENTS);
 
@@ -139,6 +139,7 @@ void cel_realtime_publish(const char *table, const char *op, const cJSON *row) {
     int nf = 0, nv = 0;
     if (fds && via && via_fd) {
         for (rt_node_t *n = g_list; n; n = n->next) {
+            if (n->sub.app != app) continue;        /* isolation: only the writing app's subscribers */
             if (strcmp(n->sub.table, table) != 0 ||
                 !cel_rt_row_matches(n->sub.preds, n->sub.npreds, row)) continue;
             if (n->sub.via) {            /* copy out for an out-of-lock re-check */

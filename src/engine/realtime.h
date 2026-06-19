@@ -40,6 +40,11 @@ typedef struct {
 
 /* A registered subscription: a table plus the predicates that gate delivery. */
 typedef struct {
+    /* The app this subscription belongs to (the stable per-app handle it was
+     * created under). Delivery requires the publishing app to match — isolation
+     * is the file boundary, and many apps have identically-named tables, so a
+     * write in one app must never reach another app's subscriber. */
+    const void *app;
     char table[CEL_RT_IDENT];
     cel_rt_pred_t preds[CEL_RT_MAX_PREDS];
     int  npreds;
@@ -81,8 +86,9 @@ bool cel_realtime_active(void);
 long cel_realtime_count(void);
 
 /* Deliver a change for `table` (op = "INSERT" | "UPDATE" | "DELETE") to every
- * matching subscriber. `row` is borrowed (not retained). */
-void cel_realtime_publish(const char *table, const char *op, const cJSON *row);
+ * matching subscriber OF THE PUBLISHING APP `app` (the per-app handle the write
+ * ran under). Subscribers of other apps never see it. `row` is borrowed. */
+void cel_realtime_publish(const void *app, const char *table, const char *op, const cJSON *row);
 
 /* Exposed for unit testing: does `row` satisfy all of `preds`? */
 bool cel_rt_row_matches(const cel_rt_pred_t *preds, int npreds, const cJSON *row);

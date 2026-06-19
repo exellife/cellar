@@ -205,7 +205,7 @@ static void rt_emit(const char *table, cel_action_t action, const cJSON *row) {
     const char *op = action == CEL_ACT_CREATE ? "INSERT"
                    : action == CEL_ACT_UPDATE ? "UPDATE"
                    : action == CEL_ACT_DELETE ? "DELETE" : "?";
-    cel_realtime_publish(table, op, row);
+    cel_realtime_publish(app_db_current(), table, op, row);   /* scope delivery to this app */
 }
 
 /* Shared shape for the write builders: build -> run -> {status, row}. */
@@ -1022,6 +1022,7 @@ bool cel_api_rt_recheck_member(const cel_subscription_t *sub) {
 int cel_api_authorize_subscription(const cel_identity_t *who, const cJSON *req,
                                    cel_subscription_t *sub, char *errbuf, size_t errlen) {
     memset(sub, 0, sizeof *sub);
+    sub->app = app_db_current();   /* the app this subscription belongs to (bound by the handler) */
     if (!who->authenticated) { snprintf(errbuf, errlen, "authentication required"); return 401; }
     const cel_table_t *t = resolve_table(req);
     if (!t) { snprintf(errbuf, errlen, "unknown table"); return 404; }
