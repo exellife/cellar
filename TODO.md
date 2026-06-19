@@ -136,11 +136,24 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       CLIs on SQLite with no Postgres. **The Postgres→SQLite engine pivot is functionally
       complete — no hybrid remains.** (Leftover cleanup: vestigial `tenant_id` struct fields in
       auth.h/policy.h; README still describes the Postgres era.)
-- [ ] **App routing + provisioning.** Resolve app from the request (Host/path) → its
-      bundle. A small **control-plane DB** (app registry, domain→bundle routing,
-      platform admin). Decided: **per-app users** in each `data.db` + a control-plane for
-      routing/admin. Provision = drop a bundle dir + register; delete = `rm -rf`;
-      export = copy.
+- [~] **App routing + provisioning.** Resolve app from the request → its bundle.
+      **Done (HTTP):** decided one cellar process hosts many apps via **in-process Host→bundle
+      routing** (not process-per-app; the routing key is the full Host, not subdomain parsing —
+      see [[cellar-vision-in-process-multiapp]]). New `src/engine/cel_apps.{c,h}` registry:
+      `CEL_APPS_DIR` → multi-app (`<dir>/<host>/data.db`, opened lazily, schema applied, catalog
+      cached, host validated against path-traversal); else single-app from `CEL_DATA_DB` (the
+      process default). Request context is now **thread-local with a process-default fallback**:
+      `app_db_current()` / `cel_catalog_active()` return the per-thread binding (set per HTTP
+      request by `cel_apps_enter` in `cel_http_router` from the Host) else the boot default — so
+      auth/mfa/api code is unchanged, concurrent requests hit different apps, and the WS path
+      (no Host) falls back to the default (single-app works; **multi-app WS deferred** — needs
+      the handshake Host plumbed through portico). Unknown Host → 404. Tested:
+      `tests/cel_apps_test.c` (ctest `cel_apps`, 20 checks) + **live HTTP proof** — register on
+      a.com + login works, login on b.com fails (isolated per-app users), 404 on unknown Host;
+      single-app back-compat verified. **Still to do:** provisioning ergonomics (drop-a-dir is
+      enough today; an admin API later), per-app catalog invalidation on schema change, the
+      **control-plane DB** (platform admin / global registry / app lifecycle), and **WS
+      multi-app** (portico handshake-Host).
 
 ## Phase 2 — per-app extensibility (the hook layer)  [scoped by the design doc §7-9]
 

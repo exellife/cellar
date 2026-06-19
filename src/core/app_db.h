@@ -44,11 +44,14 @@ int  app_db_global_init(void);
 /* Close every open app and free the registry. Safe to call once at shutdown. */
 void app_db_global_shutdown(void);
 
-/* The process's "current" app — the interim single-app handle shared by the data
- * API and the auth/identity layer until request routing resolves a bundle per
- * request. Set once at startup. app_db_current() returns NULL before it's set. */
-void      app_db_set_current(app_db_t *db);
+/* The app a query runs against. app_db_current() returns this thread's binding if
+ * set (app_db_set_current, by per-request routing), else the process-wide default
+ * (app_db_set_default, set once at boot for the single-app deployment), else NULL.
+ * The binding is thread-local; clear it (set NULL) at the end of a request to fall
+ * back to the default. */
+void      app_db_set_current(app_db_t *db);   /* per-thread request binding */
 app_db_t *app_db_current(void);
+void      app_db_set_default(app_db_t *db);   /* process-wide fallback */
 
 /* Get (or lazily create) the app whose database file is `db_path`. The file is
  * not opened until the first connection is acquired. The returned pointer is

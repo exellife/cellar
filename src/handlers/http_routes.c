@@ -2,6 +2,7 @@
 #include "engine/api.h"
 #include "engine/policy.h"
 #include "engine/openapi.h"
+#include "engine/cel_apps.h"
 #include "core/rate_limit.h"
 #include "core/metrics.h"
 #include "core/cors.h"
@@ -540,10 +541,27 @@ int cel_http_router(const portico_request_t *req, portico_response_t *res, void 
         return 0;
     }
 
+    /* Route to the app named by the Host header (the request's app, bound to this
+     * thread for the call). /health and /metrics are process-level and need no app;
+     * for any other path an unknown Host is a hard 404 — never serve another app. */
+    size_t hlen = 0;
+    const char *host = portico_req_header(req, "Host", &hlen);
+    char hostbuf[256] = {0};
+    if (host && hlen < sizeof hostbuf) { memcpy(hostbuf, host, hlen); hostbuf[hlen] = '\0'; }
+    cel_app_t *app = cel_apps_resolve(hostbuf[0] ? hostbuf : NULL);
+    if (!app && !portico_req_path_is(req, "/health") && !portico_req_path_is(req, "/metrics")) {
+        send_error(res, 404, "unknown app");
+        if (allow_origin) add_cors_headers(res, allow_origin, false);
+        cel_metric_inc(CEL_M_HTTP_4XX);
+        return 0;
+    }
+
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
+    cel_apps_enter(app);
     int status = route(req, res);
+    cel_apps_leave();
 
     if (allow_origin) add_cors_headers(res, allow_origin, false);   /* on the actual response */
 

@@ -223,6 +223,16 @@ if(CELLAR_BUILD_TESTS)
         ${SODIUM_LIB} ${UUID_LIB})
     add_test(NAME auth_sqlite COMMAND auth_sqlite_test)
 
+    # App registry + Host routing (Phase 1): single-app + multi-app resolution,
+    # :port stripping, invalid-host rejection, per-app catalogs, enter/leave
+    # thread-local binding. Builds throwaway bundle dirs under /tmp; no Postgres.
+    add_executable(cel_apps_test tests/cel_apps_test.c
+        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c
+        src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c)
+    target_include_directories(cel_apps_test PRIVATE src src/engine src/core)
+    target_link_libraries(cel_apps_test SQLite::SQLite3 cjson logger Threads::Threads)
+    add_test(NAME cel_apps COMMAND cel_apps_test)
+
     # MFA (TOTP) on per-app SQLite (Phase 1 step 5b): enroll -> confirm (real TOTP
     # code) -> required_for -> challenge -> verify_login (TOTP + recovery code) ->
     # disable -> reset, end-to-end against a throwaway app. Drives the real auth

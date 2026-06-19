@@ -80,8 +80,11 @@ struct cJSON *cel_catalog_to_cjson(const cel_catalog_t *cat);
 /* String form of a normalized type (for JSON output / debugging). */
 const char *cel_coltype_name(cel_coltype_t t);
 
-/* Process-wide active catalog (built once at startup, read by handlers). */
-void                 cel_catalog_set_active(cel_catalog_t *cat);
+/* The catalog handlers read. cel_catalog_active() returns this thread's binding
+ * (cel_catalog_set_active, by per-request routing) if set, else the process-wide
+ * default (cel_catalog_set_default, set at boot for single-app), else NULL. */
+void                 cel_catalog_set_active(cel_catalog_t *cat);   /* per-thread */
 const cel_catalog_t *cel_catalog_active(void);
+void                 cel_catalog_set_default(cel_catalog_t *cat);  /* process-wide */
 
 #endif /* CEL_SCHEMA_CATALOG_H */

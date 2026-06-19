@@ -37,8 +37,13 @@ static struct {
     bool            inited;
 } g_reg = { .mtx = PTHREAD_MUTEX_INITIALIZER };
 
-/* The interim single "current" app (see header). Guarded by the registry mutex. */
-static app_db_t *g_current = NULL;
+/* The app a query runs against: a per-thread binding (set by HTTP request routing
+ * for the duration of one request) overriding a process-wide default. WS workers
+ * never bind, so they fall back to the default (the single-app deployment); HTTP
+ * binds per request so concurrent requests hit different apps on the worker pool.
+ * The thread-local needs no lock; the default is set once at boot. */
+static app_db_t        *g_default = NULL;   /* process-wide fallback */
+static __thread app_db_t *t_current = NULL; /* this thread's request binding */
 
 int app_db_global_init(void)
 {
@@ -48,20 +53,9 @@ int app_db_global_init(void)
     return 0;
 }
 
-void app_db_set_current(app_db_t *db)
-{
-    pthread_mutex_lock(&g_reg.mtx);
-    g_current = db;
-    pthread_mutex_unlock(&g_reg.mtx);
-}
-
-app_db_t *app_db_current(void)
-{
-    pthread_mutex_lock(&g_reg.mtx);
-    app_db_t *d = g_current;
-    pthread_mutex_unlock(&g_reg.mtx);
-    return d;
-}
+void app_db_set_current(app_db_t *db) { t_current = db; }
+app_db_t *app_db_current(void) { return t_current ? t_current : g_default; }
+void app_db_set_default(app_db_t *db) { g_default = db; }
 
 /* Open and configure one connection for `path`. Caller holds no locks that the
  * PRAGMAs need. Returns an open handle or NULL (after logging). */

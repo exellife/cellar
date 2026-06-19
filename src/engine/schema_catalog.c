@@ -96,7 +96,12 @@ char *cel_catalog_to_json(const cel_catalog_t *cat) {
 }
 
 /* ---- active catalog -------------------------------------------------------- */
+/* Mirrors app_db's current/default split: a per-thread binding (set by request
+ * routing to the resolved app's catalog) overriding a process-wide default. */
 
-static cel_catalog_t *g_active = NULL;
-void                 cel_catalog_set_active(cel_catalog_t *cat) { g_active = cat; }
-const cel_catalog_t *cel_catalog_active(void)                   { return g_active; }
+static cel_catalog_t        *g_default_cat = NULL;   /* process-wide fallback */
+static __thread cel_catalog_t *t_active = NULL;      /* this thread's binding */
+
+void cel_catalog_set_active(cel_catalog_t *cat)  { t_active = cat; }
+const cel_catalog_t *cel_catalog_active(void)    { return t_active ? t_active : g_default_cat; }
+void cel_catalog_set_default(cel_catalog_t *cat) { g_default_cat = cat; }

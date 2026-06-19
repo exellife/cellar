@@ -27,6 +27,7 @@
 #include "engine/schema_catalog.h"
 #include "engine/policy.h"
 #include "engine/api.h"   /* cel_rpc_audit_security_definer, cel_api_rt_recheck_member */
+#include "engine/cel_apps.h"
 #include "handlers/auth_handlers.h"
 #include "handlers/schema_handlers.h"
 #include "handlers/data_handlers.h"
@@ -454,36 +455,27 @@ int main(int argc, char **argv) {
     /* Cap request bodies before the JSON parser sees them (CPU/memory DoS guard). */
     cel_http_set_max_body((size_t)env_int("CEL_MAX_BODY", 1024 * 1024));
 
-    cel_catalog_t *catalog = NULL;
-
     cel_policy_init(getenv("CEL_POLICY_FILE"));   /* NULL -> built-in role defaults */
 
-    /* Open the app's SQLite database — the per-app data + identity engine (Step 5).
-     * Interim: one global app from CEL_DATA_DB until request routing resolves a
-     * bundle per request. We apply the auth "base migration" (the cel_* identity
-     * tables), introspect the user schema as the active catalog the data API
-     * serves, and make this the process's current app — both api.c and auth.c run
-     * every query against it. */
+    /* App registry + routing (design §4-5). CEL_APPS_DIR set → multi-app: each
+     * request's Host resolves to <dir>/<host>/data.db, opened lazily and bound per
+     * request (HTTP). Otherwise single-app from CEL_DATA_DB, which becomes the
+     * process default (the WS path and boot-time seeding bind it). */
     app_db_global_init();
-    const char *data_db = env_str("CEL_DATA_DB", "cellar.db");
-    app_db_t *app = app_db_get(data_db);
-    if (app) {
-        sqlite3 *sc = app_db_conn_acquire(app);
-        if (sc) {
-            cel_auth_schema_apply(sc);                 /* per-app identity tables (idempotent) */
-            catalog = cel_catalog_build_sqlite(sc);    /* user tables only (cel_* excluded) */
-            app_db_conn_release(app, sc);
-        }
-        cel_catalog_set_active(catalog);
-        app_db_set_current(app);
-        LOG_INFO("app database: %s (%d table(s))", data_db, catalog ? catalog->ntables : 0);
+    cel_apps_init(env_str("CEL_APPS_DIR", ""), env_str("CEL_DATA_DB", "cellar.db"));
 
-        /* Seed the admin / dev users into the app's identity tables now that the
-         * app is current (auth writes go here). */
+    cel_app_t *def = cel_apps_default();   /* the single app (single-app mode) */
+    if (def) {
+        app_db_set_default(def->db);
+        cel_catalog_set_default(def->catalog);
+        LOG_INFO("default app: %d table(s)", def->catalog ? def->catalog->ntables : 0);
+        /* Seed admin / dev users into the default app's identity tables. */
+        cel_apps_enter(def);
         maybe_seed_admin();
         maybe_seed_users();
+        cel_apps_leave();
     } else {
-        LOG_ERROR("could not open app database '%s' — data API will be unavailable", data_db);
+        LOG_INFO("multi-app mode — apps open per request by Host; no boot seeding");
     }
     cel_rpc_audit_security_definer();   /* no-op on SQLite; kept for the call site */
 
@@ -561,8 +553,7 @@ int main(int argc, char **argv) {
     ws_server_destroy(g_server);
     cel_realtime_cleanup();
     opcode_dispatcher_destroy(g_dispatcher);
-    cel_catalog_set_active(NULL);
-    cel_catalog_free(catalog);
+    cel_apps_shutdown();          /* frees the per-app catalogs */
     cel_session_cache_cleanup();
     cel_ratelimit_destroy(g_auth_rl);
     cel_ratelimit_destroy(g_api_rl);
