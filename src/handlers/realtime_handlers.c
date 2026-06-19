@@ -3,6 +3,7 @@
 #include "engine/api.h"
 #include "engine/policy.h"
 #include "engine/realtime.h"
+#include "engine/cel_apps.h"
 
 #include <stdint.h>
 #include <cjson/cJSON.h>
@@ -14,6 +15,7 @@ handler_result_t cel_handle_subscribe(opcode_context_t *ctx) {
     cJSON *req = cJSON_ParseWithLength((const char *)ctx->data, ctx->data_size);
     if (!req) return cel_respond_error(ctx, "invalid JSON");
 
+    cel_apps_enter((cel_app_t *)ctx->callback_data);   /* the request's app (resolved by Host) */
     const cJSON *tk = cJSON_GetObjectItemCaseSensitive(req, "token");
     cel_identity_t who;
     cel_identity_from_token(cJSON_IsString(tk) ? tk->valuestring : NULL, &who);
@@ -22,6 +24,7 @@ handler_result_t cel_handle_subscribe(opcode_context_t *ctx) {
     char err[256] = {0};
     int status = cel_api_authorize_subscription(&who, req, &sub, err, sizeof err);
     cJSON_Delete(req);
+    cel_apps_leave();
     if (status != 200) return cel_respond_error(ctx, err[0] ? err : "subscribe denied");
 
     if (cel_realtime_subscribe(ctx_fd(ctx), &sub) != 0)

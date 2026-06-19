@@ -145,15 +145,19 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       process default). Request context is now **thread-local with a process-default fallback**:
       `app_db_current()` / `cel_catalog_active()` return the per-thread binding (set per HTTP
       request by `cel_apps_enter` in `cel_http_router` from the Host) else the boot default — so
-      auth/mfa/api code is unchanged, concurrent requests hit different apps, and the WS path
-      (no Host) falls back to the default (single-app works; **multi-app WS deferred** — needs
-      the handshake Host plumbed through portico). Unknown Host → 404. Tested:
-      `tests/cel_apps_test.c` (ctest `cel_apps`, 20 checks) + **live HTTP proof** — register on
-      a.com + login works, login on b.com fails (isolated per-app users), 404 on unknown Host;
-      single-app back-compat verified. **Still to do:** provisioning ergonomics (drop-a-dir is
-      enough today; an admin API later), per-app catalog invalidation on schema change, the
-      **control-plane DB** (platform admin / global registry / app lifecycle), and **WS
-      multi-app** (portico handshake-Host).
+      auth/mfa/api code is unchanged and concurrent requests hit different apps. **WS routes too**
+      (Option A): portico captures the handshake Host (`ws_connection.host`, commit 715111f),
+      delivers it via the per-connection `user_data`; cellar resolves the app in `on_binary_message`,
+      carries it on the opcode ctx (`callback_data`), and binds it in each WS handler
+      (data/auth/schema/subscribe). Unknown Host → 404 (HTTP) / op error (WS). Tested:
+      `tests/cel_apps_test.c` (ctest `cel_apps`, 20 checks) + **live HTTP + live WS proofs** —
+      register/login on a.com works, the same on b.com fails (isolated per-app users) over both
+      transports; single-app back-compat verified. **Still to do:** **realtime fan-out is not yet
+      app-scoped** — the `cel_realtime` registry is keyed by table name globally, so a write in
+      app A could match an app B subscriber of a same-named table (scope the registry/subscription
+      by app); provisioning ergonomics (drop-a-dir works; an admin API later); per-app catalog
+      invalidation on schema change; the **control-plane DB** (platform admin / global registry /
+      app lifecycle).
 
 ## Phase 2 — per-app extensibility (the hook layer)  [scoped by the design doc §7-9]
 

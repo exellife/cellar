@@ -184,7 +184,7 @@ static void metrics_gauges(cel_gauges_t *g) {
 }
 
 static int on_binary_message(int fd, const void *data, size_t len, void *user_data) {
-    (void)user_data;
+    /* user_data is the connection's Host header (set by portico at handshake). */
 
     if (len < CEL_HEADER_SIZE) {
         LOG_WARN("short frame (%zu bytes) from fd=%d", len, fd);
@@ -206,7 +206,12 @@ static int on_binary_message(int fd, const void *data, size_t len, void *user_da
         return -1;
     }
     ctx->user_data = (void *)(intptr_t)fd;
-    opcode_context_set_callback(ctx, async_completion, NULL);
+    /* Route by the connection's Host (portico delivers it as the WS user_data).
+     * Resolve the app here, on the connection thread, and carry it on the ctx
+     * (callback_data) so the handler — which may run on a DB worker thread — can
+     * bind it. NULL in multi-app mode for an unknown Host (the op then errors). */
+    cel_app_t *app = cel_apps_resolve((const char *)user_data);
+    opcode_context_set_callback(ctx, async_completion, app);
 
     handler_result_t r = opcode_dispatcher_dispatch(g_dispatcher, ctx);
     if (r == RESULT_SUCCESS && ctx->response_data) {

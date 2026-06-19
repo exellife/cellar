@@ -2,6 +2,7 @@
 #include "respond.h"
 #include "engine/api.h"
 #include "engine/policy.h"
+#include "engine/cel_apps.h"
 
 #include <cjson/cJSON.h>
 
@@ -14,12 +15,14 @@ static handler_result_t ws_data_op(opcode_context_t *ctx, data_fn fn) {
     cJSON *req = cJSON_ParseWithLength((const char *)ctx->data, ctx->data_size);
     if (!req) return cel_respond_error(ctx, "invalid JSON");
 
+    cel_apps_enter((cel_app_t *)ctx->callback_data);   /* the request's app (resolved by Host) */
     const cJSON *tk = cJSON_GetObjectItemCaseSensitive(req, "token");
     cel_identity_t who;
     cel_identity_from_token(cJSON_IsString(tk) ? tk->valuestring : NULL, &who);
 
     cel_api_result_t res = fn(&who, req);
     cJSON_Delete(req);
+    cel_apps_leave();
     return cel_respond_json(ctx, res.body, res.http_status >= 400);
 }
 
