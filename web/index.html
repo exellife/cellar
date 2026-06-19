@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pgforge admin</title>
+<style>
+  :root { --bg:#0f1419; --panel:#1a2029; --line:#2a323d; --fg:#e6e9ee; --mut:#8a94a3;
+          --acc:#4f9cf9; --danger:#e0556b; --ok:#3fb98a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  a { color:var(--acc); }
+  button { font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--panel);
+           color:var(--fg); border-radius:6px; padding:6px 12px; }
+  button:hover { border-color:var(--acc); }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#04121f; font-weight:600; }
+  button.danger { color:var(--danger); border-color:transparent; background:transparent; padding:4px 8px; }
+  input, select, textarea { font:inherit; background:#0c1117; color:var(--fg);
+           border:1px solid var(--line); border-radius:6px; padding:8px 10px; width:100%; }
+  .muted { color:var(--mut); }
+  .err { color:var(--danger); }
+
+  /* login */
+  .login { max-width:340px; margin:12vh auto; padding:28px; background:var(--panel);
+           border:1px solid var(--line); border-radius:12px; }
+  .login h1 { margin:0 0 4px; font-size:22px; }
+  .login label { display:block; margin:14px 0 4px; color:var(--mut); }
+
+  /* app layout */
+  .topbar { display:flex; align-items:center; gap:12px; padding:10px 16px;
+            border-bottom:1px solid var(--line); background:var(--panel); }
+  .brand { font-weight:700; letter-spacing:.3px; }
+  .grow { flex:1; }
+  .layout { display:flex; height:calc(100vh - 49px); }
+  .sidebar { width:220px; border-right:1px solid var(--line); padding:10px; overflow:auto; }
+  .sidebar .tbl { padding:8px 10px; border-radius:6px; cursor:pointer; }
+  .sidebar .tbl:hover { background:var(--panel); }
+  .sidebar .tbl.active { background:var(--acc); color:#04121f; font-weight:600; }
+  .main { flex:1; overflow:auto; padding:16px; }
+  .bar { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line);
+           white-space:nowrap; max-width:320px; overflow:hidden; text-overflow:ellipsis; }
+  th { color:var(--mut); font-weight:600; position:sticky; top:0; background:var(--bg); }
+  tr:hover td { background:var(--panel); }
+  .pill { font-size:11px; color:var(--mut); border:1px solid var(--line); border-radius:10px; padding:0 6px; }
+
+  /* form drawer */
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; justify-content:flex-end; }
+  .drawer { width:420px; max-width:90vw; height:100%; background:var(--panel);
+            border-left:1px solid var(--line); padding:18px; overflow:auto; }
+  .field { margin:12px 0; }
+  .field label { display:block; color:var(--mut); margin-bottom:4px; }
+  .field .meta { font-size:11px; }
+  .actions { display:flex; gap:10px; margin-top:18px; }
+</style>
+</head>
+<body>
+<div id="app" @vue:mounted="init()">
+
+  <!-- LOGIN -->
+  <div class="login" v-if="!authed">
+    <h1>pgforge</h1>
+    <div class="muted">schema-driven admin</div>
+    <label>Email</label>
+    <input v-model="loginEmail" @keyup.enter="login()" autofocus>
+    <label>Password</label>
+    <input type="password" v-model="loginPassword" @keyup.enter="login()">
+    <div class="err" v-if="loginError" style="margin-top:10px">{{ loginError }}</div>
+    <div class="actions"><button class="primary" @click="login()" style="width:100%">Sign in</button></div>
+  </div>
+
+  <!-- APP -->
+  <div v-if="authed">
+    <div class="topbar">
+      <span class="brand">pgforge</span>
+      <span class="muted">{{ current ? current.name : 'select a table' }}</span>
+      <span class="grow"></span>
+      <span class="muted">{{ user && user.email }} <span class="pill">{{ user && user.role }}</span></span>
+      <button @click="logout()">Sign out</button>
+    </div>
+    <div class="layout">
+      <div class="sidebar">
+        <div class="muted" style="padding:6px 10px">Tables</div>
+        <div v-for="t in tables" :key="t.name" class="tbl" :class="{active: current && current.name===t.name}"
+             @click="select(t)">{{ t.name }}</div>
+        <div v-if="!tables.length" class="muted" style="padding:10px">no tables</div>
+      </div>
+
+      <div class="main">
+        <div class="bar">
+          <button class="primary" @click="startCreate()" v-if="current">+ New</button>
+          <button @click="loadRows()" v-if="current">Refresh</button>
+          <span class="muted" v-if="current">{{ rows.length }} row(s)</span>
+          <span class="grow"></span>
+          <span class="err" v-if="error">{{ error }}</span>
+        </div>
+
+        <table v-if="current">
+          <thead>
+            <tr>
+              <th v-for="c in current.columns" :key="c.name">{{ c.name }}<span class="pill" v-if="c.primary_key"> pk</span></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in rows" :key="row[pk]">
+              <td v-for="c in current.columns" :key="c.name" :title="cell(row,c)">{{ cell(row,c) }}</td>
+              <td style="text-align:right; white-space:nowrap">
+                <button @click="startEdit(row)">Edit</button>
+                <button class="danger" @click="del(row)">Delete</button>
+              </td>
+            </tr>
+            <tr v-if="loading"><td class="muted" :colspan="current.columns.length+1">Loading…</td></tr>
+            <tr v-if="!rows.length && !loading"><td class="muted" :colspan="current.columns.length+1">no rows</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- create / edit drawer -->
+    <div class="overlay" v-if="editing" @click="cancel()">
+      <div class="drawer" @click.stop>
+        <h3 style="margin:0 0 4px">{{ isNew ? 'New' : 'Edit' }} {{ current.name }}</h3>
+        <div class="err" v-if="formError">{{ formError }}</div>
+        <div class="field" v-for="c in editableColumns" :key="c.name">
+          <label>{{ c.name }} <span class="meta muted">{{ c.type }}{{ c.nullable ? '' : ' · required' }}</span></label>
+          <select v-if="c.type==='bool'" v-model="form[c.name]">
+            <option :value="true">true</option><option :value="false">false</option>
+            <option v-if="c.nullable" value="">null</option>
+          </select>
+          <textarea v-else-if="c.type==='json'" v-model="form[c.name]" rows="3" placeholder="JSON"></textarea>
+          <input v-else v-model="form[c.name]" :placeholder="c.has_default ? '(default)' : ''">
+        </div>
+        <div class="actions">
+          <button class="primary" @click="save()">{{ isNew ? 'Create' : 'Save' }}</button>
+          <button @click="cancel()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+<script src="/vendor/petite-vue.iife.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

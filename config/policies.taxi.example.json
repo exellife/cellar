@@ -1,0 +1,39 @@
+{
+  "_comment": "Example: a ride-hailing backend on the SAME pgforge binary, by config alone. Roles (rider/driver) are declared in '_roles' and self-register. Access rules show all three scope kinds: owner_column (EQ) forces ownership on create; owner_any (OR) lets one caller match via either of several columns; owner_via (relationship) confines reads to rows the caller participates in, via a membership table. Public reads (vehicle_types) open to 'anon'. '_default':'deny' is the secure posture — every exposed table is listed explicitly, and any table without an entry is denied. Point pgforge at this file with PGF_POLICY_FILE.",
+
+  "_default": "deny",
+
+  "_roles": {
+    "admin":  { "superuser": true },
+    "rider":  { "allow": ["list", "get", "create"], "self_register": true },
+    "driver": { "allow": ["list", "get", "update"], "self_register": true }
+  },
+
+  "_rpc": {
+    "request_ride":  { "roles": ["rider", "admin"] },
+    "accept_ride":   { "roles": ["driver", "admin"] },
+    "complete_ride": { "roles": ["driver", "admin"] }
+  },
+
+  "trips": {
+    "realtime": true,
+    "list":   { "roles": ["admin", "rider", "driver"], "owner_any": ["rider_id", "driver_id"] },
+    "get":    { "roles": ["admin", "rider", "driver"], "owner_any": ["rider_id", "driver_id"] },
+    "create": { "roles": ["admin", "rider"],           "owner_column": "rider_id" },
+    "update": { "roles": ["admin", "driver"],          "owner_any": ["rider_id", "driver_id"] }
+  },
+
+  "trip_messages": {
+    "realtime": true,
+    "list":   { "roles": ["admin", "rider", "driver"],
+                "owner_via": { "table": "trip_participants", "ref": "trip_id", "local": "trip_id", "user": "user_id" } },
+    "get":    { "roles": ["admin", "rider", "driver"],
+                "owner_via": { "table": "trip_participants", "ref": "trip_id", "local": "trip_id", "user": "user_id" } },
+    "create": { "roles": ["admin", "rider", "driver"], "owner_column": "sender_id" }
+  },
+
+  "vehicle_types": {
+    "list": ["admin", "rider", "driver", "anon"],
+    "get":  ["admin", "rider", "driver", "anon"]
+  }
+}

@@ -1,0 +1,23 @@
+# build outputs
+/build/
+/build-*/
+*.o
+*.a
+*.so
+*.out
+
+# a future portico submodule lives here; the sibling ../portico is not part of this repo
+/external/
+
+# editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# local secrets / overrides (never commit)
+config/policies.local.json
+.env
+
+# headless UI test deps (dev only)
+/tests/ui/node_modules/

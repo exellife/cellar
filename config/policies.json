@@ -1,0 +1,20 @@
+{
+  "_comment": "Optional authorization config. '_roles' defines the deployment's role vocabulary (each role: 'superuser' true/false and/or a default-action 'allow' list); entries override/extend the built-ins additively (admin=all, editor=read+create+update, viewer=read), and any role not listed keeps its built-in default. '_default' governs UNLISTED tables: pgforge fails CLOSED, so a table with no entry below is DENIED unless '_default' is \"allow\" (string) or {\"allow\":true}/{\"deny\":false} (object). This sample sets \"allow\" to keep the permissive built-in/_roles fallback for the demo tables; PRODUCTION should use \"_default\":\"deny\" and list every exposed table explicitly. Top-level keys other than '_roles'/'_default'/'_comment' are table names. A table action may be a role array, or an object {roles, owner_column}. owner_column enforces row-level ownership: non-superuser callers only see/modify rows whose owner_column equals their user id, and create forces it to the caller. Superusers bypass both role and row checks.",
+
+  "_default": "allow",
+
+  "_roles": {
+    "admin":  { "superuser": true },
+    "editor": { "allow": ["list", "get", "create", "update"] },
+    "viewer": { "allow": ["list", "get"] }
+  },
+
+  "notes": {
+    "realtime": true,
+    "list":   { "roles": ["admin", "editor", "viewer"], "owner_column": "owner_id" },
+    "get":    { "roles": ["admin", "editor", "viewer"], "owner_column": "owner_id" },
+    "create": { "roles": ["admin", "editor"],           "owner_column": "owner_id" },
+    "update": { "roles": ["admin", "editor"],           "owner_column": "owner_id" },
+    "delete": { "roles": ["admin", "editor"],           "owner_column": "owner_id" }
+  }
+}

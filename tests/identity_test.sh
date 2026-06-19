@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Identity split (#auth, PLAN §7e): credentials live in pgf_identities, not in
+# pgf_users. Proves the password_hash column is gone, a seeded user has a
+# 'password' identity, login resolves THROUGH that identity, and an admin-created
+# user gets a working identity it can log in with. Boots its own server (needs the
+# binary + psql). identity_test.sh <pgforge-binary>
+set -euo pipefail
+
+BIN="${1:?usage: identity_test.sh <pgforge-binary>}"
+H="${PGF_DB_HOST:-localhost}"; U="${PGF_DB_USER:-postgres}"; DB="${PGF_DB_NAME:-pgforge}"
+PSQL="psql -h $H -U $U -d $DB -tAc"
+PORT=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
+
+ADMIN="idtest-admin@pgforge.dev"
+NEWUSER="idtest-user@pgforge.dev"
+
+# Keep the shared DB pristine (identities cascade when the user is deleted).
+cleanup_db() { $PSQL "DELETE FROM pgf_users WHERE email IN ('$ADMIN','$NEWUSER')" >/dev/null 2>&1 || true; }
+cleanup_db
+
+PGF_PORT=$PORT PGF_DB_HOST=$H PGF_DB_USER=$U PGF_DB_NAME=$DB PGF_LOG_LEVEL=warn \
+  PGF_AUTH_RATELIMIT=0 PGF_SEED_USERS="$ADMIN:s3cret-admin:admin" \
+  "$BIN" >/tmp/id_$$.log 2>&1 &
+SRV=$!
+trap 'kill $SRV 2>/dev/null; rm -f /tmp/id_$$.log; cleanup_db' EXIT
+for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/health" && break; sleep 0.1; done
+
+fail=0
+chk()  { if [ "$2" = "$3" ]; then echo "  ok    $1 ($2)"; else echo "  FAIL  $1: got '$2' want '$3'"; fail=1; fi; }
+code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+login_token() {
+  curl -s -X POST -H 'Content-Type: application/json' -d "{\"email\":\"$1\",\"password\":\"$2\"}" \
+    "http://127.0.0.1:$PORT/auth/login" | python3 -c "import sys,json;print(json.load(sys.stdin).get('token',''))"
+}
+
+# ---- schema: the credential moved out of pgf_users ----
+chk "password_hash column dropped" \
+    "$($PSQL "SELECT count(*) FROM information_schema.columns WHERE table_name='pgf_users' AND column_name='password_hash'")" "0"
+chk "seeded admin has a password identity" \
+    "$($PSQL "SELECT count(*) FROM pgf_identities WHERE provider='password' AND provider_uid='$ADMIN'")" "1"
+# the secret is the argon2id hash, parked in the identity (not pgf_users)
+chk "identity secret is argon2id" \
+    "$($PSQL "SELECT count(*) FROM pgf_identities WHERE provider_uid='$ADMIN' AND secret LIKE '\$argon2id\$%'")" "1"
+
+# ---- login resolves through the identity ----
+TOKEN=$(login_token "$ADMIN" "s3cret-admin")
+chk "admin login via identity" "$([ -n "$TOKEN" ] && echo yes || echo no)" "yes"
+
+# ---- admin-created user gets a working identity ----
+chk "admin creates user -> 201" \
+    "$(code -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+        -d "{\"email\":\"$NEWUSER\",\"password\":\"newuser-pw\",\"role\":\"viewer\"}" \
+        "http://127.0.0.1:$PORT/auth/users")" "201"
+chk "created user has a password identity" \
+    "$($PSQL "SELECT count(*) FROM pgf_identities WHERE provider='password' AND provider_uid='$NEWUSER'")" "1"
+chk "created user can log in" \
+    "$(code -X POST -H 'Content-Type: application/json' \
+        -d "{\"email\":\"$NEWUSER\",\"password\":\"newuser-pw\"}" "http://127.0.0.1:$PORT/auth/login")" "200"
+# anti-enumeration / verify path intact: a wrong password is still 401
+chk "wrong password -> 401" \
+    "$(code -X POST -H 'Content-Type: application/json' \
+        -d "{\"email\":\"$NEWUSER\",\"password\":\"WRONG\"}" "http://127.0.0.1:$PORT/auth/login")" "401"
+
+[ "$fail" = 0 ] && echo "IDENTITY SPLIT PASS" || { echo "IDENTITY SPLIT FAIL"; exit 1; }
