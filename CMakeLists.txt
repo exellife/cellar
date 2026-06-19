@@ -245,12 +245,25 @@ if(CELLAR_BUILD_TESTS)
     # verify / logout / password-reset / create-user / seed against a throwaway
     # SQLite app. MFA stubbed off in the test, so no Postgres. libpq-free.
     add_executable(auth_sqlite_test tests/auth_sqlite_test.c
-        src/core/auth.c src/core/auth_schema.c src/core/app_db.c
+        src/core/auth.c src/core/auth_schema.c src/core/app_db.c src/core/db_sqlite.c
         src/core/password.c src/core/session_cache.c src/core/metrics.c)
     target_include_directories(auth_sqlite_test PRIVATE src/core src)
     target_link_libraries(auth_sqlite_test SQLite::SQLite3 logger Threads::Threads
         ${SODIUM_LIB} ${UUID_LIB})
     add_test(NAME auth_sqlite COMMAND auth_sqlite_test)
+
+    # MFA (TOTP) on per-app SQLite (Phase 1 step 5b): enroll -> confirm (real TOTP
+    # code) -> required_for -> challenge -> verify_login (TOTP + recovery code) ->
+    # disable -> reset, end-to-end against a throwaway app. Drives the real auth
+    # session issuance. No Postgres.
+    add_executable(mfa_sqlite_test tests/mfa_sqlite_test.c
+        src/core/mfa.c src/core/auth.c src/core/auth_schema.c src/core/app_db.c
+        src/core/db_sqlite.c src/core/password.c src/core/session_cache.c
+        src/core/metrics.c src/core/totp.c)
+    target_include_directories(mfa_sqlite_test PRIVATE src/core src)
+    target_link_libraries(mfa_sqlite_test SQLite::SQLite3 logger Threads::Threads
+        ${SODIUM_LIB} ${UUID_LIB} OpenSSL::Crypto)
+    add_test(NAME mfa_sqlite COMMAND mfa_sqlite_test)
 
     # DB-free unit test for the declarative-roles authorization engine (#50):
     # built-in defaults stay byte-for-byte, and a "_roles" config bundle defines

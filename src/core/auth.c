@@ -1,6 +1,7 @@
 #include "auth.h"
 #include "password.h"
 #include "app_db.h"
+#include "db_sqlite.h"
 #include "session_cache.h"
 #include "mfa.h"
 #include "metrics.h"
@@ -27,53 +28,6 @@ void cel_auth_init(void) {
 
 /* ---- SQLite helpers -------------------------------------------------------- */
 
-static long now_epoch(void) { return (long)time(NULL); }
-
-/* Prepare `sql` on `c`, binding n text params (a NULL entry => SQL NULL). On
- * success *out holds the statement (caller finalizes). Returns an SQLite code. */
-static int q_prep(sqlite3 *c, const char *sql, const char *const *p, int n, sqlite3_stmt **out) {
-    sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(c, sql, -1, &st, NULL);
-    if (rc != SQLITE_OK) { *out = NULL; return rc; }
-    for (int i = 0; i < n; i++) {
-        if (p[i]) sqlite3_bind_text(st, i + 1, p[i], -1, SQLITE_TRANSIENT);
-        else      sqlite3_bind_null(st, i + 1);
-    }
-    *out = st;
-    return SQLITE_OK;
-}
-
-/* Run a statement with text params, expecting no rows back. Returns true if it
- * stepped to completion (DONE) without error. */
-static bool q_exec(sqlite3 *c, const char *sql, const char *const *p, int n) {
-    sqlite3_stmt *st;
-    if (q_prep(c, sql, p, n, &st) != SQLITE_OK) return false;
-    int rc = sqlite3_step(st);
-    sqlite3_finalize(st);
-    return rc == SQLITE_DONE || rc == SQLITE_ROW;
-}
-
-/* Run a query expected to yield at most one row; copy column 0 (text) into
- * `out`. Returns 1 if a row was found, 0 if none, -1 on a query error. */
-static int q_one_text(sqlite3 *c, const char *sql, const char *const *p, int n,
-                      char *out, size_t out_size) {
-    sqlite3_stmt *st;
-    if (q_prep(c, sql, p, n, &st) != SQLITE_OK) return -1;
-    int rc = sqlite3_step(st);
-    int ret;
-    if (rc == SQLITE_ROW) {
-        const unsigned char *v = sqlite3_column_text(st, 0);
-        snprintf(out, out_size, "%s", v ? (const char *)v : "");
-        ret = 1;
-    } else if (rc == SQLITE_DONE) {
-        ret = 0;
-    } else {
-        ret = -1;
-    }
-    sqlite3_finalize(st);
-    return ret;
-}
-
 /* Transaction control on `c`; true on success. Multi-statement credential writes
  * run in a transaction (under the per-app write lock) to stay atomic. */
 static bool tx(sqlite3 *c, const char *cmd) {
@@ -95,7 +49,7 @@ void cel_auth_set_lockout(int limit, int window_seconds) {
  * if the last failure was outside the window), and lock the account once it hits
  * the limit. now/locked_until are computed in C (SQLite has no now()). */
 static void lockout_record_failure(sqlite3 *c, const char *user_id, int failed, long last_failed) {
-    long now = now_epoch();
+    long now = cel_now_epoch();
     int newcount = (last_failed == 0 || (now - last_failed) > g_lockout_w) ? 1 : failed + 1;
     char cnt[16], nowbuf[24], locked[24];
     snprintf(cnt, sizeof cnt, "%d", newcount);
@@ -103,13 +57,13 @@ static void lockout_record_failure(sqlite3 *c, const char *user_id, int failed, 
     bool lock = newcount >= g_lockout_n;
     if (lock) snprintf(locked, sizeof locked, "%ld", now + g_lockout_w);
     const char *p[4] = { cnt, nowbuf, lock ? locked : NULL, user_id };
-    q_exec(c, "UPDATE cel_users SET failed_login_count=?1, last_failed_login_at=?2, "
+    cel_db_exec(c, "UPDATE cel_users SET failed_login_count=?1, last_failed_login_at=?2, "
               "locked_until=?3 WHERE id=?4", p, 4);
 }
 
 static void lockout_reset(sqlite3 *c, const char *user_id) {
     const char *p[1] = { user_id };
-    q_exec(c, "UPDATE cel_users SET failed_login_count=0, last_failed_login_at=NULL, "
+    cel_db_exec(c, "UPDATE cel_users SET failed_login_count=0, last_failed_login_at=NULL, "
               "locked_until=NULL WHERE id=?1", p, 1);
 }
 
@@ -122,7 +76,7 @@ int cel_auth_unlock(const char *email) {
     int n = -1;
     if (c) {
         const char *p[1] = { email };
-        if (q_exec(c, "UPDATE cel_users SET failed_login_count=0, last_failed_login_at=NULL, "
+        if (cel_db_exec(c, "UPDATE cel_users SET failed_login_count=0, last_failed_login_at=NULL, "
                       "locked_until=NULL WHERE email=?1", p, 1))
             n = sqlite3_changes(c);
         app_db_conn_release(app, c);
@@ -152,7 +106,7 @@ int cel_auth_login(const char *email, const char *password, int ttl_seconds,
     {
         const char *p[1] = { email };
         sqlite3_stmt *st;
-        if (q_prep(c,
+        if (cel_db_prep(c,
             "SELECT u.id, i.secret, u.role, u.is_active, u.email, "
             "(u.email_verified_at IS NOT NULL), u.locked_until, "
             "u.failed_login_count, COALESCE(u.last_failed_login_at, 0) "
@@ -171,7 +125,7 @@ int cel_auth_login(const char *email, const char *password, int ttl_seconds,
             snprintf(uemail, sizeof uemail, "%s", (const char *)sqlite3_column_text(st, 4));
             email_verified = sqlite3_column_int(st, 5) != 0;
             if (sqlite3_column_type(st, 6) != SQLITE_NULL)
-                locked = sqlite3_column_int64(st, 6) > now_epoch();
+                locked = sqlite3_column_int64(st, 6) > cel_now_epoch();
             failed      = sqlite3_column_int(st, 7);
             last_failed = (long)sqlite3_column_int64(st, 8);
         }
@@ -252,15 +206,15 @@ int cel_auth_issue_session(const char *user_id, int ttl_seconds,
     int rc = CEL_AUTH_DBERR;
     if (c) {
         char exp[24], now[24];
-        snprintf(exp, sizeof exp, "%ld", now_epoch() + ttl_seconds);
-        snprintf(now, sizeof now, "%ld", now_epoch());
+        snprintf(exp, sizeof exp, "%ld", cel_now_epoch() + ttl_seconds);
+        snprintf(now, sizeof now, "%ld", cel_now_epoch());
         if (tx(c, "BEGIN")) {
             const char *ins[3] = { thash, user_id, exp };
-            bool ok = q_exec(c, "INSERT INTO cel_sessions(token, user_id, expires_at) "
+            bool ok = cel_db_exec(c, "INSERT INTO cel_sessions(token, user_id, expires_at) "
                                 "VALUES(?1, ?2, ?3)", ins, 3);
             if (ok) {
                 const char *up[2] = { now, user_id };
-                q_exec(c, "UPDATE cel_users SET last_login_at=?1 WHERE id=?2", up, 2);
+                cel_db_exec(c, "UPDATE cel_users SET last_login_at=?1 WHERE id=?2", up, 2);
             }
             rc = (ok && tx(c, "COMMIT")) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
             if (rc != CEL_AUTH_OK) tx(c, "ROLLBACK");
@@ -288,7 +242,7 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
     /* 1. an existing federated identity resolves straight to its user. */
     {
         const char *p[2] = { provider, sub };
-        int f = q_one_text(c, "SELECT user_id FROM cel_identities WHERE provider=?1 AND provider_uid=?2",
+        int f = cel_db_one_text(c, "SELECT user_id FROM cel_identities WHERE provider=?1 AND provider_uid=?2",
                            p, 2, user_id, sizeof user_id);
         if (f < 0) goto out;
     }
@@ -300,14 +254,14 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
     if (!user_id[0] && email_verified && email && *email) {
         char existing[37] = {0};
         const char *p[1] = { email };
-        int f = q_one_text(c, "SELECT id FROM cel_users WHERE email=?1", p, 1, existing, sizeof existing);
+        int f = cel_db_one_text(c, "SELECT id FROM cel_users WHERE email=?1", p, 1, existing, sizeof existing);
         if (f < 0) goto out;
         if (f == 1) {
             if (!email_link_trusted) { rc = CEL_AUTH_INVALID; goto out; }  /* refuse silent merge */
             snprintf(user_id, sizeof user_id, "%s", existing);
             char iid[37]; cel_uuid_v4(iid, sizeof iid);
             const char *ins[4] = { iid, user_id, provider, sub };
-            q_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid) "
+            cel_db_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid) "
                       "VALUES(?1,?2,?3,?4) ON CONFLICT(provider, provider_uid) DO NOTHING", ins, 4);
         }
     }
@@ -319,12 +273,12 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
         if (!tx(c, "BEGIN")) goto out;
         char nid[37]; cel_uuid_v4(nid, sizeof nid);
         const char *up[3] = { nid, email, provision_role };
-        bool ok = q_exec(c, "INSERT INTO cel_users(id, email, role) VALUES(?1,?2,?3)", up, 3);
+        bool ok = cel_db_exec(c, "INSERT INTO cel_users(id, email, role) VALUES(?1,?2,?3)", up, 3);
         if (ok) {
             snprintf(user_id, sizeof user_id, "%s", nid);
             char iid[37]; cel_uuid_v4(iid, sizeof iid);
             const char *ins[4] = { iid, user_id, provider, sub };
-            ok = q_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid) "
+            ok = cel_db_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid) "
                            "VALUES(?1,?2,?3,?4)", ins, 4);
         }
         if (!ok || !tx(c, "COMMIT")) { tx(c, "ROLLBACK"); goto out; }   /* rc stays DBERR */
@@ -332,9 +286,9 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
 
     /* A provider-verified email confirms the account's email only when trusted. */
     if (email_verified && email && *email && email_link_trusted) {
-        char now[24]; snprintf(now, sizeof now, "%ld", now_epoch());
+        char now[24]; snprintf(now, sizeof now, "%ld", cel_now_epoch());
         const char *uv[3] = { now, user_id, email };
-        q_exec(c, "UPDATE cel_users SET email_verified_at=COALESCE(email_verified_at, ?1) "
+        cel_db_exec(c, "UPDATE cel_users SET email_verified_at=COALESCE(email_verified_at, ?1) "
                   "WHERE id=?2 AND email=?3", uv, 3);
     }
 
@@ -388,7 +342,7 @@ int cel_auth_register(const char *email, const char *password, const char *role,
     /* 1. the account row. */
     {
         const char *p[3] = { uid, email, role };
-        if (!q_exec(c, "INSERT INTO cel_users(id, email, role) VALUES(?1, ?2, ?3)", p, 3)) {
+        if (!cel_db_exec(c, "INSERT INTO cel_users(id, email, role) VALUES(?1, ?2, ?3)", p, 3)) {
             if (sqlite3_extended_errcode(c) == SQLITE_CONSTRAINT_UNIQUE) rc = CEL_AUTH_CONFLICT;
             else LOG_ERROR("register failed: %s", sqlite3_errmsg(c));
             goto out;
@@ -404,7 +358,7 @@ int cel_auth_register(const char *email, const char *password, const char *role,
     {
         char iid[37]; cel_uuid_v4(iid, sizeof iid);
         const char *p[4] = { iid, uid, email, hash };
-        if (!q_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid, secret) "
+        if (!cel_db_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid, secret) "
                        "VALUES(?1, ?2, 'password', ?3, ?4)", p, 4)) {
             if (sqlite3_extended_errcode(c) == SQLITE_CONSTRAINT_UNIQUE) rc = CEL_AUTH_CONFLICT;
             else LOG_ERROR("register identity failed: %s", sqlite3_errmsg(c));
@@ -414,9 +368,9 @@ int cel_auth_register(const char *email, const char *password, const char *role,
 
     /* 3. the auto-login session (token hash stored; raw token returned). */
     {
-        char exp[24]; snprintf(exp, sizeof exp, "%ld", now_epoch() + ttl_seconds);
+        char exp[24]; snprintf(exp, sizeof exp, "%ld", cel_now_epoch() + ttl_seconds);
         const char *ins[3] = { thash, uid, exp };
-        if (!q_exec(c, "INSERT INTO cel_sessions(token, user_id, expires_at) "
+        if (!cel_db_exec(c, "INSERT INTO cel_sessions(token, user_id, expires_at) "
                        "VALUES(?1, ?2, ?3)", ins, 3)) goto out;
     }
 
@@ -450,7 +404,7 @@ int cel_auth_create_user(const char *email, const char *password, const char *ro
 
     {
         const char *p[3] = { uid, email, role };
-        if (!q_exec(c, "INSERT INTO cel_users(id, email, role) VALUES(?1, ?2, ?3)", p, 3)) {
+        if (!cel_db_exec(c, "INSERT INTO cel_users(id, email, role) VALUES(?1, ?2, ?3)", p, 3)) {
             if (sqlite3_extended_errcode(c) == SQLITE_CONSTRAINT_UNIQUE) rc = CEL_AUTH_CONFLICT;
             else LOG_ERROR("create user failed: %s", sqlite3_errmsg(c));
             goto out;
@@ -459,7 +413,7 @@ int cel_auth_create_user(const char *email, const char *password, const char *ro
     {
         char iid[37]; cel_uuid_v4(iid, sizeof iid);
         const char *p[4] = { iid, uid, email, hash };
-        if (!q_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid, secret) "
+        if (!cel_db_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid, secret) "
                        "VALUES(?1, ?2, 'password', ?3, ?4)", p, 4)) {
             if (sqlite3_extended_errcode(c) == SQLITE_CONSTRAINT_UNIQUE) rc = CEL_AUTH_CONFLICT;
             else LOG_ERROR("create identity failed: %s", sqlite3_errmsg(c));
@@ -488,10 +442,10 @@ int cel_auth_verify(const char *token, cel_user_t *out_user) {
     if (!c) return CEL_AUTH_DBERR;
     int rc = CEL_AUTH_DBERR;
 
-    char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", now_epoch());
+    char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", cel_now_epoch());
     const char *p[2] = { thash, nowbuf };
     sqlite3_stmt *st;
-    if (q_prep(c,
+    if (cel_db_prep(c,
         "SELECT u.id, u.email, u.role, (u.email_verified_at IS NOT NULL) "
         "FROM cel_sessions s JOIN cel_users u ON u.id = s.user_id "
         "WHERE s.token=?1 AND s.expires_at > ?2 AND u.is_active=1", p, 2, &st) != SQLITE_OK) {
@@ -531,7 +485,7 @@ int cel_auth_logout(const char *token) {
     int rc = CEL_AUTH_DBERR;
     if (c) {
         const char *p[1] = { thash };
-        rc = q_exec(c, "DELETE FROM cel_sessions WHERE token=?1", p, 1) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
+        rc = cel_db_exec(c, "DELETE FROM cel_sessions WHERE token=?1", p, 1) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
         app_db_conn_release(app, c);
     }
     app_db_write_unlock(app);
@@ -547,7 +501,7 @@ int cel_auth_revoke_user_sessions(const char *email) {
     int n = -1;
     if (c) {
         const char *p[1] = { email };
-        if (q_exec(c, "DELETE FROM cel_sessions WHERE user_id = "
+        if (cel_db_exec(c, "DELETE FROM cel_sessions WHERE user_id = "
                       "(SELECT id FROM cel_users WHERE email=?1)", p, 1))
             n = sqlite3_changes(c);
         app_db_conn_release(app, c);
@@ -573,7 +527,7 @@ int cel_auth_create_password_reset(const char *email, char *out_token, size_t to
     char user_id[37] = {0};
     {
         const char *p[1] = { email };
-        int f = q_one_text(c,
+        int f = cel_db_one_text(c,
             "SELECT u.id FROM cel_identities i JOIN cel_users u ON u.id = i.user_id "
             "WHERE i.provider='password' AND i.provider_uid=?1", p, 1, user_id, sizeof user_id);
         if (f < 0) goto out;
@@ -584,9 +538,9 @@ int cel_auth_create_password_reset(const char *email, char *out_token, size_t to
     {
         char h[65];
         if (cel_token_hash(out_token, h, sizeof h) != 0) goto out;
-        char exp[24]; snprintf(exp, sizeof exp, "%ld", now_epoch() + RESET_TTL_SECONDS);
+        char exp[24]; snprintf(exp, sizeof exp, "%ld", cel_now_epoch() + RESET_TTL_SECONDS);
         const char *ins[3] = { h, user_id, exp };
-        rc = q_exec(c, "INSERT INTO cel_password_resets(token, user_id, expires_at) "
+        rc = cel_db_exec(c, "INSERT INTO cel_password_resets(token, user_id, expires_at) "
                        "VALUES(?1, ?2, ?3)", ins, 3) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
     }
 out:
@@ -615,9 +569,9 @@ int cel_auth_perform_password_reset(const char *token, const char *new_password)
 
     /* Atomically claim the token (unexpired + unused), returning its user. */
     {
-        char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", now_epoch());
+        char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", cel_now_epoch());
         const char *p[2] = { h, nowbuf };
-        int f = q_one_text(c,
+        int f = cel_db_one_text(c,
             "UPDATE cel_password_resets SET used_at=unixepoch() "
             "WHERE token=?1 AND used_at IS NULL AND expires_at > ?2 "
             "RETURNING user_id", p, 2, user_id, sizeof user_id);
@@ -627,7 +581,7 @@ int cel_auth_perform_password_reset(const char *token, const char *new_password)
     /* Set the new secret on the password identity. */
     {
         const char *up[2] = { hash, user_id };
-        if (!q_exec(c, "UPDATE cel_identities SET secret=?1 "
+        if (!cel_db_exec(c, "UPDATE cel_identities SET secret=?1 "
                        "WHERE user_id=?2 AND provider='password'", up, 2) || sqlite3_changes(c) != 1) {
             rc = CEL_AUTH_INVALID; goto out;
         }
@@ -636,8 +590,8 @@ int cel_auth_perform_password_reset(const char *token, const char *new_password)
     /* Revoke sessions + pending MFA challenges, clear lockout (full recovery, L-5). */
     {
         const char *us[1] = { user_id };
-        q_exec(c, "DELETE FROM cel_sessions WHERE user_id=?1", us, 1);
-        q_exec(c, "DELETE FROM cel_mfa_challenges WHERE user_id=?1", us, 1);
+        cel_db_exec(c, "DELETE FROM cel_sessions WHERE user_id=?1", us, 1);
+        cel_db_exec(c, "DELETE FROM cel_mfa_challenges WHERE user_id=?1", us, 1);
         lockout_reset(c, user_id);
     }
 
@@ -669,7 +623,7 @@ int cel_auth_create_email_verification(const char *user_id,
     {
         const char *p[1] = { user_id };
         sqlite3_stmt *st;
-        if (q_prep(c, "SELECT email, (email_verified_at IS NOT NULL) FROM cel_users WHERE id=?1",
+        if (cel_db_prep(c, "SELECT email, (email_verified_at IS NOT NULL) FROM cel_users WHERE id=?1",
                    p, 1, &st) != SQLITE_OK) goto out;
         int step = sqlite3_step(st);
         if (step == SQLITE_ROW) {
@@ -685,9 +639,9 @@ int cel_auth_create_email_verification(const char *user_id,
     {
         char hbuf[65];
         if (cel_token_hash(out_token, hbuf, sizeof hbuf) != 0) goto out;
-        char exp[24]; snprintf(exp, sizeof exp, "%ld", now_epoch() + VERIFY_TTL_SECONDS);
+        char exp[24]; snprintf(exp, sizeof exp, "%ld", cel_now_epoch() + VERIFY_TTL_SECONDS);
         const char *ins[3] = { hbuf, user_id, exp };
-        rc = q_exec(c, "INSERT INTO cel_email_verifications(token, user_id, expires_at) "
+        rc = cel_db_exec(c, "INSERT INTO cel_email_verifications(token, user_id, expires_at) "
                        "VALUES(?1, ?2, ?3)", ins, 3) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
     }
 out:
@@ -714,9 +668,9 @@ int cel_auth_verify_email(const char *token) {
 
     /* Atomically claim the token (unexpired + unused). */
     {
-        char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", now_epoch());
+        char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", cel_now_epoch());
         const char *p[2] = { h, nowbuf };
-        int f = q_one_text(c,
+        int f = cel_db_one_text(c,
             "UPDATE cel_email_verifications SET used_at=unixepoch() "
             "WHERE token=?1 AND used_at IS NULL AND expires_at > ?2 "
             "RETURNING user_id", p, 2, user_id, sizeof user_id);
@@ -726,7 +680,7 @@ int cel_auth_verify_email(const char *token) {
     /* Mark the email verified (idempotent: keep the first verification time). */
     {
         const char *up[1] = { user_id };
-        if (!q_exec(c, "UPDATE cel_users SET email_verified_at=COALESCE(email_verified_at, unixepoch()) "
+        if (!cel_db_exec(c, "UPDATE cel_users SET email_verified_at=COALESCE(email_verified_at, unixepoch()) "
                        "WHERE id=?1", up, 1)) goto out;
     }
 
@@ -762,7 +716,7 @@ int cel_auth_seed_user(const char *email, const char *password, const char *role
     {
         char nid[37]; cel_uuid_v4(nid, sizeof nid);
         const char *p[3] = { nid, email, role };
-        int f = q_one_text(c,
+        int f = cel_db_one_text(c,
             "INSERT INTO cel_users(id, email, role) VALUES(?1, ?2, ?3) "
             "ON CONFLICT(email) DO UPDATE SET role=excluded.role, is_active=1 "
             "RETURNING id", p, 3, uid, sizeof uid);
@@ -773,7 +727,7 @@ int cel_auth_seed_user(const char *email, const char *password, const char *role
     {
         char iid[37]; cel_uuid_v4(iid, sizeof iid);
         const char *p[4] = { iid, uid, email, hash };
-        if (!q_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid, secret) "
+        if (!cel_db_exec(c, "INSERT INTO cel_identities(id, user_id, provider, provider_uid, secret) "
                        "VALUES(?1, ?2, 'password', ?3, ?4) "
                        "ON CONFLICT(provider, provider_uid) DO UPDATE SET secret=excluded.secret", p, 4)) {
             LOG_ERROR("seed identity failed: %s", sqlite3_errmsg(c));

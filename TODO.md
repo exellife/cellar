@@ -115,11 +115,15 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       identity DDL: TEXT uuids, INTEGER epoch times, 0/1 bools) applied per-app at boot. main.c
       seeds into the app after it's current; the PG pool now only matters for not-yet-converted
       mfa.c / migrate.c. Unit-tested (`tests/auth_sqlite_test.c`, ctest `auth_sqlite`: 26
-      checks); boot+seed verified with **no Postgres**. **Seam:** with MFA enabled,
-      `cel_mfa_required_for` (mfa.c, still PG) won't see the SQLite user → MFA bypassed until
-      mfa.c converts. **Next:** mfa.c → SQLite (onto the cel_mfa* tables already in the
-      schema), then migrate.c, then delete db_connection.c / row_json.c / PG schema_catalog
-      path / vestigial `tenant_id` fields.
+      checks); boot+seed verified with **no Postgres**. **mfa.c also converted** — TOTP
+      enroll/confirm/disable/regenerate, login challenge + verify (TOTP or single-use recovery
+      code), required-for, and admin reset all on the app's SQLite db; the MFA bypass seam is
+      closed. Extracted the SQLite bind/exec helpers into `src/core/db_sqlite.{c,h}`
+      (`cel_db_prep/exec/one_text`, `cel_now_epoch`), shared by auth + mfa (+ migrate next);
+      auth.c refactored onto them. Tested: `tests/mfa_sqlite_test.c` (ctest `mfa_sqlite`,
+      end-to-end with real TOTP codes). 15/15 C unit tests green. **Next:** migrate.c → SQLite,
+      then delete db_connection.c / row_json.c / PG schema_catalog path / vestigial `tenant_id`
+      fields / PG tenant tooling.
 - [ ] **App routing + provisioning.** Resolve app from the request (Host/path) → its
       bundle. A small **control-plane DB** (app registry, domain→bundle routing,
       platform admin). Decided: **per-app users** in each `data.db` + a control-plane for
