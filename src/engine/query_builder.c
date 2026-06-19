@@ -579,6 +579,10 @@ static int build_aggregate_body(const cel_table_t *t, const cJSON *req, const ce
             if (sb_put_ident(sql, g->valuestring)) return -1;
         }
     }
+    /* Bound the result like every other read path (H-2): a high-cardinality
+     * group column would otherwise materialize a whole-table result in memory.
+     * Honors an optional caller `limit`, clamped to CEL_LIST_MAX_LIMIT. */
+    if (build_limit_offset(req, sql, errbuf, errlen)) return -1;
     return 0;
 }
 

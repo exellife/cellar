@@ -411,7 +411,7 @@ int main(void) {
     cJSON_AddItemToArray(cJSON_AddArrayToObject(req, "group"), cJSON_CreateString("owner_id"));
     cJSON_AddItemToArray(cJSON_AddArrayToObject(req, "aggregate"), cJSON_CreateString("count"));
     expect("agg group+count", cel_build_aggregate(&t, req, &none, &q, err, sizeof err), &q,
-           "SELECT \"owner_id\", count(*) AS \"count\" FROM \"notes\" GROUP BY \"owner_id\" ORDER BY \"owner_id\"", 0);
+           "SELECT \"owner_id\", count(*) AS \"count\" FROM \"notes\" GROUP BY \"owner_id\" ORDER BY \"owner_id\" LIMIT 100 OFFSET 0", 0);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* group + count + max(col) */
@@ -422,14 +422,14 @@ int main(void) {
     cJSON_AddItemToArray(aggl, cJSON_CreateString("max:title"));
     expect("agg group+count+max", cel_build_aggregate(&t, req, &none, &q, err, sizeof err), &q,
            "SELECT \"owner_id\", count(*) AS \"count\", max(\"title\") AS \"max_title\" "
-           "FROM \"notes\" GROUP BY \"owner_id\" ORDER BY \"owner_id\"", 0);
+           "FROM \"notes\" GROUP BY \"owner_id\" ORDER BY \"owner_id\" LIMIT 100 OFFSET 0", 0);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* aggregate only -> a single totals row, no GROUP BY */
     req = cJSON_CreateObject();
     cJSON_AddItemToArray(cJSON_AddArrayToObject(req, "aggregate"), cJSON_CreateString("count"));
     expect("agg totals (no group)", cel_build_aggregate(&t, req, &none, &q, err, sizeof err), &q,
-           "SELECT count(*) AS \"count\" FROM \"notes\"", 0);
+           "SELECT count(*) AS \"count\" FROM \"notes\" LIMIT 100 OFFSET 0", 0);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* group + count under owner scope (totals are confined to the caller's rows) */
@@ -438,7 +438,7 @@ int main(void) {
     cJSON_AddItemToArray(cJSON_AddArrayToObject(req, "aggregate"), cJSON_CreateString("count"));
     expect("agg group+count+scope", cel_build_aggregate(&t, req, &owner, &q, err, sizeof err), &q,
            "SELECT \"owner_id\", count(*) AS \"count\" FROM \"notes\" WHERE \"owner_id\" = ?1 "
-           "GROUP BY \"owner_id\" ORDER BY \"owner_id\"", 1);
+           "GROUP BY \"owner_id\" ORDER BY \"owner_id\" LIMIT 100 OFFSET 0", 1);
     cel_query_free(&q); cJSON_Delete(req);
 
     printf(failures ? "\nFAILED (%d)\n" : "\nALL PASS\n", failures);
