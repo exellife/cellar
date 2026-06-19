@@ -26,10 +26,10 @@ find_package(Threads REQUIRED)
 find_package(PostgreSQL REQUIRED)       # provides PostgreSQL::PostgreSQL (libpq, dynamic)
 find_package(PkgConfig REQUIRED)
 
-# cJSON is vendored (single-file, MIT) — no libcjson runtime dependency.
-add_library(cjson STATIC third_party/cjson/cJSON.c)
-target_include_directories(cjson PUBLIC third_party/cjson/include)
-target_compile_options(cjson PRIVATE -w)
+# cJSON is vendored (single-file, MIT) — no libcjson runtime dependency. portico
+# vendors the same single-file cJSON and registers its own `cjson` target during
+# add_subdirectory() below, so we define ours only if portico hasn't (guarded after
+# the portico include) to avoid a duplicate-target collision.
 
 # libsodium / libuuid: dynamic by default, static archives when CELLAR_STATIC.
 if(CELLAR_STATIC)
@@ -67,6 +67,13 @@ endif()
 set(PORTICO_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(PORTICO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(${PORTICO_DIR} ${CMAKE_BINARY_DIR}/portico-build)
+
+# cJSON: reuse portico's target if it registered one, else build our own copy.
+if(NOT TARGET cjson)
+    add_library(cjson STATIC third_party/cjson/cJSON.c)
+    target_include_directories(cjson PUBLIC third_party/cjson/include)
+    target_compile_options(cjson PRIVATE -w)
+endif()
 
 # ---------------------------------------------------------------------------
 # Remaining vendored libraries (kept warning-quiet).
