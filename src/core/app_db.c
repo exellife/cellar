@@ -66,6 +66,10 @@ static sqlite3 *open_conn(const char *path)
      * write lock — paired with per-app write serialization this is just slack. */
     sqlite3_busy_timeout(c, 5000);
 
+    /* Extended result codes so callers can tell a UNIQUE violation (→409) from a
+     * FK / NOT NULL / CHECK violation (→400) on a failed statement. */
+    sqlite3_extended_result_codes(c, 1);
+
     /* WAL: concurrent readers + a single writer; NORMAL sync is WAL-durable
      * enough (a crash can lose the last commit, not corrupt the file); enforce
      * foreign keys (off by default in SQLite). */

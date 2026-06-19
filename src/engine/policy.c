@@ -10,19 +10,6 @@
 /* Optional per-table override config; NULL => built-in defaults only. */
 static cJSON *g_config = NULL;
 
-/* ---- tenancy configuration ------------------------------------------------ */
-
-static char g_tenant_column[64] = {0};
-
-void cel_tenancy_init(void) {
-    const char *c = getenv("CEL_TENANT_COLUMN");
-    if (c && *c) snprintf(g_tenant_column, sizeof g_tenant_column, "%s", c);
-}
-
-const char *cel_tenancy_column(void) {
-    return g_tenant_column[0] ? g_tenant_column : NULL;
-}
-
 void cel_identity_from_token(const char *token, cel_identity_t *out) {
     memset(out, 0, sizeof *out);
     snprintf(out->role, sizeof out->role, "%s", "anon");

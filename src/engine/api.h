@@ -13,6 +13,7 @@
 #include <cjson/cJSON.h>
 #include "policy.h"
 #include "realtime.h"
+#include "core/app_db.h"   /* app_db_t — the per-app SQLite handle the data ops run against */
 
 typedef struct {
     cJSON *body;        /* response object (caller owns / cJSON_Delete) */
@@ -26,6 +27,11 @@ typedef struct {
 cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req);
 cel_api_result_t cel_api_get(const cel_identity_t *who, const cJSON *req);
 cel_api_result_t cel_api_schema(const cel_identity_t *who);
+
+/* Set the app (its SQLite database) the data ops execute against. Interim:
+ * called once at startup with the single default app; request routing will
+ * resolve this per-request to the addressed bundle in a later step. */
+void cel_api_set_app(app_db_t *db);
 
 /* login is public (no identity required). With TOTP 2FA enabled, a user who has a
  * confirmed enrollment gets 200 + {status:"mfa_required", challenge} instead of a
@@ -76,9 +82,8 @@ cel_api_result_t cel_api_register(const cJSON *req);
 
 /* Admin-provisioned account creation (authenticated, superuser-only). Cannot
  * create platform_admin (out-of-band/CLI only — keeps the platform tier
- * unreachable in-band). In pooled mode a tenant admin's new users are forced
- * into the admin's own tenant; platform_admin must pass an explicit tenant_id.
- *   create user : { email, password, role, tenant_id? } -> 201 + {user} / 403 / 409 */
+ * unreachable in-band).
+ *   create user : { email, password, role } -> 201 + {user} / 403 / 409 */
 cel_api_result_t cel_api_create_user(const cel_identity_t *who, const cJSON *req);
 
 /*   create : { table, values: {col: v, ...} }       -> 201 + inserted row
@@ -88,15 +93,15 @@ cel_api_result_t cel_api_create(const cel_identity_t *who, const cJSON *req);
 cel_api_result_t cel_api_update(const cel_identity_t *who, const cJSON *req);
 cel_api_result_t cel_api_delete(const cel_identity_t *who, const cJSON *req);
 
-/* Call a whitelisted Postgres function as an authz'd operation (domain logic as
- * SQL). Deny-by-default via the "_rpc" config; args are bound, not interpolated;
- * runs under the caller's tenant context (RLS) like any write.
- *   rpc : { fn, args?: {name: value, ...} }  -> 200 + { result: [rows] } / 403 / 400 */
+/* Call a whitelisted RPC as an authz'd operation. Deny-by-default via the "_rpc"
+ * config. DEFERRED on the SQLite backend: there is no Postgres-style SQL-function
+ * RPC, so a whitelisted call currently resolves but returns 501; RPC returns in
+ * the hook layer (design §8) in Phase 2.
+ *   rpc : { fn, args? }  -> 501 (not yet) / 403 / 400 */
 cel_api_result_t cel_api_rpc(const cel_identity_t *who, const cJSON *req);
 
-/* Startup audit: warn about whitelisted RPC functions defined SECURITY DEFINER,
- * which bypass row-level security (a tenant-isolation risk in pooled mode). Call
- * once after the policy is loaded and the DB is available (H-4). */
+/* No-op on SQLite (kept for the startup call site): the SECURITY DEFINER audit
+ * was Postgres-specific. RPC authorization moves to the hook layer in Phase 2. */
 void cel_rpc_audit_security_definer(void);
 
 /* Authorize a realtime subscription request { table, key?:{column,value} } for

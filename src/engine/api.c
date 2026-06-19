@@ -1,8 +1,8 @@
 #include "api.h"
 #include "schema_catalog.h"
 #include "query_builder.h"
-#include "row_json.h"
-#include "core/db_connection.h"
+#include "result_json.h"
+#include "core/app_db.h"
 #include "core/auth.h"
 #include "core/mfa.h"
 #include "core/oauth.h"
@@ -11,10 +11,16 @@
 #include "core/metrics.h"
 #include "logger.h"
 
-#include <libpq-fe.h>
+#include <sqlite3.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The app this process serves. Interim: one global app, set at startup by main,
+ * until request routing resolves Host/path → bundle (a later step). Every data
+ * query runs against this app's SQLite file. */
+static app_db_t *g_app = NULL;
+void cel_api_set_app(app_db_t *db) { g_app = db; }
 
 #define SESSION_TTL_SECONDS (24 * 3600)
 #define MIN_PASSWORD_LEN 8
@@ -39,198 +45,87 @@ static const cel_table_t *resolve_table(const cJSON *req) {
     return cel_catalog_find(cel_catalog_active(), t->valuestring);
 }
 
-/* Map a Postgres SQLSTATE to an HTTP status (client vs server error). */
-static int map_sqlstate(const char *ss) {
-    if (!ss) return 500;
-    if (!strcmp(ss, "23505")) return 409;   /* unique_violation */
-    if (!strcmp(ss, "23503")) return 400;   /* foreign_key_violation: bad reference */
-    if (!strcmp(ss, "23502")) return 400;   /* not_null_violation */
-    if (!strcmp(ss, "23514")) return 400;   /* check_violation */
-    if (ss[0] == '2' && ss[1] == '2') return 400;  /* data exceptions (bad uuid, range, ...) */
-    return 500;
+/* Map a SQLite (extended) result code from a failed statement to an HTTP status. */
+static int map_sqlite_err(int rc) {
+    switch (rc) {
+        case SQLITE_CONSTRAINT_UNIQUE:
+        case SQLITE_CONSTRAINT_PRIMARYKEY: return 409;
+        case SQLITE_CONSTRAINT_FOREIGNKEY:
+        case SQLITE_CONSTRAINT_NOTNULL:
+        case SQLITE_CONSTRAINT_CHECK:
+        case SQLITE_MISMATCH:              return 400;
+        default:
+            if ((rc & 0xFF) == SQLITE_CONSTRAINT) return 400;  /* any other constraint */
+            return 500;
+    }
 }
 
-/* Generic, client-safe message for a client-error SQLSTATE. NEVER return the raw
- * libpq primary message: it embeds constraint / index / table / column names and
- * the offending values (schema disclosure), and a unique-violation message is a
- * cross-tenant row-existence oracle since UNIQUE is enforced BELOW row-level
- * security. The full message is still logged server-side. (M-7) */
-static const char *sqlstate_message(const char *ss) {
-    if (!ss) return "request failed";
-    if (!strcmp(ss, "23505")) return "conflict";
-    if (!strcmp(ss, "23503")) return "invalid reference";
-    if (!strcmp(ss, "23502")) return "a required field is missing";
-    if (!strcmp(ss, "23514")) return "a value failed a constraint check";
-    if (ss[0] == '2' && ss[1] == '2') return "invalid input value";
-    return "request failed";
+/* Generic, client-safe message for a failed statement. NEVER return the raw
+ * sqlite3_errmsg: it embeds table / column / constraint names and the offending
+ * values (schema disclosure), and a unique-violation message is a row-existence
+ * oracle. The full diagnostic is still logged server-side. (M-7) */
+static const char *sqlite_err_message(int rc) {
+    switch (rc) {
+        case SQLITE_CONSTRAINT_UNIQUE:
+        case SQLITE_CONSTRAINT_PRIMARYKEY: return "conflict";
+        case SQLITE_CONSTRAINT_FOREIGNKEY: return "invalid reference";
+        case SQLITE_CONSTRAINT_NOTNULL:    return "a required field is missing";
+        case SQLITE_CONSTRAINT_CHECK:      return "a value failed a constraint check";
+        case SQLITE_MISMATCH:              return "invalid input value";
+        default:
+            if ((rc & 0xFF) == SQLITE_CONSTRAINT) return "a value failed a constraint check";
+            return "request failed";
+    }
 }
 
-/* The value to bind to app.tenant_id for Postgres RLS on this request, or NULL
- * when there is no RLS context (single-tenant). "*" is the platform-admin
- * sentinel (sees all tenants); otherwise the caller's tenant. A tenant user with
- * no tenant never reaches here — make_scope denies it first. */
-static const char *rls_tenant_setting(const cel_identity_t *who) {
-    if (!cel_tenancy_column()) return NULL;                  /* single-tenant: no RLS */
-    if (!strcmp(who->role, "platform_admin")) return "*";   /* global */
-    return who->tenant_id;
-}
-
-/* Run a built query, returning its rows as JSON (RETURNING/SELECT). On error,
- * sets *http from SQLSTATE and copies a client-safe message into errmsg.
+/* Run a built query against the app's SQLite database, returning its rows as JSON
+ * (SELECT / RETURNING). `is_write` takes the per-app write lock so a single app's
+ * writers serialize (SQLite is single-writer per file). On error, sets *http from
+ * the SQLite result code and copies a client-safe message into errmsg.
  *
- * When rls_tenant is non-NULL (pooled mode), the query runs inside a transaction
- * that first binds app.tenant_id via set_config(..., is_local=true). is_local is
- * transaction-scoped, so it shares the transaction with the query and is reset at
- * COMMIT/ROLLBACK — it can never leak to the next request that reuses this pooled
- * connection. This is the DB-level seatbelt behind the app-level scope rules:
- * with the server connected as a non-superuser role, RLS confines every query to
- * the caller's tenant even if the app-level scope were somehow bypassed. */
-#ifdef LIBPQ_HAS_PIPELINING
-/* Pooled-mode fast path (opt-in, CEL_DB_PIPELINE=1): send BEGIN + set_config
- * (app.tenant_id) + the query + COMMIT as ONE pipelined round trip instead of
- * four. Both inner statements ride the per-connection prepared-statement cache
- * (PQsendQueryPrepared). Returns 1 if it ran the pipeline (out/http/errmsg set),
- * or 0 if it declined before sending anything (connection untouched → caller runs
- * the sequential path). The tenant-scoped transaction semantics are identical to
- * run_rows: set_config(..., is_local=true) binds app.tenant_id for the txn only,
- * and a query error aborts the pipeline so Postgres rolls the txn back. */
-static int run_rows_pipelined(PGconn *c, const cel_query_t *q, const cel_table_t *t,
-                              const char *rls_tenant, cJSON **out,
-                              int *http, char *errmsg, size_t errlen) {
-    static const char *SET_SQL = "SELECT set_config('app.tenant_id', $1, true)";
-    const char *tparams[1] = { rls_tenant };
+ * The serializer steps the statement to completion; sqlite3_finalize then surfaces
+ * any step error (constraint / type mismatch / I/O) — checked here so a failed
+ * write is reported, not silently treated as an empty result. */
+static cJSON *run_rows(const cel_query_t *q, const cel_table_t *t, int is_write,
+                       int *http, char *errmsg, size_t errlen) {
+    if (!g_app) { *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable"); return NULL; }
 
-    /* Prepare both statements (one-time per connection) BEFORE entering pipeline
-     * mode, so we can decline cleanly on a miss without a half-built pipeline. */
-    char set_name[24], main_name[24];
-    if (db_connection_prepare_cached(c, SET_SQL, 1, set_name, sizeof set_name) < 0)
-        return 0;
-    if (db_connection_prepare_cached(c, q->sql, q->nparams, main_name, sizeof main_name) < 0)
-        return 0;
-    if (PQenterPipelineMode(c) != 1)
-        return 0;
-
-    int queued =
-        PQsendQueryParams(c, "BEGIN", 0, NULL, NULL, NULL, NULL, 0) == 1 &&
-        PQsendQueryPrepared(c, set_name, 1, tparams, NULL, NULL, 0) == 1 &&
-        PQsendQueryPrepared(c, main_name, q->nparams,
-                            (const char *const *)q->params, NULL, NULL, 0) == 1 &&
-        PQsendQueryParams(c, "COMMIT", 0, NULL, NULL, NULL, NULL, 0) == 1 &&
-        PQpipelineSync(c) == 1;
-
-    cJSON *rows = NULL;
-    int pre_error = 0;   /* BEGIN or set_config failed → 500 tenant-context */
-
-    if (queued) {
-        /* Drain in command order: BEGIN(0), set_config(1), query(2), COMMIT(3),
-         * then PGRES_PIPELINE_SYNC. Each command's results end at a NULL. */
-        int cmd = 0, sync_seen = 0;
-        while (!sync_seen) {
-            PGresult *r = PQgetResult(c);
-            if (r == NULL) { cmd++; continue; }          /* end of command `cmd` */
-            ExecStatusType st = PQresultStatus(r);
-            if (st == PGRES_PIPELINE_SYNC) { PQclear(r); sync_seen = 1; continue; }
-            if (cmd == 0 || cmd == 1) {                  /* BEGIN / set_config */
-                if (st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK) pre_error = 1;
-            } else if (cmd == 2) {                       /* the actual query */
-                if (st == PGRES_TUPLES_OK || st == PGRES_COMMAND_OK) {
-                    rows = t ? cel_rows_to_json(r, t) : cel_result_to_json(r);
-                } else if (st == PGRES_PIPELINE_ABORTED) {
-                    pre_error = 1;                       /* an earlier command failed */
-                } else {
-                    const char *ss = PQresultErrorField(r, PG_DIAG_SQLSTATE);
-                    *http = map_sqlstate(ss);
-                    if (errmsg) snprintf(errmsg, errlen, "%s",
-                                         (*http < 500) ? sqlstate_message(ss) : "query failed");
-                    LOG_ERROR("query failed [%s]: %s | sql=%s", ss ? ss : "?",
-                              PQresultErrorMessage(r), q->sql);
-                }
-            }
-            PQclear(r);
-        }
-    } else {
-        pre_error = 1;   /* a send failed (connection likely broken) */
+    if (is_write) app_db_write_lock(g_app);
+    sqlite3 *c = app_db_conn_acquire(g_app);
+    if (!c) {
+        if (is_write) app_db_write_unlock(g_app);
+        *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable");
+        return NULL;
     }
 
-    /* Drain any trailing results (incl. the NULL after the sync) and leave
-     * non-pipeline mode so the connection is reusable. */
-    PGresult *tail;
-    while ((tail = PQgetResult(c)) != NULL) PQclear(tail);
-    PQexitPipelineMode(c);
+    sqlite3_stmt *st = NULL;
+    int rc = sqlite3_prepare_v2(c, q->sql, -1, &st, NULL);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR("query prepare failed [%d]: %s | sql=%s", rc, sqlite3_errmsg(c), q->sql);
+        *http = 500; if (errmsg) snprintf(errmsg, errlen, "query failed");
+        app_db_conn_release(g_app, c);
+        if (is_write) app_db_write_unlock(g_app);
+        return NULL;
+    }
+    /* params are pushed in order with no reuse → bind params[i] to ?(i+1) */
+    for (int i = 0; i < q->nparams; i++) {
+        if (q->params[i]) sqlite3_bind_text(st, i + 1, q->params[i], -1, SQLITE_TRANSIENT);
+        else              sqlite3_bind_null(st, i + 1);
+    }
 
-    if (pre_error) {
-        *http = 500;
-        if (errmsg) snprintf(errmsg, errlen, "tenant context failed");
+    /* t == NULL: a table-less result (e.g. count/aggregate) — typed by storage class. */
+    cJSON *rows = t ? cel_stmt_rows_to_json(st, t) : cel_stmt_result_to_json(st);
+    rc = sqlite3_finalize(st);
+    if (rc != SQLITE_OK) {
+        *http = map_sqlite_err(rc);
+        if (errmsg) snprintf(errmsg, errlen, "%s",
+                             (*http < 500) ? sqlite_err_message(rc) : "query failed");
+        LOG_ERROR("query failed [%d]: %s | sql=%s", rc, sqlite3_errmsg(c), q->sql);
         if (rows) { cJSON_Delete(rows); rows = NULL; }
     }
-    if (queued) cel_metric_inc(CEL_M_DB_PIPELINE);
-    *out = rows;
-    return 1;
-}
-#endif /* LIBPQ_HAS_PIPELINING */
 
-static cJSON *run_rows(const cel_query_t *q, const cel_table_t *t, const char *rls_tenant,
-                       int *http, char *errmsg, size_t errlen) {
-    PGconn *c = db_connection_acquire();
-    if (!c) { *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable"); return NULL; }
-
-#ifdef LIBPQ_HAS_PIPELINING
-    /* Opt-in: collapse the pooled-mode 4 round trips into one. Only the pooled
-     * (tenant-scoped) path benefits — single-tenant is already one round trip. */
-    if (rls_tenant && db_connection_pipeline_enabled()) {
-        cJSON *out = NULL;
-        if (run_rows_pipelined(c, q, t, rls_tenant, &out, http, errmsg, errlen)) {
-            db_connection_release(c);
-            return out;
-        }
-        /* declined before sending anything → fall through to the sequential path */
-    }
-#endif
-
-    int in_txn = 0;
-    if (rls_tenant) {
-        const char *p[1] = { rls_tenant };
-        PGresult *b = PQexec(c, "BEGIN");
-        int ok = (PQresultStatus(b) == PGRES_COMMAND_OK); PQclear(b);
-        if (ok) {
-            PGresult *s = db_connection_exec_cached(
-                c, "SELECT set_config('app.tenant_id', $1, true)", 1, p);
-            ok = (PQresultStatus(s) == PGRES_TUPLES_OK); PQclear(s);
-        }
-        if (!ok) {
-            PGresult *rb = PQexec(c, "ROLLBACK"); PQclear(rb);
-            db_connection_release(c);
-            *http = 500; if (errmsg) snprintf(errmsg, errlen, "tenant context failed");
-            return NULL;
-        }
-        in_txn = 1;
-    }
-
-    PGresult *r = db_connection_exec_cached(c, q->sql, q->nparams,
-                                            (const char *const *)q->params);
-    cJSON *rows = NULL;
-    ExecStatusType st = PQresultStatus(r);
-    int success = (st == PGRES_TUPLES_OK || st == PGRES_COMMAND_OK);
-    if (success) {
-        /* t == NULL: a table-less result (RPC) — type columns by result OID. */
-        rows = t ? cel_rows_to_json(r, t) : cel_result_to_json(r);   /* COMMAND_OK => empty set */
-    } else {
-        const char *ss = PQresultErrorField(r, PG_DIAG_SQLSTATE);
-        *http = map_sqlstate(ss);
-        /* M-7: client gets a generic per-category message, never the raw libpq
-         * primary (schema disclosure / cross-tenant existence oracle). The full
-         * diagnostic is logged below for operators. */
-        if (errmsg) snprintf(errmsg, errlen, "%s",
-                             (*http < 500) ? sqlstate_message(ss) : "query failed");
-        LOG_ERROR("query failed [%s]: %s | sql=%s", ss ? ss : "?",
-                  PQresultErrorMessage(r), q->sql);
-    }
-    PQclear(r);
-
-    /* Always end the transaction before returning the connection to the pool —
-     * db_connection_release does not reset connection state. */
-    if (in_txn) { PGresult *e = PQexec(c, success ? "COMMIT" : "ROLLBACK"); PQclear(e); }
-    db_connection_release(c);
+    app_db_conn_release(g_app, c);
+    if (is_write) app_db_write_unlock(g_app);
     return rows;
 }
 
@@ -254,22 +149,10 @@ static int make_scope(const cel_table_t *t, cel_action_t action,
     memset(scope, 0, sizeof *scope);   /* every rule slot starts EQ/zeroed */
     scope->count = 0;
 
-    /* Tenant scope (pooled mode only): any catalog table that carries the tenant
-     * column is confined to the caller's tenant. The global platform_admin is
-     * exempt (it manages every tenant). A non-platform caller with no tenant in
-     * pooled mode is a misconfiguration — deny rather than risk a cross-tenant
-     * leak. In single-tenant mode cel_tenancy_column() is NULL, so this is a
-     * no-op and the produced SQL is identical to before (guarded by the
-     * query_builder regression test). */
-    const char *tcol = cel_tenancy_column();
-    if (tcol && cel_table_column(t, tcol) && strcmp(who->role, "platform_admin") != 0) {
-        if (!who->tenant_id[0]) return -1;
-        scope->rule[scope->count].column = tcol;
-        scope->rule[scope->count].value  = who->tenant_id;
-        scope->count++;
-    }
+    /* Isolation between apps is the SQLite file boundary (no tenant_id, no RLS) —
+     * so the only row-level scope here is per-row ownership within the app. */
 
-    /* Owner scope (row-level ownership, within the tenant). May be a single
+    /* Owner scope (row-level ownership). May be a single
      * column (EQ), any of several (OR), or membership in a related table (VIA). */
     cel_owner_spec_t os;
     if (cel_policy_owner_scope(t->name, action, who->role, &os)) {
@@ -347,7 +230,7 @@ static cel_api_result_t run_write(const cel_identity_t *who, const cJSON *req,
 
     int http = 200;
     char emsg[256] = {0};
-    cJSON *rows = run_rows(&q, t, rls_tenant_setting(who), &http, emsg, sizeof emsg);
+    cJSON *rows = run_rows(&q, t, 1 /* write: take the per-app write lock */, &http, emsg, sizeof emsg);
     cel_query_free(&q);
     if (!rows) return result_error(http, emsg[0] ? emsg : "query failed");
 
@@ -469,7 +352,7 @@ static int embed_one(const cel_identity_t *who, const cel_table_t *base, cJSON *
         cJSON_Delete(sreq); snprintf(err, errlen, "%s", qerr); return 400;
     }
     int http = 200; char emsg[256] = {0};
-    cJSON *related = run_rows(&q, rel.remote, rls_tenant_setting(who), &http, emsg, sizeof emsg);
+    cJSON *related = run_rows(&q, rel.remote, 0, &http, emsg, sizeof emsg);
     cel_query_free(&q);
     cJSON_Delete(sreq);
     if (!related) { snprintf(err, errlen, "%s", emsg[0] ? emsg : "embed query failed"); return http; }
@@ -605,7 +488,7 @@ cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req) {
         if (cel_build_aggregate(t, req, &scope, &aq, aerr, sizeof aerr) != 0)
             return result_error(400, aerr);
         int ahttp = 200; char aemsg[256] = {0};
-        cJSON *arows = run_rows(&aq, NULL, rls_tenant_setting(who), &ahttp, aemsg, sizeof aemsg);
+        cJSON *arows = run_rows(&aq, NULL, 0, &ahttp, aemsg, sizeof aemsg);
         cel_query_free(&aq);
         if (!arows) return result_error(ahttp, aemsg[0] ? aemsg : "query failed");
         cJSON *o = cJSON_CreateObject();
@@ -634,7 +517,7 @@ cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req) {
 
     int http = 200;
     char emsg[256] = {0};
-    cJSON *rows = run_rows(&q, t, rls_tenant_setting(who), &http, emsg, sizeof emsg);
+    cJSON *rows = run_rows(&q, t, 0, &http, emsg, sizeof emsg);
     cel_query_free(&q);
     if (!rows) return result_error(http, emsg[0] ? emsg : "query failed");
 
@@ -662,7 +545,7 @@ cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req) {
         cel_query_t cq; char cerr[256] = {0};
         if (cel_build_count(t, req, &scope, &cq, cerr, sizeof cerr) == 0) {
             int chttp = 200; char cemsg[256] = {0};
-            cJSON *cr = run_rows(&cq, NULL, rls_tenant_setting(who), &chttp, cemsg, sizeof cemsg);
+            cJSON *cr = run_rows(&cq, NULL, 0, &chttp, cemsg, sizeof cemsg);
             cel_query_free(&cq);
             if (cr) {
                 cJSON *first = cJSON_GetArrayItem(cr, 0);
@@ -712,7 +595,7 @@ cel_api_result_t cel_api_get(const cel_identity_t *who, const cJSON *req) {
 
     int http = 200;
     char emsg[256] = {0};
-    cJSON *rows = run_rows(&q, t, rls_tenant_setting(who), &http, emsg, sizeof emsg);
+    cJSON *rows = run_rows(&q, t, 0, &http, emsg, sizeof emsg);
     cel_query_free(&q);
     if (!rows) return result_error(http, emsg[0] ? emsg : "query failed");
 
@@ -743,70 +626,17 @@ cel_api_result_t cel_api_rpc(const cel_identity_t *who, const cJSON *req) {
     /* Deny-by-default whitelist (a non-whitelisted fn is unreachable by anyone). */
     if (!cel_policy_rpc_allows(fn->valuestring, who->role)) return result_error(403, "forbidden");
 
-    /* SECURITY (M-3): fail closed on an empty tenant context. Unlike the data
-     * paths, run_rows here can't lean on make_scope's seatbelt — so an anon or
-     * tenant-less caller (allowed by an "anon" _rpc entry) would otherwise bind
-     * app.tenant_id='' and execute the function in an undefined RLS context. In
-     * pooled mode every RPC must run within a concrete tenant; platform_admin
-     * ("*") is the global exception. Single-tenant mode (no tenancy column) is
-     * unaffected — no RLS context is needed there. Mirrors make_scope (api.c). */
-    if (cel_tenancy_column() && strcmp(who->role, "platform_admin") != 0 && !who->tenant_id[0])
-        return result_error(403, "forbidden");
-
-    const cJSON *args = cJSON_GetObjectItemCaseSensitive(req, "args");   /* optional object */
-
-    char err[256] = {0};
-    cel_query_t q;
-    if (cel_build_rpc(fn->valuestring, args, &q, err, sizeof err) != 0)
-        return result_error(400, err);
-
-    int http = 200;
-    char emsg[256] = {0};
-    /* table = NULL -> table-less result; runs inside the caller's tenant context. */
-    cJSON *rows = run_rows(&q, NULL, rls_tenant_setting(who), &http, emsg, sizeof emsg);
-    cel_query_free(&q);
-    if (!rows) return result_error(http, emsg[0] ? emsg : "rpc failed");
-
-    cJSON *o = cJSON_CreateObject();
-    cJSON_AddStringToObject(o, "status", "ok");
-    cJSON_AddItemToObject(o, "result", rows);
-    cel_api_result_t r = { o, 200 };
-    return r;
+    /* RPC is deferred on the SQLite backend: there is no Postgres-style SQL-function
+     * RPC (SELECT * FROM fn(name := ?)). It returns in the hook layer (design §8:
+     * rpc(name, args, who)) / Layer-1 SQL functions in Phase 2. Until then a
+     * whitelisted call resolves but isn't executable. */
+    return result_error(501, "rpc is not available on this backend yet");
 }
 
 void cel_rpc_audit_security_definer(void) {
-    /* H-4: a whitelisted RPC function defined SECURITY DEFINER executes as its
-     * (often privileged) owner and BYPASSES row-level security. The RPC path
-     * relies on RLS as its only tenant boundary, so in pooled/multi-tenant mode
-     * such a function can read/write across tenants. We can't safely rewrite the
-     * operator's function, so warn loudly at startup (louder in pooled mode) so
-     * the misconfiguration is visible — the function should be SECURITY INVOKER,
-     * or enforce tenant scope itself. */
-    const char *names[64];
-    int n = cel_policy_rpc_names(names, 64);
-    if (n == 0) return;
-    PGconn *c = db_connection_acquire();
-    if (!c) return;
-    bool pooled = cel_tenancy_column() != NULL;
-    for (int i = 0; i < n; i++) {
-        const char *p[1] = { names[i] };
-        PGresult *r = PQexecParams(c,
-            "SELECT 1 FROM pg_proc WHERE proname=$1 AND prosecdef LIMIT 1",
-            1, NULL, p, NULL, NULL, 0);
-        bool secdef = (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1);
-        PQclear(r);
-        if (!secdef) continue;
-        if (pooled)
-            LOG_WARN("rpc: whitelisted function '%s' is SECURITY DEFINER — it bypasses "
-                     "row-level security and can cross TENANT boundaries in pooled mode. "
-                     "Make it SECURITY INVOKER, or have it enforce tenant scope itself.",
-                     names[i]);
-        else
-            LOG_WARN("rpc: whitelisted function '%s' is SECURITY DEFINER — it runs as its "
-                     "owner and bypasses RLS; safe only if it does its own authorization.",
-                     names[i]);
-    }
-    db_connection_release(c);
+    /* No-op on SQLite: there is no SECURITY DEFINER concept (that was a Postgres
+     * RLS-bypass audit). RPC and its authorization move to the hook layer in
+     * Phase 2. Kept as a symbol for the existing startup call site. */
 }
 
 cel_api_result_t cel_api_schema(const cel_identity_t *who) {
@@ -1086,13 +916,6 @@ cel_api_result_t cel_api_oauth(const cJSON *req) {
     char role[32];
     const char *prole = cel_role_default_signup(role, sizeof role) ? role : NULL;
 
-    /* M-4: no federated self-provisioning in pooled mode — a brand-new OAuth user
-     * has no tenant to bind to and would land tenant-less, slipping past the
-     * pooled-mode lockdown that /auth/register enforces. An existing identity (or a
-     * trusted-domain link to an existing account) still logs in; only creation of a
-     * new account is refused (CEL_AUTH_INVALID -> 403). */
-    if (cel_tenancy_column()) prole = NULL;
-
     /* May this provider auto-link to an existing local account with this email?
      * Only if the operator trusts it for the email's domain (H-3). */
     bool link_trusted = cel_oauth_email_link_allowed(provider->valuestring, claims.email);
@@ -1140,21 +963,9 @@ cel_api_result_t cel_api_create_user(const cel_identity_t *who, const cJSON *req
     if (!strcmp(role, "platform_admin"))
         return result_error(403, "platform_admin can only be created out-of-band");
 
-    /* Resolve the new user's tenant (pooled mode). A tenant admin can only
-     * create within its OWN tenant — never trust a client-supplied tenant_id;
-     * the global platform_admin must name the target tenant explicitly. */
-    const char *tenant = "";   /* empty => tenant column left unset (single-tenant) */
-    if (cel_tenancy_column()) {
-        if (!strcmp(who->role, "platform_admin")) {
-            const cJSON *t = cJSON_GetObjectItemCaseSensitive(req, "tenant_id");
-            if (!cJSON_IsString(t) || !t->valuestring[0])
-                return result_error(400, "tenant_id required");
-            tenant = t->valuestring;
-        } else {
-            if (!who->tenant_id[0]) return result_error(403, "forbidden");
-            tenant = who->tenant_id;
-        }
-    }
+    /* Isolation is the app's file boundary — no tenant to resolve. (Auth still
+     * lives in the transitional Postgres store; tenant is passed empty.) */
+    const char *tenant = "";
 
     char id[37];
     int rc = cel_auth_create_user(email->valuestring, pass->valuestring, role, tenant,
@@ -1174,53 +985,38 @@ cel_api_result_t cel_api_create_user(const cel_identity_t *who, const cJSON *req
     return r;
 }
 
-/* Is `user_id` a participant for `key_val` via the membership table? One query:
- * EXISTS(SELECT 1 FROM via_table WHERE via_ref = key AND via_user = caller). The
- * identifiers were charset-validated by make_scope, so they are safe to quote.
- * L-4: in pooled mode the query runs inside the caller's tenant RLS context (BEGIN
- * + set_config app.tenant_id) — exactly like run_rows — so it is neither evaluated
- * across all tenants (no tenant column) nor wrongly denied (fail-closed RLS on a
- * NULL tenant). `tenant` is "" / NULL in single-tenant mode (no transaction). */
+/* Is `user_id` a participant for `key_val` via the membership table? One query
+ * against the app's SQLite db: EXISTS(SELECT 1 FROM via_table WHERE via_ref = key
+ * AND via_user = caller). The identifiers were charset-validated by make_scope, so
+ * they are safe to quote; the values are bound. */
 static bool rt_membership(const char *via_table, const char *via_ref, const char *via_user,
-                          const char *key_val, const char *user_id, const char *tenant) {
-    PGconn *c = db_connection_acquire();
+                          const char *key_val, const char *user_id) {
+    if (!g_app) return false;
+    sqlite3 *c = app_db_conn_acquire(g_app);
     if (!c) return false;
-    bool ok = false;
-    int in_txn = 0;
-    if (tenant && *tenant) {
-        PGresult *b = PQexec(c, "BEGIN");
-        int begun = (PQresultStatus(b) == PGRES_COMMAND_OK);
-        PQclear(b);
-        if (begun) {
-            const char *tp[1] = { tenant };
-            PGresult *s = PQexecParams(c, "SELECT set_config('app.tenant_id', $1, true)",
-                                       1, NULL, tp, NULL, NULL, 0);
-            in_txn = (PQresultStatus(s) == PGRES_TUPLES_OK);
-            PQclear(s);
-        }
-        if (!in_txn) { if (begun) { PGresult *e = PQexec(c, "ROLLBACK"); PQclear(e); }
-                       db_connection_release(c); return false; }
-    }
     char sql[512];
     snprintf(sql, sizeof sql,
-             "SELECT 1 FROM \"%s\" WHERE \"%s\" = $1 AND \"%s\" = $2 LIMIT 1",
+             "SELECT 1 FROM \"%s\" WHERE \"%s\" = ?1 AND \"%s\" = ?2 LIMIT 1",
              via_table, via_ref, via_user);
-    const char *p[2] = { key_val, user_id };
-    PGresult *res = PQexecParams(c, sql, 2, NULL, p, NULL, NULL, 0);
-    ok = (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1);
-    PQclear(res);
-    if (in_txn) { PGresult *e = PQexec(c, "COMMIT"); PQclear(e); }
-    db_connection_release(c);
+    sqlite3_stmt *st = NULL;
+    bool ok = false;
+    if (sqlite3_prepare_v2(c, sql, -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(st, 1, key_val, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
+        ok = (sqlite3_step(st) == SQLITE_ROW);
+    }
+    sqlite3_finalize(st);
+    app_db_conn_release(g_app, c);
     return ok;
 }
 
 /* Publish-time re-authorization callback (M-5): the subscription carries the VIA
  * membership coordinates captured at subscribe; re-verify them against the live
- * membership table (with the same tenant context). */
+ * membership table. */
 bool cel_api_rt_recheck_member(const cel_subscription_t *sub) {
     if (!sub->via) return true;   /* not a membership subscription */
     return rt_membership(sub->via_table, sub->via_ref, sub->via_user,
-                         sub->via_key, sub->user_id, sub->tenant);
+                         sub->via_key, sub->user_id);
 }
 
 int cel_api_authorize_subscription(const cel_identity_t *who, const cJSON *req,
@@ -1269,9 +1065,7 @@ int cel_api_authorize_subscription(const cel_identity_t *who, const cJSON *req,
                          "subscription requires key { column: \"%s\", value }", r->via_local);
                 return 400;
             }
-            const char *tenant = rls_tenant_setting(who);   /* NULL/"" in single-tenant */
-            if (!rt_membership(r->via_table, r->via_ref, r->via_user, key_val, who->user_id,
-                               tenant ? tenant : "")) {
+            if (!rt_membership(r->via_table, r->via_ref, r->via_user, key_val, who->user_id)) {
                 snprintf(errbuf, errlen, "forbidden"); return 403;
             }
             p->is_or = false;
@@ -1287,7 +1081,6 @@ int cel_api_authorize_subscription(const cel_identity_t *who, const cJSON *req,
             snprintf(sub->via_user,  sizeof sub->via_user,  "%s", r->via_user);
             snprintf(sub->via_key,   sizeof sub->via_key,   "%s", key_val);
             snprintf(sub->user_id,   sizeof sub->user_id,   "%s", who->user_id);
-            snprintf(sub->tenant,    sizeof sub->tenant,    "%s", tenant ? tenant : "");
         }
     }
     return 200;
@@ -1303,12 +1096,6 @@ cel_api_result_t cel_api_register(const cJSON *req) {
         return result_error(400, "password too short (min 8 characters)");
     if (strlen(pass->valuestring) > MAX_PASSWORD_LEN)
         return result_error(400, "password too long (max 128 characters)");
-
-    /* Pooled mode: open self-registration needs a tenant to bind the new user
-     * to; resolving that (e.g. by subdomain) is a later task. Until then signup
-     * is single-tenant only — provision tenant users via the tenant admin. */
-    if (cel_tenancy_column())
-        return result_error(403, "self-registration is not available in pooled mode");
 
     /* Resolve the requested role (explicit, else the configured default), then
      * enforce the signup whitelist — deny-by-default, superusers never allowed. */

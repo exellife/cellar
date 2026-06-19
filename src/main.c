@@ -619,28 +619,43 @@ int main(int argc, char **argv) {
     bool db_ready = (init_db() == 0);
     if (db_ready) {
         LOG_INFO("database pool ready");
-        cel_tenancy_init();   /* CEL_TENANT_COLUMN -> pooled mode (read before auto-migrate) */
         const char *am = getenv("CEL_AUTO_MIGRATE");
         bool auto_migrate = am && (*am == '1' || *am == 't' || *am == 'T' || *am == 'y' || *am == 'Y');
         /* Seeding writes to cel_users, which migration 001 creates — so if seeding
          * is requested we must migrate first (else the seed silently fails on a
-         * fresh DB). Auto-migrate also covers the no-seed case. */
+         * fresh DB). Auto-migrate also covers the no-seed case. (Postgres auth store
+         * — transitional, until auth moves into each app's SQLite bundle.) */
         bool want_seed = getenv("CEL_SEED_ADMIN") || getenv("CEL_SEED_USERS");
         if (auto_migrate || want_seed) {
             int applied = 0;
-            int with_tenancy = cel_tenancy_column() != NULL;   /* pooled -> apply tenancy schema */
-            if (cel_migrate_run(0, with_tenancy, &applied) == 0) LOG_INFO("migrate: %d applied on boot", applied);
+            if (cel_migrate_run(0, 0, &applied) == 0) LOG_INFO("migrate: %d applied on boot", applied);
             else LOG_ERROR("boot migrate failed — seeding/serving may not work");
         }
         maybe_seed_admin();
         maybe_seed_users();
-        cel_policy_init(getenv("CEL_POLICY_FILE"));   /* NULL -> built-in role defaults */
-        catalog = cel_catalog_build();
-        cel_catalog_set_active(catalog);
-        cel_rpc_audit_security_definer();   /* H-4: warn on SECURITY DEFINER RPCs */
     } else {
         LOG_WARN("database unavailable — auth opcodes will return errors");
     }
+
+    cel_policy_init(getenv("CEL_POLICY_FILE"));   /* NULL -> built-in role defaults */
+
+    /* Open the app's SQLite database — the per-app data engine (Step 5). Interim:
+     * one global app from CEL_DATA_DB until request routing resolves a bundle per
+     * request. Its introspected schema is the active catalog the data API serves;
+     * auth still runs on the Postgres pool above (transitional hybrid). */
+    app_db_global_init();
+    const char *data_db = env_str("CEL_DATA_DB", "cellar.db");
+    app_db_t *app = app_db_get(data_db);
+    if (app) {
+        sqlite3 *sc = app_db_conn_acquire(app);
+        if (sc) { catalog = cel_catalog_build_sqlite(sc); app_db_conn_release(app, sc); }
+        cel_catalog_set_active(catalog);
+        cel_api_set_app(app);
+        LOG_INFO("app database: %s (%d table(s))", data_db, catalog ? catalog->ntables : 0);
+    } else {
+        LOG_ERROR("could not open app database '%s' — data API will be unavailable", data_db);
+    }
+    cel_rpc_audit_security_definer();   /* no-op on SQLite; kept for the call site */
 
     /* Dispatcher with CPU + DB worker pools (DB pool is used once the engine lands). */
     opcode_pool_config_t pools[] = {

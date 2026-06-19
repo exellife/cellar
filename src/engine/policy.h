@@ -109,16 +109,4 @@ bool cel_role_can_self_register(const char *role);
  * Used when a register request omits an explicit role. */
 bool cel_role_default_signup(char *out, size_t out_len);
 
-/* ---- tenancy (pooled multi-tenant mode) ----------------------------------- */
-
-/* Read the tenancy configuration once at startup. Pooled mode is enabled by
- * setting CEL_TENANT_COLUMN to the tenant-scoping column name (e.g. "tenant_id").
- * Unset/empty = single-tenant (Model A), no tenant scoping. */
-void cel_tenancy_init(void);
-
-/* The configured tenant-scoping column, or NULL in single-tenant mode. When
- * non-NULL, any catalog table that has this column is scoped to the caller's
- * tenant (except for the global platform_admin). */
-const char *cel_tenancy_column(void);
-
 #endif /* CEL_POLICY_H */

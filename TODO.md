@@ -89,9 +89,24 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       helper prototypes the Step-5 executor. **Note:** in-place conversion means the
       still-live PG `api.c` now builds `?N` SQL it can't run against Postgres — moot (no
       live PG; deleted in Step 5), build stays green.
-- [ ] **Delete the tenant machinery.** No `tenant_id` column, no `set_config` /
+- [~] **Delete the tenant machinery.** No `tenant_id` column, no `set_config` /
       `SET LOCAL`, no RLS — isolation is the file boundary. Removes `run_rows`' tenant
       context entirely.
+      **Done (data path):** `api.c` `run_rows` rewritten as a SQLite executor (prepare →
+      bind `?N` text/NULL → step → `cel_stmt_*_to_json`; per-app `write_lock` on writes;
+      SQLite error→HTTP mapping with extended result codes — UNIQUE→409, FK/NOTNULL/CHECK→
+      400). Removed `rls_tenant_setting`, the `run_rows_pipelined` PG fast-path, the tenant
+      rule in `make_scope`, and every `cel_tenancy_column()` gate (rpc/oauth/register/
+      create_user); `rt_membership` (realtime VIA) now queries the app's SQLite db.
+      `cel_tenancy_init`/`cel_tenancy_column` deleted from `policy.c/.h`. RPC deferred (501;
+      → hook layer, Phase 2); the SECURITY-DEFINER audit is a no-op. `main.c` opens one app
+      from `CEL_DATA_DB` + introspects its catalog (active) + `cel_api_set_app`; auth still
+      on the Postgres pool (transitional hybrid). api.c is now libpq-free. Verified: clean
+      build, all 13 C unit tests pass, binary boots and introspects a real SQLite schema
+      (internal `cel_*` excluded). **Still to do:** the vestigial `tenant_id` struct fields
+      + the PG-migration tenant tooling (`sql/tenancy/`, migrate.c CLIs, main.c tenant
+      commands) come out with the auth/migrate conversion; per-app catalog (drop global
+      `g_active`) comes with routing.
 - [ ] **App routing + provisioning.** Resolve app from the request (Host/path) → its
       bundle. A small **control-plane DB** (app registry, domain→bundle routing,
       platform admin). Decided: **per-app users** in each `data.db` + a control-plane for
