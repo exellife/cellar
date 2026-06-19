@@ -55,8 +55,18 @@ typedef struct {
 } cel_catalog_t;
 
 /* Introspect the connected database into a fresh catalog. Acquires a pooled
- * connection internally. Returns NULL on failure. Caller owns the result. */
+ * connection internally. Returns NULL on failure. Caller owns the result.
+ * (Postgres path — being retired as the SQLite pivot lands.) */
 cel_catalog_t *cel_catalog_build(void);
+
+/* Introspect an open SQLite database into a fresh catalog (per-app; design §5):
+ * user tables from sqlite_master + PRAGMA table_info / foreign_key_list, column
+ * types mapped from SQLite declared-type affinity. Internal cel_* and sqlite_*
+ * tables are excluded. Returns NULL on failure. Caller owns the result
+ * (cel_catalog_free). `sqlite3` is forward-declared so PG-only translation units
+ * including this header don't need <sqlite3.h>. */
+struct sqlite3;
+cel_catalog_t *cel_catalog_build_sqlite(struct sqlite3 *db);
 
 void cel_catalog_free(cel_catalog_t *cat);
 

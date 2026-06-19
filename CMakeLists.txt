@@ -222,6 +222,16 @@ if(CELLAR_BUILD_TESTS)
     target_link_libraries(result_json_test SQLite::SQLite3 cjson)
     add_test(NAME result_json COMMAND result_json_test)
 
+    # DB-free unit test for the per-app SQLite schema catalog (Phase 1 step 3):
+    # introspection via sqlite_master + pragma_table_info / foreign_key_list,
+    # declared-type affinity mapping, PK/FK/nullable/default flags, and exclusion
+    # of cel_* / sqlite_* internal tables. In-memory SQLite; no Postgres.
+    add_executable(schema_catalog_sqlite_test
+        tests/schema_catalog_sqlite_test.c src/engine/schema_catalog_sqlite.c)
+    target_include_directories(schema_catalog_sqlite_test PRIVATE src/engine)
+    target_link_libraries(schema_catalog_sqlite_test SQLite::SQLite3 logger)
+    add_test(NAME schema_catalog_sqlite COMMAND schema_catalog_sqlite_test)
+
     # DB-free unit test for the declarative-roles authorization engine (#50):
     # built-in defaults stay byte-for-byte, and a "_roles" config bundle defines
     # a custom role vocabulary. Links policy.c (auth stubbed in the test).

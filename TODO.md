@@ -63,9 +63,19 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       path for RPC; BLOB → hex). Unit-tested (`tests/result_json_test.c`, ctest
       `result_json`: 17 checks, in-memory SQLite, no Postgres). **Still to do:** delete the
       libpq `row_json.c` once `api.c` switches to it (Step 5).
-- [ ] **`schema_catalog.c` → PRAGMA introspection.** `sqlite_master` +
+- [~] **`schema_catalog.c` → PRAGMA introspection.** `sqlite_master` +
       `PRAGMA table_info / foreign_key_list / index_list` instead of `information_schema`;
       the catalog becomes **per-app** (replaces today's single global `g_active`).
+      **Introspector done:** new libpq-free module `src/engine/schema_catalog_sqlite.c` —
+      `cel_catalog_build_sqlite(sqlite3*)` builds the same `cel_catalog_t` from
+      `sqlite_master` + `pragma_table_info` / `pragma_foreign_key_list` (table-valued,
+      name bound — injection-safe); declared-type → engine-type **affinity** mapping
+      (INTEGER→bigint, BOOLEAN→bool, JSON→json, REAL→float, TIMESTAMP→timestamptz, …);
+      PK/FK/nullable/default flags; excludes `cel_*` + `sqlite_*`. Unit-tested
+      (`tests/schema_catalog_sqlite_test.c`, ctest `schema_catalog_sqlite`: 24 checks).
+      **Still to do:** drop the libpq `cel_catalog_build` + global `g_active` once routing
+      gives each request its app's `sqlite3*` (Step 5); wire per-app catalog caching +
+      invalidation on schema change.
 - [ ] **`query_builder.c` → SQLite dialect.** `?`/`:name` placeholders (not `$N`),
       `RETURNING` (SQLite ≥ 3.35), type-affinity handling for JSON serialization.
 - [ ] **Delete the tenant machinery.** No `tenant_id` column, no `set_config` /
