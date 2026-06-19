@@ -96,7 +96,7 @@ cel_catalog_t *cel_catalog_build(void) {
         "JOIN information_schema.tables t "
         "  ON t.table_schema=c.table_schema AND t.table_name=c.table_name "
         "WHERE c.table_schema='public' AND t.table_type='BASE TABLE' "
-        "  AND c.table_name NOT LIKE 'pgf\\_%' "
+        "  AND c.table_name NOT LIKE 'cel\\_%' "
         "ORDER BY c.table_name, c.ordinal_position");
     if (PQresultStatus(r) != PGRES_TUPLES_OK) {
         LOG_ERROR("catalog: columns query failed: %s", PQerrorMessage(c));
@@ -124,7 +124,7 @@ cel_catalog_t *cel_catalog_build(void) {
         "  ON kcu.constraint_name=tc.constraint_name "
         " AND kcu.table_schema=tc.table_schema "
         "WHERE tc.table_schema='public' AND tc.constraint_type='PRIMARY KEY' "
-        "  AND tc.table_name NOT LIKE 'pgf\\_%'");
+        "  AND tc.table_name NOT LIKE 'cel\\_%'");
     if (PQresultStatus(r) == PGRES_TUPLES_OK) {
         for (int i = 0; i < PQntuples(r); i++) {
             cel_table_t *t = find_table(cat, PQgetvalue(r, i, 0));
@@ -149,7 +149,7 @@ cel_catalog_t *cel_catalog_build(void) {
         "  ON ccu.constraint_name=tc.constraint_name "
         " AND ccu.table_schema=tc.table_schema "
         "WHERE tc.table_schema='public' AND tc.constraint_type='FOREIGN KEY' "
-        "  AND tc.table_name NOT LIKE 'pgf\\_%'");
+        "  AND tc.table_name NOT LIKE 'cel\\_%'");
     if (PQresultStatus(r) == PGRES_TUPLES_OK) {
         for (int i = 0; i < PQntuples(r); i++) {
             cel_table_t *t = find_table(cat, PQgetvalue(r, i, 0));

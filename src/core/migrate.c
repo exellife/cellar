@@ -160,7 +160,7 @@ int cel_tenancy_protect(const char *tenant_column) {
      * PL/pgSQL variable, and table names go through format(%I). */
     static const char *PRE =
         "SET client_min_messages = warning;\n"
-        "DO $pgf$\nDECLARE r record; col text := '";
+        "DO $cel$\nDECLARE r record; col text := '";
     static const char *SUF =
         "';\nBEGIN\n"
         "  FOR r IN SELECT c.table_name AS t FROM information_schema.columns c\n"
@@ -174,7 +174,7 @@ int cel_tenancy_protect(const char *tenant_column) {
                   "current_setting(''app.tenant_id'',true) = ''*'' OR "
                   "%I::text = current_setting(''app.tenant_id'',true))', r.t, col);\n"
         "    RAISE NOTICE 'cellar: RLS protecting public.%', r.t;\n"
-        "  END LOOP;\nEND\n$pgf$;";
+        "  END LOOP;\nEND\n$cel$;";
     size_t n = strlen(PRE) + strlen(tenant_column) + strlen(SUF) + 1;
     char *sql = malloc(n);
     int rc = -1;
