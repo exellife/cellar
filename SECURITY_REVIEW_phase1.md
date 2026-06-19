@@ -15,6 +15,20 @@ code path. Line numbers reference the current tree.
 | Low      | 2     |
 | **Total**| **7** |
 
+## Resolution — all 7 fixed
+
+| ID | Finding | Fix commit |
+|----|---------|------------|
+| C-1 / H-1 | app_db cross-registry use-after-free + eviction race | `65cfd0c` — refcount/pin; eviction skips referenced handles; cap raised to match; regression test `app_db_evict` |
+| C-2 | realtime fan-out crosses apps | `4832c05` — subscriptions carry an app identity; publish delivers only to the writing app's subscribers (+ `978894c` restores `realtime_e2e` on SQLite for a live check) |
+| H-2 | aggregate GROUP BY unbounded | `ec3ad29` — append the same `LIMIT` clamp the list path uses |
+| M-1 | MFA verify brute-force (per-challenge cap only) | `f74124b` — per-user `failed_attempts`/`locked_until` (schema v2 migration), lockout after 10 failures |
+| L-2 | `/metrics` token compared with `memcmp` | `e79d432` — `sodium_memcmp` (constant-time) |
+| L-1 | login decoy-hash timing oracle on init failure | `72e2f51` — `cel_auth_init` returns status; server refuses to start without the decoy |
+
+All fixes carry/extend unit tests; the full C unit suite + `realtime_e2e` pass. The
+findings below are retained as the original analysis.
+
 The audit produced 10 raw findings; after merging duplicates of the same root cause
 (four separate reports of the cross-registry app_db use-after-free, plus two
 concurrency variants of the same "eviction without a pin" defect) the result is 7
