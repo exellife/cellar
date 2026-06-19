@@ -60,11 +60,13 @@ static const char *AUTH_SCHEMA =
     /* MFA tables — created now so auth's cross-references (e.g. dropping pending
      * challenges on password reset) work; mfa.c moves onto them next. */
     "CREATE TABLE IF NOT EXISTS cel_mfa ("
-    "  user_id      TEXT PRIMARY KEY REFERENCES cel_users(id) ON DELETE CASCADE,"
-    "  type         TEXT NOT NULL DEFAULT 'totp',"
-    "  secret       TEXT NOT NULL,"
-    "  confirmed_at INTEGER,"
-    "  created_at   INTEGER NOT NULL DEFAULT (unixepoch())"
+    "  user_id         TEXT PRIMARY KEY REFERENCES cel_users(id) ON DELETE CASCADE,"
+    "  type            TEXT NOT NULL DEFAULT 'totp',"
+    "  secret          TEXT NOT NULL,"
+    "  confirmed_at    INTEGER,"
+    "  failed_attempts INTEGER NOT NULL DEFAULT 0,"  /* per-user MFA-verify failures (M-1) */
+    "  locked_until    INTEGER,"                     /* MFA verification locked until (epoch) */
+    "  created_at      INTEGER NOT NULL DEFAULT (unixepoch())"
     ");"
 
     "CREATE TABLE IF NOT EXISTS cel_mfa_challenges ("
@@ -86,7 +88,13 @@ static const char *AUTH_SCHEMA =
 /* Bump this when the cel_* infra schema changes, and add the matching ALTER step
  * in cel_auth_schema_apply below. Tracked per app via SQLite's PRAGMA
  * user_version, so a newer cellar can evolve an existing app's bundle in place. */
-#define CEL_AUTH_SCHEMA_VERSION 1
+#define CEL_AUTH_SCHEMA_VERSION 2
+
+/* v1 -> v2: per-user MFA-verify lockout (M-1). A fresh db gets these via the base
+ * AUTH_SCHEMA above; only a db already at v1 needs the ALTERs. */
+static const char *AUTH_SCHEMA_V2 =
+    "ALTER TABLE cel_mfa ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;"
+    "ALTER TABLE cel_mfa ADD COLUMN locked_until INTEGER;";
 
 static long user_version(struct sqlite3 *db) {
     sqlite3_stmt *st = NULL;
@@ -113,7 +121,9 @@ int cel_auth_schema_apply(struct sqlite3 *db) {
     if (v >= CEL_AUTH_SCHEMA_VERSION) return 0;   /* already current */
 
     if (v < 1 && exec_or_log(db, AUTH_SCHEMA) != 0) return -1;
-    /* future: if (v < 2 && exec_or_log(db, AUTH_SCHEMA_V2_ALTERS) != 0) return -1; */
+    /* Only an existing v1 db needs the ALTERs (a fresh db got the columns from the
+     * base schema above, so applying them again would error on a duplicate column). */
+    if (v == 1 && exec_or_log(db, AUTH_SCHEMA_V2) != 0) return -1;
 
     char stamp[48];
     snprintf(stamp, sizeof stamp, "PRAGMA user_version = %d", CEL_AUTH_SCHEMA_VERSION);

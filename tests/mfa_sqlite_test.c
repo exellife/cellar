@@ -104,10 +104,25 @@ int main(void) {
               "recovery code is single-use");
     }
 
-    /* disable requires a valid code; then MFA is no longer required */
+    /* M-1: per-user lockout — failing verify across many fresh challenges locks
+     * MFA verification for the user, so even a valid code is then rejected. */
+    {
+        char chal[129], tok[129]; cel_user_t u;
+        for (int i = 0; i < 10; i++) {                 /* MAX_MFA_FAILURES */
+            cel_mfa_create_challenge(uid, chal, sizeof chal);
+            cel_mfa_verify_login(chal, "000000", TTL, tok, sizeof tok, &u);  /* wrong, fresh challenge each time */
+        }
+        cel_mfa_create_challenge(uid, chal, sizeof chal);
+        char good[16]; code_now(secret, good, sizeof good);
+        CHECK(cel_mfa_verify_login(chal, good, TTL, tok, sizeof tok, &u) == CEL_MFA_INVALID,
+              "MFA locked after repeated failures — a VALID code is rejected (M-1)");
+    }
+
+    /* disable requires a valid code; then MFA is no longer required (disable is not
+     * gated by the verify-lockout, so admin/user recovery still works). */
     {
         char c3[16]; code_now(secret, c3, sizeof c3);
-        CHECK(cel_mfa_disable(uid, c3) == CEL_MFA_OK, "disable with TOTP code");
+        CHECK(cel_mfa_disable(uid, c3) == CEL_MFA_OK, "disable with TOTP code (works while verify-locked)");
         CHECK(cel_mfa_required_for(uid) == false, "not required after disable");
     }
 

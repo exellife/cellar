@@ -15,6 +15,8 @@
 
 #define CHALLENGE_TTL_SECONDS 300   /* a login challenge is good for 5 minutes */
 #define MAX_CODE_ATTEMPTS     5     /* per challenge, then it's burned */
+#define MAX_MFA_FAILURES      10    /* per-USER verify failures (across challenges) before lockout (M-1) */
+#define MFA_LOCKOUT_SECONDS   900   /* MFA verification locked for 15 min once tripped */
 #define TOTP_WINDOW           1     /* ±1 step (±30s) clock-drift tolerance */
 #define MFA_ISSUER            "cellar"
 
@@ -279,17 +281,45 @@ int cel_mfa_verify_login(const char *challenge, const char *code, int ttl_second
         }
     }
 
+    /* Per-user MFA lockout (M-1): the per-challenge cap is bypassable by minting a
+     * fresh challenge on each factor-1 success, so accumulate failures on the user's
+     * cel_mfa row and refuse verification while locked. */
+    {
+        char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", cel_now_epoch());
+        const char *p[2] = { user_id, nowbuf };
+        char buf[4];
+        if (cel_db_one_text(c, "SELECT 1 FROM cel_mfa WHERE user_id=?1 "
+                               "AND locked_until IS NOT NULL AND locked_until > ?2",
+                            p, 2, buf, sizeof buf) == 1) { rc = CEL_MFA_INVALID; goto out; }
+    }
+
     if (load_secret(c, user_id, true, secret, sizeof secret) != CEL_MFA_OK) { rc = CEL_MFA_INVALID; goto out; }
 
     /* Accept either a valid TOTP code or an unused recovery code (consumed on use). */
     if (!cel_totp_verify(secret, code, TOTP_WINDOW) && !consume_recovery_code(c, user_id, code)) {
         const char *p[1] = { h };
         cel_db_exec(c, "UPDATE cel_mfa_challenges SET attempts=attempts+1 WHERE token=?1", p, 1);
+        /* count the failure against the user; lock once the threshold is hit (and
+         * reset the counter so the lock window is the rate limiter, not the count).
+         * The thresholds are trusted compile constants, inlined: an expression like
+         * `failed_attempts+1` has no column affinity, so a bound text param wouldn't
+         * be coerced to a number for the comparison (it would never match). */
+        char sql[512];
+        snprintf(sql, sizeof sql,
+            "UPDATE cel_mfa SET "
+            "locked_until    = CASE WHEN failed_attempts+1 >= %d THEN %ld ELSE locked_until END, "
+            "failed_attempts = CASE WHEN failed_attempts+1 >= %d THEN 0  ELSE failed_attempts+1 END "
+            "WHERE user_id=?1",
+            MAX_MFA_FAILURES, cel_now_epoch() + MFA_LOCKOUT_SECONDS, MAX_MFA_FAILURES);
+        const char *pu[1] = { user_id };
+        cel_db_exec(c, sql, pu, 1);
         rc = CEL_MFA_INVALID; goto out;
     }
 
-    /* Success: burn the challenge (single use) before issuing the session. */
+    /* Success: clear the user's MFA failure state and burn the challenge. */
     {
+        const char *pr[1] = { user_id };
+        cel_db_exec(c, "UPDATE cel_mfa SET failed_attempts=0, locked_until=NULL WHERE user_id=?1", pr, 1);
         const char *p[1] = { h };
         cel_db_exec(c, "DELETE FROM cel_mfa_challenges WHERE token=?1", p, 1);
         success = true;
