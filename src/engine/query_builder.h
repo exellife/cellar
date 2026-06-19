@@ -5,8 +5,8 @@
  * catalog. SECURITY MODEL (non-negotiable):
  *   - identifiers (table/column names) are ONLY ever taken from the validated
  *     catalog and quoted; an unknown column is a hard error, never emitted.
- *   - all user-supplied VALUES become $N placeholders bound via PQexecParams;
- *     they are never concatenated into the SQL text.
+ *   - all user-supplied VALUES become ?N placeholders bound at execution time
+ *     (SQLite numbered parameters); they are never concatenated into the SQL text.
  * This keeps the generic data layer injection-safe by construction.
  * ============================================================================ */
 #ifndef CEL_QUERY_BUILDER_H
@@ -118,7 +118,7 @@ int cel_build_update(const cel_table_t *t, const cJSON *req, const cel_scope_t *
 int cel_build_delete(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
                      cel_query_t *out, char *errbuf, size_t errlen);
 
-/* Build an RPC call: SELECT * FROM "fn"(name := $1, ...). `fn` and each arg name
+/* Build an RPC call: SELECT * FROM "fn"(name := ?1, ...). `fn` and each arg name
  * (the keys of the `args` object, may be NULL/empty for no args) must be safe
  * identifiers; arg VALUES are bound as parameters. `fn` is quoted; arg names are
  * validated and emitted bare so they match the function's declared parameters. */

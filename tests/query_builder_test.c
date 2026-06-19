@@ -88,32 +88,32 @@ int main(void) {
     /* ---- owner-scoped (the case the #42 refactor must not change) ---- */
     req = cJSON_CreateObject();
     expect("list owner", cel_build_list(&t, req, &owner, NULL, &q, err, sizeof err), &q,
-           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE \"owner_id\" = $1 LIMIT 100 OFFSET 0", 1);
+           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE \"owner_id\" = ?1 LIMIT 100 OFFSET 0", 1);
     cel_query_free(&q); cJSON_Delete(req);
 
     req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "id", "x1");
     expect("get owner", cel_build_get(&t, req, &owner, &q, err, sizeof err), &q,
-           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE \"id\" = $1 AND \"owner_id\" = $2 LIMIT 1", 2);
+           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE \"id\" = ?1 AND \"owner_id\" = ?2 LIMIT 1", 2);
     cel_query_free(&q); cJSON_Delete(req);
 
     req = cJSON_CreateObject();
     cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "values"), "title", "hi");
     expect("create owner", cel_build_create(&t, req, &owner, &q, err, sizeof err), &q,
-           "INSERT INTO \"notes\" (\"title\", \"owner_id\") VALUES ($1, $2) RETURNING \"id\", \"owner_id\", \"title\"", 2);
+           "INSERT INTO \"notes\" (\"title\", \"owner_id\") VALUES (?1, ?2) RETURNING \"id\", \"owner_id\", \"title\"", 2);
     cel_query_free(&q); cJSON_Delete(req);
 
     req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "id", "x1");
     cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "values"), "title", "hi");
     expect("update owner", cel_build_update(&t, req, &owner, &q, err, sizeof err), &q,
-           "UPDATE \"notes\" SET \"title\" = $1 WHERE \"id\" = $2 AND \"owner_id\" = $3 RETURNING \"id\", \"owner_id\", \"title\"", 3);
+           "UPDATE \"notes\" SET \"title\" = ?1 WHERE \"id\" = ?2 AND \"owner_id\" = ?3 RETURNING \"id\", \"owner_id\", \"title\"", 3);
     cel_query_free(&q); cJSON_Delete(req);
 
     req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "id", "x1");
     expect("delete owner", cel_build_delete(&t, req, &owner, &q, err, sizeof err), &q,
-           "DELETE FROM \"notes\" WHERE \"id\" = $1 AND \"owner_id\" = $2 RETURNING \"id\", \"owner_id\", \"title\"", 2);
+           "DELETE FROM \"notes\" WHERE \"id\" = ?1 AND \"owner_id\" = ?2 RETURNING \"id\", \"owner_id\", \"title\"", 2);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* A client-supplied value for the scoped column is ignored (forced), not trusted. */
@@ -122,7 +122,7 @@ int main(void) {
     cJSON_AddStringToObject(vals, "title", "hi");
     cJSON_AddStringToObject(vals, "owner_id", "ATTACKER");   /* must be dropped */
     expect("create ignores client owner", cel_build_create(&t, req, &owner, &q, err, sizeof err), &q,
-           "INSERT INTO \"notes\" (\"title\", \"owner_id\") VALUES ($1, $2) RETURNING \"id\", \"owner_id\", \"title\"", 2);
+           "INSERT INTO \"notes\" (\"title\", \"owner_id\") VALUES (?1, ?2) RETURNING \"id\", \"owner_id\", \"title\"", 2);
     /* and the forced value is the caller's, not the attacker's */
     if (q.nparams == 2 && strcmp(q.params[1], "u1") != 0) {
         printf("  FAIL create forces caller owner   got owner param=%s want u1\n", q.params[1]);
@@ -152,13 +152,13 @@ int main(void) {
     req = cJSON_CreateObject();
     expect("list tenant+owner", cel_build_list(&pt, req, &pooled, NULL, &q, err, sizeof err), &q,
            "SELECT \"id\", \"tenant_id\", \"owner_id\", \"title\" FROM \"notes\" "
-           "WHERE \"tenant_id\" = $1 AND \"owner_id\" = $2 LIMIT 100 OFFSET 0", 2);
+           "WHERE \"tenant_id\" = ?1 AND \"owner_id\" = ?2 LIMIT 100 OFFSET 0", 2);
     cel_query_free(&q); cJSON_Delete(req);
 
     req = cJSON_CreateObject();
     cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "values"), "title", "hi");
     expect("create forces tenant+owner", cel_build_create(&pt, req, &pooled, &q, err, sizeof err), &q,
-           "INSERT INTO \"notes\" (\"title\", \"tenant_id\", \"owner_id\") VALUES ($1, $2, $3) "
+           "INSERT INTO \"notes\" (\"title\", \"tenant_id\", \"owner_id\") VALUES (?1, ?2, ?3) "
            "RETURNING \"id\", \"tenant_id\", \"owner_id\", \"title\"", 3);
     /* the forced values are the caller's tenant + user, in order */
     if (q.nparams == 3 && (strcmp(q.params[1], "t1") || strcmp(q.params[2], "u1"))) {
@@ -191,7 +191,7 @@ int main(void) {
     req = cJSON_CreateObject();
     expect("list OR", cel_build_list(&tt, req, &or_s, NULL, &q, err, sizeof err), &q,
            "SELECT \"id\", \"tenant_id\", \"rider_id\", \"driver_id\", \"title\" FROM \"trips\" "
-           "WHERE (\"rider_id\" = $1 OR \"driver_id\" = $2) LIMIT 100 OFFSET 0", 2);
+           "WHERE (\"rider_id\" = ?1 OR \"driver_id\" = ?2) LIMIT 100 OFFSET 0", 2);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* OR cannot be enforced on CREATE — a create policy using owner_any is a
@@ -211,7 +211,7 @@ int main(void) {
     req = cJSON_CreateObject();
     expect("list tenant+OR", cel_build_list(&tt, req, &tor, NULL, &q, err, sizeof err), &q,
            "SELECT \"id\", \"tenant_id\", \"rider_id\", \"driver_id\", \"title\" FROM \"trips\" "
-           "WHERE \"tenant_id\" = $1 AND (\"rider_id\" = $2 OR \"driver_id\" = $3) LIMIT 100 OFFSET 0", 3);
+           "WHERE \"tenant_id\" = ?1 AND (\"rider_id\" = ?2 OR \"driver_id\" = ?3) LIMIT 100 OFFSET 0", 3);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* VIA: messages(id, trip_id, body) scoped by membership in trip_parts */
@@ -233,15 +233,15 @@ int main(void) {
     expect("list VIA", cel_build_list(&mt, req, &via, NULL, &q, err, sizeof err), &q,
            "SELECT \"id\", \"trip_id\", \"body\" FROM \"messages\" "
            "WHERE EXISTS (SELECT 1 FROM \"trip_parts\" WHERE \"trip_parts\".\"trip_id\" = \"messages\".\"trip_id\" "
-           "AND \"trip_parts\".\"user_id\" = $1) LIMIT 100 OFFSET 0", 1);
+           "AND \"trip_parts\".\"user_id\" = ?1) LIMIT 100 OFFSET 0", 1);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* VIA also confines DELETE (you can only delete a row you can see) */
     req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "id", "x1");
     expect("delete VIA", cel_build_delete(&mt, req, &via, &q, err, sizeof err), &q,
-           "DELETE FROM \"messages\" WHERE \"id\" = $1 AND EXISTS (SELECT 1 FROM \"trip_parts\" "
-           "WHERE \"trip_parts\".\"trip_id\" = \"messages\".\"trip_id\" AND \"trip_parts\".\"user_id\" = $2) "
+           "DELETE FROM \"messages\" WHERE \"id\" = ?1 AND EXISTS (SELECT 1 FROM \"trip_parts\" "
+           "WHERE \"trip_parts\".\"trip_id\" = \"messages\".\"trip_id\" AND \"trip_parts\".\"user_id\" = ?2) "
            "RETURNING \"id\", \"trip_id\", \"body\"", 2);
     cel_query_free(&q); cJSON_Delete(req);
 
@@ -267,7 +267,7 @@ int main(void) {
         cel_query_t qq; char e[256];
         memset(&qq, 0, sizeof qq);
         expect("rpc named args", cel_build_rpc("add_two", args, &qq, e, sizeof e), &qq,
-               "SELECT * FROM \"add_two\"(a := $1, b := $2)", 2);
+               "SELECT * FROM \"add_two\"(a := ?1, b := ?2)", 2);
         cel_query_free(&qq);
         cJSON_Delete(args);
     }
@@ -295,14 +295,14 @@ int main(void) {
 
     req = cJSON_CreateObject();
     expect("count owner-scoped", cel_build_count(&t, req, &owner, &q, err, sizeof err), &q,
-           "SELECT count(*) AS count FROM \"notes\" WHERE \"owner_id\" = $1", 1);
+           "SELECT count(*) AS count FROM \"notes\" WHERE \"owner_id\" = ?1", 1);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* a filter on the list is reflected in the count (so total matches the result set) */
     req = cJSON_CreateObject();
     cJSON_AddStringToObject(cJSON_AddObjectToObject(cJSON_AddObjectToObject(req, "where"), "title"), "eq", "hi");
     expect("count with filter+scope", cel_build_count(&t, req, &owner, &q, err, sizeof err), &q,
-           "SELECT count(*) AS count FROM \"notes\" WHERE \"title\" = $1 AND \"owner_id\" = $2", 2);
+           "SELECT count(*) AS count FROM \"notes\" WHERE \"title\" = ?1 AND \"owner_id\" = ?2", 2);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* ---- keyset pagination: ORDER BY + PK tiebreaker, no OFFSET ---- */
@@ -330,7 +330,7 @@ int main(void) {
     cJSON_AddItemToArray(cur, cJSON_CreateString("u9"));
     expect("keyset next page", cel_build_list(&t, req, &none, cur, &q, err, sizeof err), &q,
            "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" "
-           "WHERE ((\"title\" < $1) OR (\"title\" = $2 AND \"id\" < $3)) "
+           "WHERE ((\"title\" < ?1) OR (\"title\" = ?2 AND \"id\" < ?3)) "
            "ORDER BY \"title\" DESC, \"id\" DESC LIMIT 100", 3);
     cel_query_free(&q); cJSON_Delete(req); cJSON_Delete(cur);
 
@@ -342,7 +342,7 @@ int main(void) {
     cJSON_AddItemToArray(cur2, cJSON_CreateString("u9"));
     expect("keyset + owner scope", cel_build_list(&t, req, &owner, cur2, &q, err, sizeof err), &q,
            "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" "
-           "WHERE \"owner_id\" = $1 AND ((\"title\" < $2) OR (\"title\" = $3 AND \"id\" < $4)) "
+           "WHERE \"owner_id\" = ?1 AND ((\"title\" < ?2) OR (\"title\" = ?3 AND \"id\" < ?4)) "
            "ORDER BY \"title\" DESC, \"id\" DESC LIMIT 100", 4);
     cel_query_free(&q); cJSON_Delete(req); cJSON_Delete(cur2);
 
@@ -356,7 +356,7 @@ int main(void) {
     cJSON_AddItemToArray(bt, cJSON_CreateString("a"));
     cJSON_AddItemToArray(bt, cJSON_CreateString("z"));
     expect("where between", cel_build_list(&t, req, &none, NULL, &q, err, sizeof err), &q,
-           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE \"title\" BETWEEN $1 AND $2 LIMIT 100 OFFSET 0", 2);
+           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE \"title\" BETWEEN ?1 AND ?2 LIMIT 100 OFFSET 0", 2);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* or */
@@ -366,7 +366,7 @@ int main(void) {
     cJSON_AddItemToArray(orarr, cond("title", "eq", "a"));
     cJSON_AddItemToArray(orarr, cond("owner_id", "eq", "b"));
     expect("where OR", cel_build_list(&t, req, &none, NULL, &q, err, sizeof err), &q,
-           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE (\"title\" = $1 OR \"owner_id\" = $2) LIMIT 100 OFFSET 0", 2);
+           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE (\"title\" = ?1 OR \"owner_id\" = ?2) LIMIT 100 OFFSET 0", 2);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* not */
@@ -374,7 +374,7 @@ int main(void) {
     where = cJSON_AddObjectToObject(req, "where");
     cJSON_AddItemToObject(where, "not", cond("title", "eq", "x"));   /* NOT ({title:{eq}}) */
     expect("where NOT", cel_build_list(&t, req, &none, NULL, &q, err, sizeof err), &q,
-           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE NOT (\"title\" = $1) LIMIT 100 OFFSET 0", 1);
+           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE NOT (\"title\" = ?1) LIMIT 100 OFFSET 0", 1);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* mixed: a column AND an or-group (column key emitted first, then the group) */
@@ -386,7 +386,7 @@ int main(void) {
     cJSON_AddItemToArray(orarr2, cond("owner_id", "eq", "b"));
     expect("where mixed col+OR", cel_build_list(&t, req, &none, NULL, &q, err, sizeof err), &q,
            "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" "
-           "WHERE \"title\" = $1 AND (\"owner_id\" = $2 OR \"owner_id\" = $3) LIMIT 100 OFFSET 0", 3);
+           "WHERE \"title\" = ?1 AND (\"owner_id\" = ?2 OR \"owner_id\" = ?3) LIMIT 100 OFFSET 0", 3);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* nested AND inside OR */
@@ -401,7 +401,7 @@ int main(void) {
     cJSON_AddItemToArray(oarr, cond("title", "eq", "c"));
     expect("where nested and/or", cel_build_list(&t, req, &none, NULL, &q, err, sizeof err), &q,
            "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" "
-           "WHERE ((\"title\" = $1 AND \"owner_id\" = $2) OR \"title\" = $3) LIMIT 100 OFFSET 0", 3);
+           "WHERE ((\"title\" = ?1 AND \"owner_id\" = ?2) OR \"title\" = ?3) LIMIT 100 OFFSET 0", 3);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* ---- group-by aggregates ---- */
@@ -437,7 +437,7 @@ int main(void) {
     cJSON_AddItemToArray(cJSON_AddArrayToObject(req, "group"), cJSON_CreateString("owner_id"));
     cJSON_AddItemToArray(cJSON_AddArrayToObject(req, "aggregate"), cJSON_CreateString("count"));
     expect("agg group+count+scope", cel_build_aggregate(&t, req, &owner, &q, err, sizeof err), &q,
-           "SELECT \"owner_id\", count(*) AS \"count\" FROM \"notes\" WHERE \"owner_id\" = $1 "
+           "SELECT \"owner_id\", count(*) AS \"count\" FROM \"notes\" WHERE \"owner_id\" = ?1 "
            "GROUP BY \"owner_id\" ORDER BY \"owner_id\"", 1);
     cel_query_free(&q); cJSON_Delete(req);
 

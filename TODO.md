@@ -76,8 +76,19 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       **Still to do:** drop the libpq `cel_catalog_build` + global `g_active` once routing
       gives each request its app's `sqlite3*` (Step 5); wire per-app catalog caching +
       invalidation on schema change.
-- [ ] **`query_builder.c` → SQLite dialect.** `?`/`:name` placeholders (not `$N`),
+- [x] **`query_builder.c` → SQLite dialect.** `?`/`:name` placeholders (not `$N`),
       `RETURNING` (SQLite ≥ 3.35), type-affinity handling for JSON serialization.
+      **Done (in place — the builder is pure/libpq-free):** `$N` → `?N` (numbered, single
+      `q_placeholder` chokepoint, no reuse); booleans bind as `1`/`0` (SQLite has no bool);
+      `ilike` → `LIKE` (SQLite LIKE is already case-insensitive); `RETURNING` kept;
+      `cel_build_rpc` left PG-shaped with a deferral note (SQLite RPC → the hook layer,
+      Phase 2). Regression test repinned to `?N` (`tests/query_builder_test.c`). Added an
+      **end-to-end test** `tests/query_exec_sqlite_test.c` (ctest `query_exec_sqlite`):
+      build → bind → step → serialize on a real in-memory SQLite db across
+      create/list/update/LIKE/delete with bool round-trip + owner scoping — its `run()`
+      helper prototypes the Step-5 executor. **Note:** in-place conversion means the
+      still-live PG `api.c` now builds `?N` SQL it can't run against Postgres — moot (no
+      live PG; deleted in Step 5), build stays green.
 - [ ] **Delete the tenant machinery.** No `tenant_id` column, no `set_config` /
       `SET LOCAL`, no RLS — isolation is the file boundary. Removes `run_rows`' tenant
       context entirely.

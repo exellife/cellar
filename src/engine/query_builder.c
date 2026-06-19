@@ -70,10 +70,12 @@ static int q_push(cel_query_t *q, char *owned_or_null) {
     q->params[q->nparams++] = owned_or_null;
     return 0;
 }
-/* Emit "$N" for the next parameter slot into the SQL buffer. */
+/* Emit "?N" for the next parameter slot into the SQL buffer. SQLite numbered
+ * placeholders (?1, ?2, …); params are pushed in the same order, no reuse, so
+ * the executor binds params[i] to index i+1. */
 static int q_placeholder(cel_query_t *q, sb_t *sql) {
     char ph[16];
-    snprintf(ph, sizeof ph, "$%d", q->nparams + 1);
+    snprintf(ph, sizeof ph, "?%d", q->nparams + 1);
     return sb_puts(sql, ph);
 }
 
@@ -87,11 +89,13 @@ void cel_query_free(cel_query_t *q) {
 
 /* ---- value coercion -------------------------------------------------------- */
 
-/* Convert a JSON scalar to its Postgres text representation (malloc'd).
- * Returns NULL for unsupported kinds (array/object). Caller must distinguish
- * "JSON null" beforehand. */
+/* Convert a JSON scalar to the text bound as a SQLite parameter (malloc'd).
+ * SQLite has no boolean type, so booleans bind as "1"/"0" — a column with
+ * INTEGER/NUMERIC affinity then stores them numerically (binding "true"/"false"
+ * text would NOT coerce). Returns NULL for unsupported kinds. Caller must
+ * distinguish "JSON null" beforehand. */
 static char *json_scalar_text(const cJSON *v) {
-    if (cJSON_IsBool(v)) return strdup(cJSON_IsTrue(v) ? "true" : "false");
+    if (cJSON_IsBool(v)) return strdup(cJSON_IsTrue(v) ? "1" : "0");
     if (cJSON_IsString(v)) return strdup(v->valuestring);
     if (cJSON_IsNumber(v)) {
         char b[40];
@@ -100,7 +104,8 @@ static char *json_scalar_text(const cJSON *v) {
         else                           snprintf(b, sizeof b, "%.17g", d);
         return strdup(b);
     }
-    /* objects/arrays serialize to JSON text — bound as-is, cast to json/jsonb by PG */
+    /* objects/arrays serialize to JSON text — stored as TEXT (SQLite has no jsonb;
+     * the serializer parses JSON-typed columns back on read) */
     if (cJSON_IsObject(v) || cJSON_IsArray(v)) return cJSON_PrintUnformatted(v);
     return NULL;
 }
@@ -115,7 +120,9 @@ static const char *sql_operator(const char *op) {
     if (!strcmp(op, "gt"))    return ">";
     if (!strcmp(op, "gte"))   return ">=";
     if (!strcmp(op, "like"))  return "LIKE";
-    if (!strcmp(op, "ilike")) return "ILIKE";
+    /* SQLite has no ILIKE; its LIKE is already case-insensitive for ASCII, so
+     * "ilike" maps to LIKE (a deliberate Postgres→SQLite behavior change). */
+    if (!strcmp(op, "ilike")) return "LIKE";
     return NULL; /* "in" handled separately; anything else is invalid */
 }
 
@@ -200,7 +207,7 @@ static int build_select_list(const cel_table_t *t, const cJSON *req, sb_t *sql,
 
 /* ---- WHERE / ORDER / LIMIT ------------------------------------------------- */
 
-/* Emit "$N" bound to a literal (owned) value. */
+/* Emit "?N" bound to a literal (owned) value. */
 static int append_value_param(cel_query_t *q, sb_t *sql, const char *value) {
     char *v = strdup(value);
     if (!v) return -1;
@@ -208,7 +215,7 @@ static int append_value_param(cel_query_t *q, sb_t *sql, const char *value) {
     return 0;
 }
 
-/* Append "col = $N" bound to a literal value (used for ownership predicates). */
+/* Append "col = ?N" bound to a literal value (used for ownership predicates). */
 static int append_eq_param(cel_query_t *q, sb_t *sql, const char *col, const char *value) {
     if (sb_put_ident(sql, col) || sb_puts(sql, " = ")) return -1;
     return append_value_param(q, sql, value);
@@ -224,7 +231,7 @@ static int append_qualified(sb_t *sql, const char *tbl, const char *col) {
 
 /* Append one scope rule as a parametrized predicate, per its kind. `t` is the
  * table being scoped (needed to qualify the VIA correlation). EQ output is
- * identical to the original `col = $N` form (pinned by the regression test). */
+ * identical to the original `col = ?N` form (pinned by the regression test). */
 static int append_scope_predicate(const cel_table_t *t, cel_query_t *q, sb_t *sql,
                                   const cel_scope_rule_t *r) {
     if (r->kind == CEL_SCOPE_OR) {
@@ -391,7 +398,7 @@ int cel_resolve_sortkeys(const cel_table_t *t, const cJSON *req,
 }
 
 /* Append the "rows strictly after the cursor" predicate for `keys` (all one
- * direction). Lexicographic, expanded so each comparison is `col OP $n` (binary,
+ * direction). Lexicographic, expanded so each comparison is `col OP ?n` (binary,
  * so the bound value's type is inferred from the column). `prefix` is already
  * emitted by the caller. */
 static int build_keyset_predicate(cel_query_t *q, sb_t *sql, const cel_sortkey_t *keys,
@@ -629,7 +636,7 @@ static int append_returning_all(const cel_table_t *t, sb_t *sql) {
     return 0;
 }
 
-/* Emit a "$N" placeholder bound to a JSON value (null -> SQL NULL). */
+/* Emit a "?N" placeholder bound to a JSON value (null -> SQL NULL). */
 static int push_value(cel_query_t *q, sb_t *sql, const cJSON *v,
                       const char *col, char *errbuf, size_t errlen) {
     if (q_placeholder(q, sql)) return -1;
@@ -766,6 +773,11 @@ int cel_build_delete(const cel_table_t *t, const cJSON *req, const cel_scope_t *
     return 0;
 }
 
+/* NOTE (SQLite pivot): the emitted shape — SELECT * FROM fn(name := ?N) — is a
+ * Postgres set-returning-function call with named args, which SQLite has no
+ * equivalent for. RPC on SQLite is deferred to the hook layer (design §8:
+ * rpc(name, args, who)) / Layer-1 SQL; this builder is kept for its identifier
+ * validation and is not wired into the SQLite execution path. */
 int cel_build_rpc(const char *fn, const cJSON *args,
                   cel_query_t *out, char *errbuf, size_t errlen) {
     if (!is_safe_ident(fn)) FAIL("invalid function name");
@@ -784,7 +796,7 @@ int cel_build_rpc(const char *fn, const cJSON *args,
                 return -1;
             }
             if (n++ && !rc) rc = sb_puts(&sql, ", ");
-            /* "name := $N" — name is charset-validated (emitted bare so it matches
+            /* "name := ?N" — name is charset-validated (emitted bare so it matches
              * the function's declared parameter); the value is always bound. */
             if (!rc) rc = sb_puts(&sql, a->string) || sb_puts(&sql, " := ");
             if (!rc) rc = push_value(out, &sql, a, a->string, errbuf, errlen);

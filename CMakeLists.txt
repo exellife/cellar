@@ -232,6 +232,15 @@ if(CELLAR_BUILD_TESTS)
     target_link_libraries(schema_catalog_sqlite_test SQLite::SQLite3 logger)
     add_test(NAME schema_catalog_sqlite COMMAND schema_catalog_sqlite_test)
 
+    # End-to-end (Phase 1 steps 2-4): the query builder's SQLite dialect (?N +
+    # RETURNING) actually executes — build -> bind -> step -> serialize, with the
+    # catalog from real introspection. Prototypes the step-5 executor. No Postgres.
+    add_executable(query_exec_sqlite_test tests/query_exec_sqlite_test.c
+        src/engine/query_builder.c src/engine/result_json.c src/engine/schema_catalog_sqlite.c)
+    target_include_directories(query_exec_sqlite_test PRIVATE src/engine)
+    target_link_libraries(query_exec_sqlite_test SQLite::SQLite3 cjson logger)
+    add_test(NAME query_exec_sqlite COMMAND query_exec_sqlite_test)
+
     # DB-free unit test for the declarative-roles authorization engine (#50):
     # built-in defaults stay byte-for-byte, and a "_roles" config bundle defines
     # a custom role vocabulary. Links policy.c (auth stubbed in the test).
