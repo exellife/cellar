@@ -14,15 +14,15 @@
 #include <strings.h>
 #include <time.h>
 
-/* Max accepted request body (bytes); 0 = no cap. Set from PGF_MAX_BODY at startup. */
+/* Max accepted request body (bytes); 0 = no cap. Set from CEL_MAX_BODY at startup. */
 static size_t g_max_body = 0;
-void pgf_http_set_max_body(size_t max_bytes) { g_max_body = max_bytes; }
+void cel_http_set_max_body(size_t max_bytes) { g_max_body = max_bytes; }
 
 /* Rate limiters owned by main.c (NULL = that throttle disabled): g_auth_rl guards
  * the auth endpoints per IP; g_api_rl throttles the data API + RPC per caller. */
-static pgf_ratelimit_t *g_auth_rl = NULL;
-static pgf_ratelimit_t *g_api_rl  = NULL;
-void pgf_http_set_rate_limiters(pgf_ratelimit_t *auth_rl, pgf_ratelimit_t *api_rl) {
+static cel_ratelimit_t *g_auth_rl = NULL;
+static cel_ratelimit_t *g_api_rl  = NULL;
+void cel_http_set_rate_limiters(cel_ratelimit_t *auth_rl, cel_ratelimit_t *api_rl) {
     g_auth_rl = auth_rl; g_api_rl = api_rl;
 }
 
@@ -57,7 +57,7 @@ static void urldecode(char *s) {
 
 /* Serialize an engine result into the HTTP response (JSON). Returns the status so
  * the router can classify it for metrics. */
-static int send_api(portico_response_t *res, pgf_api_result_t ar) {
+static int send_api(portico_response_t *res, cel_api_result_t ar) {
     portico_res_status(res, ar.http_status);
     char *s = cJSON_PrintUnformatted(ar.body);
     cJSON_Delete(ar.body);
@@ -166,7 +166,7 @@ static cJSON *build_list_req(const char *table, const char *query, size_t query_
 /* ---- router ---------------------------------------------------------------- */
 
 /* Resolve the caller identity from an "Authorization: Bearer <token>" header. */
-static void identity_from_request(const portico_request_t *req, pgf_identity_t *who) {
+static void identity_from_request(const portico_request_t *req, cel_identity_t *who) {
     size_t alen = 0;
     const char *auth = portico_req_header(req, "Authorization", &alen);
     char tok[256];
@@ -175,10 +175,10 @@ static void identity_from_request(const portico_request_t *req, pgf_identity_t *
         size_t tlen = alen - 7;
         if (tlen < sizeof tok) { memcpy(tok, auth + 7, tlen); tok[tlen] = '\0'; token = tok; }
     }
-    pgf_identity_from_token(token, who);
+    cel_identity_from_token(token, who);
 }
 
-/* Route a request and return the HTTP status it set, so pgf_http_router can record
+/* Route a request and return the HTTP status it set, so cel_http_router can record
  * the latency + status-class metrics in one place. */
 static int route(const portico_request_t *req, portico_response_t *res) {
     /* GET /health — liveness, public, no DB hit */
@@ -190,11 +190,11 @@ static int route(const portico_request_t *req, portico_response_t *res) {
 
     /* GET /metrics — Prometheus text exposition. NOT open by default (L-3): the
      * scrape leaks the exact build version (CVE targeting) and live operational /
-     * auth telemetry. Served only when PGF_METRICS_TOKEN is set, and then only to a
+     * auth telemetry. Served only when CEL_METRICS_TOKEN is set, and then only to a
      * caller presenting it as a Bearer token; unset => 404 (the endpoint is
      * invisible). Front with a firewall / localhost bind for defense in depth. */
     if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/metrics")) {
-        const char *mtok = getenv("PGF_METRICS_TOKEN");
+        const char *mtok = getenv("CEL_METRICS_TOKEN");
         if (!mtok || !*mtok) return send_error(res, 404, "not found");
         size_t alen = 0;
         const char *auth = portico_req_header(req, "Authorization", &alen);
@@ -203,7 +203,7 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         size_t tlen = strlen(mtok);
         if (!bearer || blen != tlen || memcmp(bearer, mtok, tlen) != 0)
             return send_error(res, 401, "unauthorized");
-        char *body = pgf_metrics_render();
+        char *body = cel_metrics_render();
         if (!body) return send_error(res, 500, "metrics unavailable");
         portico_res_status(res, 200);
         portico_res_body(res, body, strlen(body), "text/plain; version=0.0.4");
@@ -213,18 +213,18 @@ static int route(const portico_request_t *req, portico_response_t *res) {
 
     /* GET /schema (resolve identity only for routes that need it — not assets/login) */
     if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/schema")) {
-        pgf_identity_t who;
+        cel_identity_t who;
         identity_from_request(req, &who);
-        return send_api(res, pgf_api_schema(&who));
+        return send_api(res, cel_api_schema(&who));
     }
 
     /* GET /openapi.json — OpenAPI 3.0 spec generated from the live catalog. Gated
      * like /schema (any authenticated caller), since it exposes the same schema. */
     if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/openapi.json")) {
-        pgf_identity_t who;
+        cel_identity_t who;
         identity_from_request(req, &who);
         if (!who.authenticated) return send_error(res, 401, "authentication required");
-        cJSON *doc = pgf_openapi_build(pgf_catalog_active(), pgf_metrics_version());
+        cJSON *doc = cel_openapi_build(cel_catalog_active(), cel_metrics_version());
         char *s = doc ? cJSON_PrintUnformatted(doc) : NULL;
         cJSON_Delete(doc);
         if (!s) return send_error(res, 500, "openapi unavailable");
@@ -237,90 +237,90 @@ static int route(const portico_request_t *req, portico_response_t *res) {
     /* POST /auth/login */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/login")) {
         /* Throttle the expensive (Argon2id) auth path per client IP. */
-        if (!pgf_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
-            pgf_metric_inc(PGF_M_RATELIMITED);
+        if (!cel_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
+            cel_metric_inc(CEL_M_RATELIMITED);
             return send_error(res, 429, "too many requests");
         }
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_login(body));
+        int st = send_api(res, cel_api_login(body));
         cJSON_Delete(body);
         return st;
     }
 
     /* POST /auth/register — public self-service signup (gated by role config) */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/register")) {
-        if (!pgf_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
-            pgf_metric_inc(PGF_M_RATELIMITED);
+        if (!cel_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
+            cel_metric_inc(CEL_M_RATELIMITED);
             return send_error(res, 429, "too many requests");
         }
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_register(body));
+        int st = send_api(res, cel_api_register(body));
         cJSON_Delete(body);
         return st;
     }
 
     /* POST /auth/users — admin-provisioned account creation (superuser only) */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/users")) {
-        pgf_identity_t who;
+        cel_identity_t who;
         identity_from_request(req, &who);
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_create_user(&who, body));
+        int st = send_api(res, cel_api_create_user(&who, body));
         cJSON_Delete(body);
         return st;
     }
 
     /* POST /auth/mfa/enroll — start TOTP enrollment for the authenticated caller */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/mfa/enroll")) {
-        pgf_identity_t who;
+        cel_identity_t who;
         identity_from_request(req, &who);
-        return send_api(res, pgf_api_mfa_enroll(&who));
+        return send_api(res, cel_api_mfa_enroll(&who));
     }
 
     /* POST /auth/mfa/confirm — finish enrollment by proving one code */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/mfa/confirm")) {
-        pgf_identity_t who;
+        cel_identity_t who;
         identity_from_request(req, &who);
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_mfa_confirm(&who, body));
+        int st = send_api(res, cel_api_mfa_confirm(&who, body));
         cJSON_Delete(body);
         return st;
     }
 
     /* POST /auth/mfa/disable — turn off 2FA (requires a valid current code) */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/mfa/disable")) {
-        pgf_identity_t who;
+        cel_identity_t who;
         identity_from_request(req, &who);
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_mfa_disable(&who, body));
+        int st = send_api(res, cel_api_mfa_disable(&who, body));
         cJSON_Delete(body);
         return st;
     }
 
     /* POST /auth/mfa/recovery-codes — regenerate one-time recovery codes (Bearer) */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/mfa/recovery-codes")) {
-        pgf_identity_t who;
+        cel_identity_t who;
         identity_from_request(req, &who);
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_mfa_recovery(&who, body));
+        int st = send_api(res, cel_api_mfa_recovery(&who, body));
         cJSON_Delete(body);
         return st;
     }
 
     /* POST /auth/mfa/verify — the second login step (public; throttled like login) */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/mfa/verify")) {
-        if (!pgf_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
-            pgf_metric_inc(PGF_M_RATELIMITED);
+        if (!cel_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
+            cel_metric_inc(CEL_M_RATELIMITED);
             return send_error(res, 429, "too many requests");
         }
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_mfa_verify(body));
+        int st = send_api(res, cel_api_mfa_verify(body));
         cJSON_Delete(body);
         return st;
     }
@@ -328,13 +328,13 @@ static int route(const portico_request_t *req, portico_response_t *res) {
     /* POST /auth/oauth — federated sign-in: verify a provider ID token, find/link
      * the identity, issue a session (public; throttled like login). */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/oauth")) {
-        if (!pgf_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
-            pgf_metric_inc(PGF_M_RATELIMITED);
+        if (!cel_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
+            cel_metric_inc(CEL_M_RATELIMITED);
             return send_error(res, 429, "too many requests");
         }
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_oauth(body));
+        int st = send_api(res, cel_api_oauth(body));
         cJSON_Delete(body);
         return st;
     }
@@ -343,7 +343,7 @@ static int route(const portico_request_t *req, portico_response_t *res) {
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/verify-email")) {
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_verify_email(body));
+        int st = send_api(res, cel_api_verify_email(body));
         cJSON_Delete(body);
         return st;
     }
@@ -351,48 +351,48 @@ static int route(const portico_request_t *req, portico_response_t *res) {
     /* POST /auth/verify-email/resend — re-send the verification email (Bearer;
      * throttled, since it sends mail) */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/verify-email/resend")) {
-        if (!pgf_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
-            pgf_metric_inc(PGF_M_RATELIMITED);
+        if (!cel_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
+            cel_metric_inc(CEL_M_RATELIMITED);
             return send_error(res, 429, "too many requests");
         }
-        pgf_identity_t who;
+        cel_identity_t who;
         identity_from_request(req, &who);
-        return send_api(res, pgf_api_verify_email_resend(&who));
+        return send_api(res, cel_api_verify_email_resend(&who));
     }
 
     /* POST /auth/password/forgot — email a reset link (public; throttled, and it
      * sends mail). Always 200 so it can't be used to probe which emails exist. */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/password/forgot")) {
-        if (!pgf_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
-            pgf_metric_inc(PGF_M_RATELIMITED);
+        if (!cel_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
+            cel_metric_inc(CEL_M_RATELIMITED);
             return send_error(res, 429, "too many requests");
         }
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_password_forgot(body));
+        int st = send_api(res, cel_api_password_forgot(body));
         cJSON_Delete(body);
         return st;
     }
 
     /* POST /auth/password/reset — redeem a reset token + set a new password */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/password/reset")) {
-        if (!pgf_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
-            pgf_metric_inc(PGF_M_RATELIMITED);
+        if (!cel_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
+            cel_metric_inc(CEL_M_RATELIMITED);
             return send_error(res, 429, "too many requests");
         }
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, pgf_api_password_reset(body));
+        int st = send_api(res, cel_api_password_reset(body));
         cJSON_Delete(body);
         return st;
     }
 
     /* POST /rpc/<fn> — call a whitelisted Postgres function (body = args object) */
     if (portico_req_method_is(req, "POST") && req->path_len > 5 && memcmp(req->path, "/rpc/", 5) == 0) {
-        pgf_identity_t who;
+        cel_identity_t who;
         identity_from_request(req, &who);
         /* Data-API throttle: per authenticated user when known, else per IP. */
-        if (!pgf_ratelimit_allow(g_api_rl, who.user_id[0] ? who.user_id : portico_req_client_ip(req)))
+        if (!cel_ratelimit_allow(g_api_rl, who.user_id[0] ? who.user_id : portico_req_client_ip(req)))
             return send_error(res, 429, "too many requests");
         char fn[64];
         if (copy_str(fn, sizeof fn, req->path + 5, req->path_len - 5) != 0)
@@ -405,17 +405,17 @@ static int route(const portico_request_t *req, portico_response_t *res) {
                 return send_error(res, 400, "args must be a JSON object"); }
             cJSON_AddItemToObject(r, "args", args);   /* takes ownership */
         }
-        int st = send_api(res, pgf_api_rpc(&who, r));
+        int st = send_api(res, cel_api_rpc(&who, r));
         cJSON_Delete(r);
         return st;
     }
 
     /* /api/<table>[/<id>] */
     if (req->path_len > 5 && memcmp(req->path, "/api/", 5) == 0) {
-        pgf_identity_t who;
+        cel_identity_t who;
         identity_from_request(req, &who);
         /* Data-API throttle: per authenticated user when known, else per IP. */
-        if (!pgf_ratelimit_allow(g_api_rl, who.user_id[0] ? who.user_id : portico_req_client_ip(req)))
+        if (!cel_ratelimit_allow(g_api_rl, who.user_id[0] ? who.user_id : portico_req_client_ip(req)))
             return send_error(res, 429, "too many requests");
         const char *rest = req->path + 5;
         size_t rest_len = req->path_len - 5;
@@ -438,15 +438,15 @@ static int route(const portico_request_t *req, portico_response_t *res) {
 
             int st;
             if (portico_req_method_is(req, "GET")) {
-                st = send_api(res, pgf_api_get(&who, r));
+                st = send_api(res, cel_api_get(&who, r));
             } else if (portico_req_method_is(req, "PATCH") || portico_req_method_is(req, "PUT")) {
                 cJSON *values = cJSON_ParseWithLength(req->body, req->body_len);
                 if (!cJSON_IsObject(values)) { cJSON_Delete(values); cJSON_Delete(r);
                     return send_error(res, 400, "invalid JSON body"); }
                 cJSON_AddItemToObject(r, "values", values);   /* takes ownership */
-                st = send_api(res, pgf_api_update(&who, r));
+                st = send_api(res, cel_api_update(&who, r));
             } else if (portico_req_method_is(req, "DELETE")) {
-                st = send_api(res, pgf_api_delete(&who, r));
+                st = send_api(res, cel_api_delete(&who, r));
             } else {
                 st = send_error(res, 405, "method not allowed");
             }
@@ -458,7 +458,7 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         int st;
         if (portico_req_method_is(req, "GET")) {
             cJSON *r = build_list_req(table, req->query, req->query_len);
-            st = send_api(res, pgf_api_list(&who, r));
+            st = send_api(res, cel_api_list(&who, r));
             cJSON_Delete(r);
         } else if (portico_req_method_is(req, "POST")) {
             cJSON *values = cJSON_ParseWithLength(req->body, req->body_len);
@@ -467,7 +467,7 @@ static int route(const portico_request_t *req, portico_response_t *res) {
             cJSON *r = cJSON_CreateObject();
             cJSON_AddStringToObject(r, "table", table);
             cJSON_AddItemToObject(r, "values", values);       /* takes ownership */
-            st = send_api(res, pgf_api_create(&who, r));
+            st = send_api(res, cel_api_create(&who, r));
             cJSON_Delete(r);
         } else {
             st = send_error(res, 405, "method not allowed");
@@ -480,7 +480,7 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         char p[512];
         memcpy(p, req->path, req->path_len);
         p[req->path_len] = '\0';
-        const pgf_asset_t *a = pgf_asset_find(p);
+        const cel_asset_t *a = cel_asset_find(p);
         if (a) {
             portico_res_status(res, 200);
             portico_res_body(res, a->data, a->len, a->ctype);
@@ -496,7 +496,7 @@ static int route(const portico_request_t *req, portico_response_t *res) {
 static void add_cors_headers(portico_response_t *res, const char *allow_origin, bool preflight) {
     portico_res_header(res, "Access-Control-Allow-Origin", allow_origin);
     portico_res_header(res, "Vary", "Origin");
-    if (pgf_cors_allow_credentials())
+    if (cel_cors_allow_credentials())
         portico_res_header(res, "Access-Control-Allow-Credentials", "true");
     if (preflight) {
         portico_res_header(res, "Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
@@ -505,21 +505,21 @@ static void add_cors_headers(portico_response_t *res, const char *allow_origin, 
     }
 }
 
-int pgf_http_router(const portico_request_t *req, portico_response_t *res, void *user_data) {
+int cel_http_router(const portico_request_t *req, portico_response_t *res, void *user_data) {
     (void)user_data;
 
     /* CORS: resolve the allowed origin (NULL = not allowed / CORS off => no headers).
-     * `origin` is held at function scope: pgf_cors_allow_origin may return a pointer
+     * `origin` is held at function scope: cel_cors_allow_origin may return a pointer
      * into it (the wildcard+credentials echo case), so it must outlive the response. */
     const char *allow_origin = NULL;
     char origin[256];
-    if (pgf_cors_enabled()) {
+    if (cel_cors_enabled()) {
         size_t olen = 0;
         const char *oh = portico_req_header(req, "Origin", &olen);
         if (oh && olen > 0 && olen < sizeof origin) {
             memcpy(origin, oh, olen);
             origin[olen] = '\0';
-            allow_origin = pgf_cors_allow_origin(origin);
+            allow_origin = cel_cors_allow_origin(origin);
         }
     }
 
@@ -528,7 +528,7 @@ int pgf_http_router(const portico_request_t *req, portico_response_t *res, void 
         if (allow_origin) add_cors_headers(res, allow_origin, true);
         portico_res_status(res, 204);
         portico_res_body(res, "", 0, "text/plain");
-        pgf_metric_inc(PGF_M_HTTP_2XX);
+        cel_metric_inc(CEL_M_HTTP_2XX);
         return 0;
     }
 
@@ -536,7 +536,7 @@ int pgf_http_router(const portico_request_t *req, portico_response_t *res, void 
     if (g_max_body && req->body_len > g_max_body) {
         send_error(res, 413, "request body too large");
         if (allow_origin) add_cors_headers(res, allow_origin, false);
-        pgf_metric_inc(PGF_M_HTTP_4XX);
+        cel_metric_inc(CEL_M_HTTP_4XX);
         return 0;
     }
 
@@ -548,10 +548,10 @@ int pgf_http_router(const portico_request_t *req, portico_response_t *res, void 
     if (allow_origin) add_cors_headers(res, allow_origin, false);   /* on the actual response */
 
     clock_gettime(CLOCK_MONOTONIC, &t1);
-    pgf_metric_http_observe((double)(t1.tv_sec - t0.tv_sec) +
+    cel_metric_http_observe((double)(t1.tv_sec - t0.tv_sec) +
                             (double)(t1.tv_nsec - t0.tv_nsec) / 1e9);
-    if      (status >= 500) pgf_metric_inc(PGF_M_HTTP_5XX);
-    else if (status >= 400) pgf_metric_inc(PGF_M_HTTP_4XX);
-    else                    pgf_metric_inc(PGF_M_HTTP_2XX);
+    if      (status >= 500) cel_metric_inc(CEL_M_HTTP_5XX);
+    else if (status >= 400) cel_metric_inc(CEL_M_HTTP_4XX);
+    else                    cel_metric_inc(CEL_M_HTTP_2XX);
     return 0;
 }

@@ -1,8 +1,8 @@
 # Generate a C source embedding every *.sql file under MIGDIR as a NUL-terminated
 # string, sorted by filename, into an array named ${ARRAY} (count ${ARRAY}_COUNT).
-#   cmake -DMIGDIR=<dir> -DOUTFILE=<file> -DARRAY=PGF_MIGRATIONS -P embed_migrations.cmake
+#   cmake -DMIGDIR=<dir> -DOUTFILE=<file> -DARRAY=CEL_MIGRATIONS -P embed_migrations.cmake
 if(NOT DEFINED ARRAY)
-    set(ARRAY PGF_MIGRATIONS)
+    set(ARRAY CEL_MIGRATIONS)
 endif()
 
 file(GLOB FILES RELATIVE "${MIGDIR}" "${MIGDIR}/*.sql")
@@ -23,5 +23,5 @@ file(WRITE "${OUTFILE}"
 "/* GENERATED from ${MIGDIR} by cmake/embed_migrations.cmake — do not edit. */\n"
 "#include \"core/migrate.h\"\n\n"
 "${DECLS}\n"
-"const pgf_migration_t ${ARRAY}[] = {\n${ENTRIES}};\n"
+"const cel_migration_t ${ARRAY}[] = {\n${ENTRIES}};\n"
 "const int ${ARRAY}_COUNT = (int)(sizeof(${ARRAY}) / sizeof(${ARRAY}[0]));\n")

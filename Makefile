@@ -1,6 +1,6 @@
-# pgforge — schema-driven backend (Postgres + C)
+# cellar — schema-driven backend (Postgres + C)
 # Single static-ish binary. Builds vendored libs (wslib, opcode_dispatcher, logger)
-# then the pgforge sources, and links them together.
+# then the cellar sources, and links them together.
 
 CC       := gcc
 CSTD     := -std=gnu11
@@ -11,7 +11,7 @@ CFLAGS   := $(CSTD) $(WARN) $(OPT) $(DEFS)
 
 BUILD    := build
 OBJ      := $(BUILD)/obj
-BIN      := $(BUILD)/pgforge
+BIN      := $(BUILD)/cellar
 
 # ---- vendored libraries -----------------------------------------------------
 LIB_WS   := lib/wslib

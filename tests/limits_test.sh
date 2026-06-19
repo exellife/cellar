@@ -4,12 +4,12 @@
 # header timeout. Boots with a low body cap + short timeout. limits_test.sh <bin>
 set -euo pipefail
 
-BIN="${1:?usage: limits_test.sh <pgforge-binary>}"
-H="${PGF_DB_HOST:-localhost}"; U="${PGF_DB_USER:-postgres}"; DB="${PGF_DB_NAME:-pgforge}"
+BIN="${1:?usage: limits_test.sh <cellar-binary>}"
+H="${CEL_DB_HOST:-localhost}"; U="${CEL_DB_USER:-postgres}"; DB="${CEL_DB_NAME:-cellar}"
 PORT=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
 
-PGF_PORT=$PORT PGF_DB_HOST=$H PGF_DB_USER=$U PGF_DB_NAME=$DB PGF_LOG_LEVEL=warn \
-  PGF_AUTH_RATELIMIT=0 PGF_MAX_BODY=1000 PGF_HEADER_TIMEOUT=2 \
+CEL_PORT=$PORT CEL_DB_HOST=$H CEL_DB_USER=$U CEL_DB_NAME=$DB CEL_LOG_LEVEL=warn \
+  CEL_AUTH_RATELIMIT=0 CEL_MAX_BODY=1000 CEL_HEADER_TIMEOUT=2 \
   "$BIN" >/tmp/lim_$$.log 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true; rm -f /tmp/lim_$$.log' EXIT
@@ -20,7 +20,7 @@ chk() { if [ "$2" = "$3" ]; then echo "  ok    $1 ($2)"; else echo "  FAIL  $1: 
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 U="http://127.0.0.1:$PORT"
 
-# body cap: a 2000-byte body exceeds PGF_MAX_BODY=1000 -> 413 (before any parse)
+# body cap: a 2000-byte body exceeds CEL_MAX_BODY=1000 -> 413 (before any parse)
 BIG=$(python3 -c "print('x'*2000)")
 chk "oversized body -> 413" \
     "$(code -X POST -H 'Content-Type: application/json' -d "$BIG" "$U/auth/login")" "413"
@@ -34,7 +34,7 @@ import socket, sys, time
 port = int(sys.argv[1])
 s = socket.create_connection(("127.0.0.1", port), timeout=10)
 s.sendall(b"GET /health HTTP/1.1\r\nHost: localhost\r\n")   # no blank line -> incomplete
-time.sleep(3.5)                                            # > PGF_HEADER_TIMEOUT (2s)
+time.sleep(3.5)                                            # > CEL_HEADER_TIMEOUT (2s)
 s.settimeout(3)
 try:
     print("reaped" if s.recv(64) == b"" else "open")       # server-side close -> clean EOF

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Adversarial WebSocket robustness harness for the vendored wslib.
 
-Drives pgforge's OP_ECHO as a round-trip oracle using a hand-rolled raw-socket
+Drives cellar's OP_ECHO as a round-trip oracle using a hand-rolled raw-socket
 WebSocket client, so we control every byte of every frame. Probes:
 
   - payload-size boundaries (WS length encoding 125/126/127, 16->64 bit, and
@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-# pgforge protocol
+# cellar protocol
 HDR = struct.Struct("!BBHI")
 OP_ECHO, OP_PING_APP = 0x02, 0x01
 FLAG_RESPONSE = 0x80

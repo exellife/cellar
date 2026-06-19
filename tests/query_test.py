@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge richer-read test: relationship embedding + exact count (OP_DB_QUERY).
+"""cellar richer-read test: relationship embedding + exact count (OP_DB_QUERY).
 
 Exercises the demo product catalog over REST: embed a to-one relation
 (products -> categories via products.category_id), a to-many relation
@@ -11,7 +11,7 @@ the harness, which passes ws://host:port/ as argv[1].
 import http.client, json, sys
 from urllib.parse import urlparse
 
-ADMIN = ("admin@pgforge.dev", "s3cret-admin")
+ADMIN = ("admin@cellar.dev", "s3cret-admin")
 HOST = PORT = None
 
 
@@ -40,7 +40,7 @@ def main():
         ok += bool(cond); fail += (not cond)
         return cond
 
-    print(f"== pgforge richer-read harness -> {HOST}:{PORT} ==")
+    print(f"== cellar richer-read harness -> {HOST}:{PORT} ==")
     admin = login(ADMIN)
     chk("login admin", bool(admin))
 
@@ -93,7 +93,7 @@ def main():
     s, b = req("GET", "/api/products?embed=not_a_relation", token=admin)
     chk("bad relation -> 400", s == 400, f"status={s}")
     # internal tables are not exposed, so they can't be embedded either
-    s, b = req("GET", "/api/products?embed=pgf_users", token=admin)
+    s, b = req("GET", "/api/products?embed=cel_users", token=admin)
     chk("internal table not embeddable -> 400", s == 400, f"status={s}")
 
     # ---- clean up the fixture so the shared DB stays pristine for other suites

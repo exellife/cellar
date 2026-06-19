@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""pgforge email-verification end-to-end (#auth, PLAN §7e).
+"""cellar email-verification end-to-end (#auth, PLAN §7e).
 
 Registers a user (which emails a verification token, captured from a local mock
 SMTP sink), confirms email_verified starts false, redeems the token, and confirms
 it flips to true. Also checks single-use, a bad token, and resend.
 
-Env (set by email_verification_test.sh): PGF_MAIL_CAPTURE, VERIFY_EMAIL.
+Env (set by email_verification_test.sh): CEL_MAIL_CAPTURE, VERIFY_EMAIL.
 The harness passes ws://host:port/ as argv[1].
 """
 import http.client, json, os, re, sys, time
@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 EMAIL = os.environ.get("VERIFY_EMAIL", "verifyme@test.local")
 PW = "verify-pw-12345"
-CAPTURE = os.environ["PGF_MAIL_CAPTURE"]
+CAPTURE = os.environ["CEL_MAIL_CAPTURE"]
 HOST = PORT = None
 
 
@@ -50,7 +50,7 @@ def main():
         print(f"  {'ok' if cond else 'FAIL':<5} {name:<44} {detail}")
         ok += bool(cond); fail += (not cond)
 
-    print(f"== pgforge email-verification harness -> {HOST}:{PORT} ==")
+    print(f"== cellar email-verification harness -> {HOST}:{PORT} ==")
 
     # register (default self-register role) -> 201, auto-logged-in, email unverified
     s, b = req("POST", "/auth/register", {"email": EMAIL, "password": PW})

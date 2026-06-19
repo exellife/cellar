@@ -1,4 +1,4 @@
-# pgforge
+# cellar
 
 A Supabase-style, schema-driven backend (PostgreSQL + C). Generates an API and admin
 UI from your database schema. Installs on any Linux box as a single service.
@@ -16,13 +16,13 @@ uuid-dev`).
 
 ```sh
 cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
-cmake --build build-cmake -j          # -> build-cmake/pgforge
+cmake --build build-cmake -j          # -> build-cmake/cellar
 ```
 
 Vendored libraries live under `lib/` (wslib, opcode_dispatcher, logger) and are built
 as static libs by the same configure step.
 
-A plain `make` (using the top-level `Makefile` -> `build/pgforge`) is also available
+A plain `make` (using the top-level `Makefile` -> `build/cellar`) is also available
 as a no-CMake fallback.
 
 ## Tests (CTest)
@@ -38,18 +38,18 @@ needs python3 + the `websockets` module and a reachable Postgres. Tests:
 
 ## Database
 
-Create an empty database, then let pgforge bootstrap it — the migrations are
+Create an empty database, then let cellar bootstrap it — the migrations are
 embedded in the binary and applied in order, idempotently:
 
 ```sh
-createdb pgforge                      # or: psql -U postgres -c 'CREATE DATABASE pgforge'
-./build-cmake/pgforge migrate         # apply core migrations  (migrate status to inspect)
-./build-cmake/pgforge migrate --demo  # also load the demo tables (products/categories/notes)
+createdb cellar                      # or: psql -U postgres -c 'CREATE DATABASE cellar'
+./build-cmake/cellar migrate         # apply core migrations  (migrate status to inspect)
+./build-cmake/cellar migrate --demo  # also load the demo tables (products/categories/notes)
 ```
 
 Migrations are embedded in the binary, applied in order under an advisory lock,
-each transactional and recorded in `pgf_migrations` with a checksum (so an applied
-migration can't be silently edited). Set `PGF_AUTO_MIGRATE=1` to apply core
+each transactional and recorded in `cel_migrations` with a checksum (so an applied
+migration can't be silently edited). Set `CEL_AUTO_MIGRATE=1` to apply core
 migrations automatically on startup.
 
 ## Run
@@ -58,16 +58,16 @@ Configuration is via environment variables:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `PGF_PORT` | `8080` | WebSocket listen port |
-| `PGF_LOG_LEVEL` | `info` | debug/info/warn/error |
-| `PGF_DB_HOST`/`PORT`/`NAME`/`USER`/`PASSWORD` | localhost/5432/pgforge/postgres/— | Postgres connection (empty password falls back to `~/.pgpass`) |
-| `PGF_DB_POOL` | `8` | connection pool size |
-| `PGF_SEED_ADMIN` | — | first-run admin upsert, `email:password` |
-| `PGF_SEED_USERS` | — | multi-user seed, `email:pass:role;...` (roles: admin/editor/viewer) |
-| `PGF_POLICY_FILE` | — | optional authorization overrides (row-level ownership) |
+| `CEL_PORT` | `8080` | WebSocket listen port |
+| `CEL_LOG_LEVEL` | `info` | debug/info/warn/error |
+| `CEL_DB_HOST`/`PORT`/`NAME`/`USER`/`PASSWORD` | localhost/5432/cellar/postgres/— | Postgres connection (empty password falls back to `~/.pgpass`) |
+| `CEL_DB_POOL` | `8` | connection pool size |
+| `CEL_SEED_ADMIN` | — | first-run admin upsert, `email:password` |
+| `CEL_SEED_USERS` | — | multi-user seed, `email:pass:role;...` (roles: admin/editor/viewer) |
+| `CEL_POLICY_FILE` | — | optional authorization overrides (row-level ownership) |
 
 ```sh
-PGF_SEED_ADMIN="admin@pgforge.dev:s3cret-admin" ./build-cmake/pgforge
+CEL_SEED_ADMIN="admin@cellar.dev:s3cret-admin" ./build-cmake/cellar
 ```
 
 Then open **http://localhost:8080/** for the embedded **admin UI** (a petite-vue SPA
@@ -77,28 +77,28 @@ sidebar of tables, data grid, create/edit/delete — with zero per-table code.
 ## Deploy (systemd)
 
 The binary is self-contained except for `libpq` — the web assets, migrations, and
-admin UI are all embedded. A `-DPGFORGE_STATIC=ON` build additionally statically links
+admin UI are all embedded. A `-DCELLAR_STATIC=ON` build additionally statically links
 libsodium/libuuid/cJSON, leaving `libpq5` (+ glibc) as the only runtime dependency.
 
 ```sh
 cmake --build build-cmake -j
-sudo cmake --install build-cmake --prefix /usr/local       # -> /usr/local/bin/pgforge
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin pgforge
-sudo mkdir -p /etc/pgforge
-sudo cp /usr/local/share/pgforge/pgforge.env.example /etc/pgforge/pgforge.env
-sudo chmod 600 /etc/pgforge/pgforge.env                    # then edit DB settings
-sudo cp /usr/local/share/pgforge/pgforge.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now pgforge
+sudo cmake --install build-cmake --prefix /usr/local       # -> /usr/local/bin/cellar
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin cellar
+sudo mkdir -p /etc/cellar
+sudo cp /usr/local/share/cellar/cellar.env.example /etc/cellar/cellar.env
+sudo chmod 600 /etc/cellar/cellar.env                    # then edit DB settings
+sudo cp /usr/local/share/cellar/cellar.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cellar
 ```
 
-The unit runs `pgforge migrate` before start (auto-bootstraps the schema) and runs as a
-locked-down service user. Logs go to journald (`journalctl -u pgforge`).
+The unit runs `cellar migrate` before start (auto-bootstraps the schema) and runs as a
+locked-down service user. Logs go to journald (`journalctl -u cellar`).
 
 ## Smoke test
 
 ```sh
 python3 scripts/smoke_test.py            # needs the `websockets` pip module
-# uses PGF_TEST_EMAIL / PGF_TEST_PASSWORD (defaults match the seed example above)
+# uses CEL_TEST_EMAIL / CEL_TEST_PASSWORD (defaults match the seed example above)
 ```
 
 ## Wire protocol

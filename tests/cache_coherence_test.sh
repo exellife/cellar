@@ -3,11 +3,11 @@
 # role / tenant changes have up-to-TTL propagation latency. Approach A makes that
 # bound VISIBLE: the server warns at startup when the cache is on, and the
 # revoke-sessions CLI warns that running servers may still honor revoked tokens.
-# cache_coherence_test.sh <pgforge-binary>
+# cache_coherence_test.sh <cellar-binary>
 set -euo pipefail
 
-BIN="${1:?usage: cache_coherence_test.sh <pgforge-binary>}"
-H="${PGF_DB_HOST:-localhost}"; U="${PGF_DB_USER:-postgres}"; DB="${PGF_DB_NAME:-pgforge}"
+BIN="${1:?usage: cache_coherence_test.sh <cellar-binary>}"
+H="${CEL_DB_HOST:-localhost}"; U="${CEL_DB_USER:-postgres}"; DB="${CEL_DB_NAME:-cellar}"
 LOG="/tmp/cachecoh_$$.log"; SRV=""
 cleanup() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null || true; rm -f "$LOG"; }
 trap cleanup EXIT
@@ -19,8 +19,8 @@ chk()     { if [ "$2" = ok ]; then echo "  ok    $1"; else echo "  FAIL  $1"; fa
 boot() {  # boot <ttl>: capture the startup log, wait for listen, then stop
     local ttl="$1"
     local port; port=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
-    env PGF_PORT="$port" PGF_DB_HOST="$H" PGF_DB_USER="$U" PGF_DB_NAME="$DB" \
-        PGF_LOG_LEVEL=warn PGF_SESSION_CACHE_TTL="$ttl" "$BIN" >"$LOG" 2>&1 &
+    env CEL_PORT="$port" CEL_DB_HOST="$H" CEL_DB_USER="$U" CEL_DB_NAME="$DB" \
+        CEL_LOG_LEVEL=warn CEL_SESSION_CACHE_TTL="$ttl" "$BIN" >"$LOG" 2>&1 &
     SRV=$!
     for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$port/health" && break; sleep 0.1; done
     sleep 0.2
@@ -36,7 +36,7 @@ boot 0
 chk "no warning when cache disabled"   "$(have 'out-of-band revocation' && echo no || echo ok)"
 
 # the revoke-sessions CLI warns about cache latency when a TTL is configured
-PGF_DB_HOST="$H" PGF_DB_USER="$U" PGF_DB_NAME="$DB" PGF_LOG_LEVEL=warn PGF_SESSION_CACHE_TTL=120 \
+CEL_DB_HOST="$H" CEL_DB_USER="$U" CEL_DB_NAME="$DB" CEL_LOG_LEVEL=warn CEL_SESSION_CACHE_TTL=120 \
     "$BIN" revoke-sessions someone@example.invalid >"$LOG" 2>&1 || true
 chk "revoke-sessions CLI warns about cache" "$(have 'may still honor these tokens' && echo ok || echo no)"
 

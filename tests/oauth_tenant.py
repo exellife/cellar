@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""pgforge M-4: no federated self-provisioning in pooled mode.
+"""cellar M-4: no federated self-provisioning in pooled mode.
 
-Booted with PGF_TENANT_COLUMN set (same JWKS/provider as oauth_test). A brand-new
+Booted with CEL_TENANT_COLUMN set (same JWKS/provider as oauth_test). A brand-new
 OAuth identity has no tenant to bind to, so it must be REFUSED (403) rather than
 auto-provisioned tenant-less — mirroring /auth/register's pooled-mode block.
 Run as: oauth_tenant.py ws://127.0.0.1:<port>/
@@ -9,8 +9,8 @@ Run as: oauth_tenant.py ws://127.0.0.1:<port>/
 import base64, http.client, json, os, subprocess, sys, time
 from urllib.parse import urlparse
 
-KEY = os.environ["PGF_OAUTH_KEY"]
-KID = os.environ.get("PGF_OAUTH_KID", "test-key-1")
+KEY = os.environ["CEL_OAUTH_KEY"]
+KID = os.environ.get("CEL_OAUTH_KID", "test-key-1")
 ISS = os.environ.get("OIDC_ISS", "https://test.issuer")
 AUD = os.environ.get("OIDC_AUD", "test-client")
 
@@ -34,7 +34,7 @@ def main(host, port):
     body = json.dumps({"provider": "test", "id_token": mint("oidc|pooled-new", "pooled-new@test.local")})
     c.request("POST", "/auth/oauth", body=body, headers={"Content-Type": "application/json"})
     r = c.getresponse(); _ = r.read(); c.close()
-    print(f"== pgforge M-4 pooled-mode OAuth -> {host}:{port} ==")
+    print(f"== cellar M-4 pooled-mode OAuth -> {host}:{port} ==")
     ok = (r.status == 403)
     print(f"  {'ok' if ok else 'FAIL'}  new federated user refused in pooled mode "
           f"(no tenant-less provisioning; got {r.status} want 403)")

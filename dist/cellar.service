@@ -1,22 +1,22 @@
 [Unit]
-Description=pgforge — schema-driven Postgres backend
-Documentation=https://github.com/exellife/pgforge
+Description=cellar — schema-driven Postgres backend
+Documentation=https://github.com/exellife/cellar
 After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=pgforge
-Group=pgforge
-# Configuration lives in this env file (PGF_* variables). See pgforge.env.example.
-EnvironmentFile=/etc/pgforge/pgforge.env
+User=cellar
+Group=cellar
+# Configuration lives in this env file (CEL_* variables). See cellar.env.example.
+EnvironmentFile=/etc/cellar/cellar.env
 # Apply any pending migrations before starting (fails the unit if the DB is down).
-ExecStartPre=/usr/local/bin/pgforge migrate
-ExecStart=/usr/local/bin/pgforge
+ExecStartPre=/usr/local/bin/cellar migrate
+ExecStart=/usr/local/bin/cellar
 Restart=on-failure
 RestartSec=2
 
-# --- hardening: pgforge needs no filesystem writes (assets+migrations embedded,
+# --- hardening: cellar needs no filesystem writes (assets+migrations embedded,
 #     logs go to journald), so lock the sandbox down. ---
 NoNewPrivileges=true
 ProtectSystem=strict

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge nested/dotted embed end-to-end (#53). Uses the demo's circular relation
+"""cellar nested/dotted embed end-to-end (#53). Uses the demo's circular relation
 (categories <- products -> categories): embed=products.categories nests two
 levels (to-many then to-one), and embed=categories.products nests to-one then
 to-many. Verifies authz re-runs per level by construction. Self-cleaning.
@@ -7,7 +7,7 @@ to-many. Verifies authz re-runs per level by construction. Self-cleaning.
 import http.client, json, sys
 from urllib.parse import urlparse
 
-ADMIN = ("admin@pgforge.dev", "s3cret-admin")
+ADMIN = ("admin@cellar.dev", "s3cret-admin")
 HOST = PORT = None
 
 

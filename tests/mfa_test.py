@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""pgforge TOTP 2FA end-to-end (#auth, PLAN §7e). Drives the full flow over REST:
+"""cellar TOTP 2FA end-to-end (#auth, PLAN §7e). Drives the full flow over REST:
 enroll -> confirm -> two-step login (challenge + code) -> disable, plus the failure
 paths (wrong code 401). Codes are computed here with an INDEPENDENT Python TOTP
 (hmac-sha1), so a pass also cross-validates the C RFC-6238 implementation.
 
-Booted by mfa_test.sh with PGF_MFA=optional. The harness passes ws://host:port/.
+Booted by mfa_test.sh with CEL_MFA=optional. The harness passes ws://host:port/.
 """
 import base64, hashlib, hmac, http.client, json, struct, sys, time
 from urllib.parse import urlparse
 
-USER = ("mfatest@pgforge.dev", "mfatest-pw")
+USER = ("mfatest@cellar.dev", "mfatest-pw")
 HOST = PORT = None
 
 
@@ -45,7 +45,7 @@ def main():
         print(f"  {'ok' if cond else 'FAIL':<5} {name:<42} {detail}")
         ok += bool(cond); fail += (not cond)
 
-    print(f"== pgforge TOTP 2FA harness -> {HOST}:{PORT} ==")
+    print(f"== cellar TOTP 2FA harness -> {HOST}:{PORT} ==")
 
     # 1. before enrollment, password login returns a session as usual
     s, b = login()

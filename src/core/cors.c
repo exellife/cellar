@@ -9,13 +9,13 @@
 
 static char g_origins[MAX_ORIGINS][ORIGIN_LEN];
 static int  g_norigins = 0;
-static bool g_wildcard = false;     /* PGF_CORS_ORIGINS = "*" */
+static bool g_wildcard = false;     /* CEL_CORS_ORIGINS = "*" */
 static bool g_credentials = false;
 
-void pgf_cors_init(void) {
+void cel_cors_init(void) {
     g_norigins = 0;
     g_wildcard = false;
-    const char *list = getenv("PGF_CORS_ORIGINS");
+    const char *list = getenv("CEL_CORS_ORIGINS");
     if (!list || !*list) return;
 
     if (!strcmp(list, "*")) { g_wildcard = true; }
@@ -30,15 +30,15 @@ void pgf_cors_init(void) {
         }
         free(dup);
     }
-    const char *cred = getenv("PGF_CORS_CREDENTIALS");
+    const char *cred = getenv("CEL_CORS_CREDENTIALS");
     g_credentials = cred && (*cred == '1' || *cred == 't' || *cred == 'T' || *cred == 'y' || *cred == 'Y');
 }
 
-bool pgf_cors_enabled(void) { return g_wildcard || g_norigins > 0; }
+bool cel_cors_enabled(void) { return g_wildcard || g_norigins > 0; }
 
-bool pgf_cors_allow_credentials(void) { return g_credentials && pgf_cors_enabled(); }
+bool cel_cors_allow_credentials(void) { return g_credentials && cel_cors_enabled(); }
 
-const char *pgf_cors_allow_origin(const char *origin) {
+const char *cel_cors_allow_origin(const char *origin) {
     if (!origin || !*origin) return NULL;
     if (g_wildcard) {
         /* With credentials, "*" is invalid — echo the specific origin instead. */

@@ -20,7 +20,7 @@
  * exclusively by one thread between acquire/release, so its slot needs no
  * locking; connections[] is immutable after init, so slot lookup is lock-free
  * too. Keyed by SQL text (hash + a verifying strcmp copy, so a hash collision
- * can never bind the wrong plan). Statement i is named "pgf_s<i>". */
+ * can never bind the wrong plan). Statement i is named "cel_s<i>". */
 #define STMT_CACHE_MAX 64
 typedef struct {
     uint64_t hash[STMT_CACHE_MAX];   /* fnv1a-64 of the SQL text */
@@ -32,8 +32,8 @@ typedef struct {
     PGconn **connections;      // Array of connection pointers
     bool *available;           // Availability flags
     stmt_cache_t *stmts;       // Parallel to connections[]: per-conn plan cache
-    bool prepared_enabled;     // PGF_PREPARED_STATEMENTS != 0
-    bool pipeline_enabled;     // PGF_DB_PIPELINE == 1 (opt-in; needs libpq pipelining)
+    bool prepared_enabled;     // CEL_PREPARED_STATEMENTS != 0
+    bool pipeline_enabled;     // CEL_DB_PIPELINE == 1 (opt-in; needs libpq pipelining)
     int pool_size;
     pthread_mutex_t lock;
     pthread_cond_t cond;
@@ -98,16 +98,16 @@ int db_connection_pool_init(const char *conninfo, int pool_size) {
         return -1;
     }
 
-    /* Prepared-statement caching is on by default; PGF_PREPARED_STATEMENTS=0 opts out. */
-    const char *pe = getenv("PGF_PREPARED_STATEMENTS");
+    /* Prepared-statement caching is on by default; CEL_PREPARED_STATEMENTS=0 opts out. */
+    const char *pe = getenv("CEL_PREPARED_STATEMENTS");
     g_pool.prepared_enabled = !(pe && strcmp(pe, "0") == 0);
     LOG_INFO("Prepared-statement cache: %s", g_pool.prepared_enabled ? "enabled" : "disabled");
 
-    /* Pooled-mode pipelining is opt-in (PGF_DB_PIPELINE=1): it collapses the
+    /* Pooled-mode pipelining is opt-in (CEL_DB_PIPELINE=1): it collapses the
      * BEGIN/set_config/query/COMMIT round trips into one. Needs libpq pipelining
      * (>= 14) and the prepared-statement cache (it sends PQsendQueryPrepared). */
 #ifdef LIBPQ_HAS_PIPELINING
-    const char *pl = getenv("PGF_DB_PIPELINE");
+    const char *pl = getenv("CEL_DB_PIPELINE");
     g_pool.pipeline_enabled = (pl && strcmp(pl, "1") == 0) && g_pool.prepared_enabled;
 #else
     g_pool.pipeline_enabled = false;
@@ -151,7 +151,7 @@ int db_connection_pool_init(const char *conninfo, int pool_size) {
 PGconn *db_connection_acquire(void) {
     if (!g_pool.initialized) {
         LOG_ERROR("Connection pool not initialized");
-        pgf_metric_inc(PGF_M_DB_ACQUIRE_FAIL);
+        cel_metric_inc(CEL_M_DB_ACQUIRE_FAIL);
         return NULL;
     }
 
@@ -188,7 +188,7 @@ PGconn *db_connection_acquire(void) {
 
         // No connections available, wait
         LOG_DEBUG("No connections available, waiting...");
-        pgf_metric_inc(PGF_M_DB_POOL_WAIT);   /* pool saturation signal */
+        cel_metric_inc(CEL_M_DB_POOL_WAIT);   /* pool saturation signal */
         pthread_cond_wait(&g_pool.cond, &g_pool.lock);
     }
 
@@ -226,7 +226,7 @@ static int cache_prepare(PGconn *conn, int slot, const char *sql, int nparams,
     uint64_t h = sql_hash(sql);
     for (int i = 0; i < sc->count; i++)
         if (sc->hash[i] == h && strcmp(sc->sql[i], sql) == 0) {
-            snprintf(name_out, cap, "pgf_s%d", i);
+            snprintf(name_out, cap, "cel_s%d", i);
             return 0;   /* hit */
         }
 
@@ -237,7 +237,7 @@ static int cache_prepare(PGconn *conn, int slot, const char *sql, int nparams,
         stmt_cache_clear_slot(slot);
     }
     int idx = sc->count;
-    snprintf(name_out, cap, "pgf_s%d", idx);
+    snprintf(name_out, cap, "cel_s%d", idx);
     PGresult *pr = PQprepare(conn, name_out, sql, nparams, NULL);
     if (PQresultStatus(pr) != PGRES_COMMAND_OK) {
         if (prep_err) *prep_err = pr; else PQclear(pr);
@@ -271,7 +271,7 @@ PGresult *db_connection_exec_cached(PGconn *conn, const char *sql,
         if (prep_err) return prep_err;   /* real error (e.g. bad SQL); caller maps it */
         return PQexecParams(conn, sql, nparams, NULL, params, NULL, NULL, 0);  /* OOM */
     }
-    pgf_metric_inc(rc == 1 ? PGF_M_STMT_PREPARE : PGF_M_STMT_REUSE);
+    cel_metric_inc(rc == 1 ? CEL_M_STMT_PREPARE : CEL_M_STMT_REUSE);
 
     PGresult *res = PQexecPrepared(conn, name, nparams, params, NULL, NULL, 0);
 
@@ -295,7 +295,7 @@ int db_connection_prepare_cached(PGconn *conn, const char *sql, int nparams,
     if (!g_pool.prepared_enabled || !g_pool.stmts || (slot = slot_of(conn)) < 0)
         return -1;
     int rc = cache_prepare(conn, slot, sql, nparams, name_out, cap, NULL);
-    if (rc >= 0) pgf_metric_inc(rc == 1 ? PGF_M_STMT_PREPARE : PGF_M_STMT_REUSE);
+    if (rc >= 0) cel_metric_inc(rc == 1 ? CEL_M_STMT_PREPARE : CEL_M_STMT_REUSE);
     return rc;
 }
 

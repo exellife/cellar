@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge OpenAPI generation: GET /openapi.json returns a valid OpenAPI 3.0
+"""cellar OpenAPI generation: GET /openapi.json returns a valid OpenAPI 3.0
 document auto-generated from the live schema catalog (auth-gated like /schema),
 with a path + component schema per table. Run as: openapi_test.py ws://host:port/
 """
@@ -7,7 +7,7 @@ import http.client, json, sys
 from urllib.parse import urlparse
 
 HOST = PORT = None
-ADMIN = ("admin@pgforge.dev", "s3cret-admin")
+ADMIN = ("admin@cellar.dev", "s3cret-admin")
 
 
 def req(method, path, body=None, token=None):
@@ -29,7 +29,7 @@ def main():
         print(f"  {'ok' if cond else 'FAIL':<5} {n:<42} {d}")
         ok += bool(cond); fail += (not cond)
 
-    print(f"== pgforge OpenAPI harness -> {HOST}:{PORT} ==")
+    print(f"== cellar OpenAPI harness -> {HOST}:{PORT} ==")
 
     # auth-gated, like /schema
     s, _ = req("GET", "/openapi.json")
@@ -43,7 +43,7 @@ def main():
     chk("authenticated -> 200", s == 200, str(s))
     doc = doc or {}
     chk("openapi 3.0.x", str(doc.get("openapi", "")).startswith("3.0"), str(doc.get("openapi")))
-    chk("info.title", doc.get("info", {}).get("title") == "pgforge API")
+    chk("info.title", doc.get("info", {}).get("title") == "cellar API")
 
     paths = doc.get("paths", {})
     chk("has /api/products",      "/api/products" in paths)

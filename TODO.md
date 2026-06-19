@@ -14,12 +14,18 @@ pgforge and builds *as* pgforge — the rename and the engine pivot are the work
 
 ## Phase 0 — establish the project
 
-- [ ] **Baseline commit.** Commit the verbatim pgforge copy ("fork from pgforge") so the
-      rebrand + re-engine diffs are clean and reviewable.
-- [ ] **Rebrand `pgforge → cellar`** (~53 files). Source identifiers (`pgf_*` →
-      `cel_*`?), env vars (`PGF_*` → `CEL_*`), CMake project + binary target, README,
-      `dist/pgforge.service` → `cellar.service`. Goal: compiles and runs cleanly under
-      its own name, still Postgres-backed — pure rename, no behavior change yet.
+- [x] **Baseline commit.** Verbatim pgforge copy committed (`82045ef` "fork from pgforge:
+      baseline copy") so the rebrand + re-engine diffs stay clean and reviewable.
+- [x] **Rebrand `pgforge → cellar`** (146 files). Source identifiers (`pgf_*` → `cel_*`),
+      env vars (`PGF_*` → `CEL_*`), CMake project + binary target (`project(cellar)`,
+      `add_executable(cellar)`), README, default DB name, `dist/pgforge.{service,env} →
+      cellar.{service,env}`. **Scope rule:** narrative/historical docs (`PLAN`, `VISION`,
+      `MULTI_APP`, `SECURITY_AUDIT`, `docs/*`, `TODO`) were left untouched — their
+      `pgforge`/`pgf_` refs name the *upstream* project & its commit history. Verified:
+      builds, runs as `cellar 0.1.0`, all pure unit tests pass (only Postgres-dependent
+      e2e tests fail, expected — no `cellar` DB provisioned). Still Postgres-backed; pure
+      rename. Also fixed a *pre-existing* `cjson` duplicate-target collision (cellar +
+      portico both registered one) — cellar now reuses portico's target.
 - [x] **Design doc** — [`docs/cellar-design.md`](docs/cellar-design.md). Locks the
       architecture: per-app SQLite (isolation by file), the blocking-vs-event-loop
       concurrency contract (handle cache + per-app write serialization on worker

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# CORS end-to-end: boot with PGF_CORS_ORIGINS set and assert the response headers
+# CORS end-to-end: boot with CEL_CORS_ORIGINS set and assert the response headers
 # (allowed origin echoed, others denied, no Origin => none) and that an OPTIONS
-# preflight returns 204 with the CORS headers. cors_test.sh <pgforge-binary>
+# preflight returns 204 with the CORS headers. cors_test.sh <cellar-binary>
 set -euo pipefail
 
-BIN="${1:?usage: cors_test.sh <pgforge-binary>}"
-H="${PGF_DB_HOST:-localhost}"; U="${PGF_DB_USER:-postgres}"; DB="${PGF_DB_NAME:-pgforge}"
+BIN="${1:?usage: cors_test.sh <cellar-binary>}"
+H="${CEL_DB_HOST:-localhost}"; U="${CEL_DB_USER:-postgres}"; DB="${CEL_DB_NAME:-cellar}"
 PORT=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
 ORIGIN="https://app.test"
 
-PGF_PORT=$PORT PGF_DB_HOST=$H PGF_DB_USER=$U PGF_DB_NAME=$DB PGF_LOG_LEVEL=warn \
-  PGF_CORS_ORIGINS="$ORIGIN, https://admin.test" \
+CEL_PORT=$PORT CEL_DB_HOST=$H CEL_DB_USER=$U CEL_DB_NAME=$DB CEL_LOG_LEVEL=warn \
+  CEL_CORS_ORIGINS="$ORIGIN, https://admin.test" \
   "$BIN" >/tmp/cors_$$.log 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true; rm -f /tmp/cors_$$.log' EXIT

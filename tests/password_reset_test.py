@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""pgforge password-reset end-to-end (#auth, PLAN §7e).
+"""cellar password-reset end-to-end (#auth, PLAN §7e).
 
 Drives the full flow over REST: forgot-password emails a token (captured from a
 local mock SMTP sink), the token is redeemed to set a new password, and then the
 new password works / the old one and the old session don't. Also checks the
 token is single-use and that forgot is anti-enumeration (always 200).
 
-Env (set by password_reset_test.sh): PGF_MAIL_CAPTURE (the captured email file),
+Env (set by password_reset_test.sh): CEL_MAIL_CAPTURE (the captured email file),
 RESET_USER. The harness passes ws://host:port/ as argv[1].
 """
 import http.client, json, os, re, sys, time
@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 USER = os.environ.get("RESET_USER", "pwreset@test.local")
 OLD_PW = "oldpassword1"
 NEW_PW = "brand-new-pw-9"
-CAPTURE = os.environ["PGF_MAIL_CAPTURE"]
+CAPTURE = os.environ["CEL_MAIL_CAPTURE"]
 HOST = PORT = None
 
 
@@ -54,7 +54,7 @@ def main():
         print(f"  {'ok' if cond else 'FAIL':<5} {name:<42} {detail}")
         ok += bool(cond); fail += (not cond)
 
-    print(f"== pgforge password-reset harness -> {HOST}:{PORT} ==")
+    print(f"== cellar password-reset harness -> {HOST}:{PORT} ==")
 
     # baseline: the seeded password works; keep a live session to prove revocation
     s, b = login(OLD_PW)

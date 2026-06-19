@@ -1,8 +1,8 @@
-/* pgforge admin — petite-vue (no build). Drives the /schema + /api endpoints. */
+/* cellar admin — petite-vue (no build). Drives the /schema + /api endpoints. */
 PetiteVue.createApp({
   // ---- auth ----
-  token: localStorage.getItem('pgf_token') || '',
-  user: JSON.parse(localStorage.getItem('pgf_user') || 'null'),
+  token: localStorage.getItem('cel_token') || '',
+  user: JSON.parse(localStorage.getItem('cel_user') || 'null'),
   loginEmail: '', loginPassword: '', loginError: '',
 
   // ---- data ----
@@ -42,8 +42,8 @@ PetiteVue.createApp({
     try {
       const d = await this.api('POST', '/auth/login', { email: this.loginEmail, password: this.loginPassword });
       this.token = d.token; this.user = d.user;
-      localStorage.setItem('pgf_token', this.token);
-      localStorage.setItem('pgf_user', JSON.stringify(this.user));
+      localStorage.setItem('cel_token', this.token);
+      localStorage.setItem('cel_user', JSON.stringify(this.user));
       this.loginPassword = '';
       await this.loadSchema();
     } catch (e) { this.loginError = e.message; }
@@ -51,7 +51,7 @@ PetiteVue.createApp({
 
   logout() {
     this.token = ''; this.user = null;
-    localStorage.removeItem('pgf_token'); localStorage.removeItem('pgf_user');
+    localStorage.removeItem('cel_token'); localStorage.removeItem('cel_user');
     this.tables = []; this.current = null; this.rows = [];
   },
 

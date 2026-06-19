@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal one-shot SMTP sink for testing pgforge's mailer (no TLS, no auth).
+"""Minimal one-shot SMTP sink for testing cellar's mailer (no TLS, no auth).
 
 Speaks just enough SMTP for libcurl: 220 greeting, EHLO/MAIL/RCPT -> 250, DATA ->
 354 then collect until the lone "." -> 250. Writes the captured DATA payload to
@@ -16,7 +16,7 @@ def handle(conn, capture_path):
         try: conn.sendall(s.encode())
         except OSError: pass
 
-    reply("220 mock ESMTP pgforge-test\r\n")
+    reply("220 mock ESMTP cellar-test\r\n")
     buf = b""
     data_mode = False
     captured = []

@@ -21,7 +21,7 @@ typedef struct rl_node {
     struct rl_node *next;
 } rl_node_t;
 
-struct pgf_ratelimit {
+struct cel_ratelimit {
     rl_node_t      *buckets[NBUCKETS];
     pthread_mutex_t lock;
     int             limit;    /* burst size */
@@ -35,9 +35,9 @@ static unsigned bucket_of(const char *k) {
     return h & (NBUCKETS - 1);
 }
 
-pgf_ratelimit_t *pgf_ratelimit_create(int limit, int window_seconds) {
+cel_ratelimit_t *cel_ratelimit_create(int limit, int window_seconds) {
     if (limit <= 0 || window_seconds <= 0) return NULL;     /* disabled */
-    pgf_ratelimit_t *rl = calloc(1, sizeof *rl);
+    cel_ratelimit_t *rl = calloc(1, sizeof *rl);
     if (!rl) return NULL;                                   /* fail open */
     rl->limit = limit;
     rl->rate  = (double)limit / (double)window_seconds;
@@ -47,7 +47,7 @@ pgf_ratelimit_t *pgf_ratelimit_create(int limit, int window_seconds) {
 
 static void free_chain(rl_node_t *n) { while (n) { rl_node_t *nx = n->next; free(n); n = nx; } }
 
-void pgf_ratelimit_destroy(pgf_ratelimit_t *rl) {
+void cel_ratelimit_destroy(cel_ratelimit_t *rl) {
     if (!rl) return;
     pthread_mutex_lock(&rl->lock);
     for (int i = 0; i < NBUCKETS; i++) { free_chain(rl->buckets[i]); rl->buckets[i] = NULL; }
@@ -57,7 +57,7 @@ void pgf_ratelimit_destroy(pgf_ratelimit_t *rl) {
 }
 
 /* Drop idle (refilled-to-full) buckets from a chain. Caller holds the lock. */
-static rl_node_t *sweep_chain(pgf_ratelimit_t *rl, rl_node_t *n) {
+static rl_node_t *sweep_chain(cel_ratelimit_t *rl, rl_node_t *n) {
     rl_node_t *head = NULL, **pp = &head;
     while (n) {
         rl_node_t *nx = n->next;
@@ -68,7 +68,7 @@ static rl_node_t *sweep_chain(pgf_ratelimit_t *rl, rl_node_t *n) {
     return head;
 }
 
-bool pgf_ratelimit_allow(pgf_ratelimit_t *rl, const char *key) {
+bool cel_ratelimit_allow(cel_ratelimit_t *rl, const char *key) {
     if (!rl || !key || !*key) return true;                /* disabled / no key */
     time_t now = time(NULL);
     unsigned b = bucket_of(key);

@@ -9,25 +9,25 @@
 
 /* A single mutex-guarded linked list of subscriptions. Subscribe/unsubscribe run
  * on WS handler threads; publish runs on write (DB-pool) threads — hence the lock.
- * g_count is an atomic mirror so the write-path demand gate (pgf_realtime_active)
+ * g_count is an atomic mirror so the write-path demand gate (cel_realtime_active)
  * never has to take the lock. A per-table hash is the obvious scale follow-up. */
 typedef struct rt_node {
     int fd;
-    pgf_subscription_t sub;
+    cel_subscription_t sub;
     struct rt_node *next;
 } rt_node_t;
 
 static rt_node_t       *g_list   = NULL;
 static pthread_mutex_t  g_lock   = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int       g_count  = 0;
-static pgf_rt_send_fn   g_send   = NULL;
-static pgf_rt_member_fn g_member = NULL;
+static cel_rt_send_fn   g_send   = NULL;
+static cel_rt_member_fn g_member = NULL;
 
-void pgf_realtime_init(pgf_rt_send_fn send, pgf_rt_member_fn member) {
+void cel_realtime_init(cel_rt_send_fn send, cel_rt_member_fn member) {
     g_send = send; g_member = member;
 }
 
-void pgf_realtime_cleanup(void) {
+void cel_realtime_cleanup(void) {
     pthread_mutex_lock(&g_lock);
     for (rt_node_t *n = g_list; n; ) { rt_node_t *nx = n->next; free(n); n = nx; }
     g_list = NULL;
@@ -54,9 +54,9 @@ static bool field_eq(const cJSON *row, const char *col, const char *value) {
     return false;
 }
 
-bool pgf_rt_row_matches(const pgf_rt_pred_t *preds, int npreds, const cJSON *row) {
+bool cel_rt_row_matches(const cel_rt_pred_t *preds, int npreds, const cJSON *row) {
     for (int i = 0; i < npreds; i++) {
-        const pgf_rt_pred_t *p = &preds[i];
+        const cel_rt_pred_t *p = &preds[i];
         if (p->is_or) {
             bool any = false;
             for (int j = 0; j < p->ncols && !any; j++)
@@ -87,7 +87,7 @@ static int remove_locked(int fd, const char *table) {
     return removed;
 }
 
-int pgf_realtime_subscribe(int fd, const pgf_subscription_t *sub) {
+int cel_realtime_subscribe(int fd, const cel_subscription_t *sub) {
     rt_node_t *n = malloc(sizeof *n);
     if (!n) return -1;
     n->fd = fd; n->sub = *sub;
@@ -101,29 +101,29 @@ int pgf_realtime_subscribe(int fd, const pgf_subscription_t *sub) {
     return 0;
 }
 
-void pgf_realtime_unsubscribe(int fd, const char *table) {
+void cel_realtime_unsubscribe(int fd, const char *table) {
     pthread_mutex_lock(&g_lock);
     int removed = remove_locked(fd, table);
     pthread_mutex_unlock(&g_lock);
     if (removed) atomic_fetch_sub(&g_count, removed);
 }
 
-void pgf_realtime_drop_conn(int fd) {
+void cel_realtime_drop_conn(int fd) {
     pthread_mutex_lock(&g_lock);
     int removed = remove_locked(fd, NULL);
     pthread_mutex_unlock(&g_lock);
     if (removed) atomic_fetch_sub(&g_count, removed);
 }
 
-bool pgf_realtime_active(void) { return atomic_load(&g_count) > 0; }
+bool cel_realtime_active(void) { return atomic_load(&g_count) > 0; }
 
-long pgf_realtime_count(void) { return (long)atomic_load(&g_count); }
+long cel_realtime_count(void) { return (long)atomic_load(&g_count); }
 
 /* ---- delivery ------------------------------------------------------------- */
 
-void pgf_realtime_publish(const char *table, const char *op, const cJSON *row) {
+void cel_realtime_publish(const char *table, const char *op, const cJSON *row) {
     if (atomic_load(&g_count) == 0 || !g_send || !row) return;
-    pgf_metric_inc(PGF_M_RT_EVENTS);
+    cel_metric_inc(CEL_M_RT_EVENTS);
 
     /* Collect matching subscribers under the lock, then send outside it (sends may
      * buffer / do I/O — don't hold the registry mutex across them). A VIA
@@ -134,13 +134,13 @@ void pgf_realtime_publish(const char *table, const char *op, const cJSON *row) {
     pthread_mutex_lock(&g_lock);
     int cap = atomic_load(&g_count);             /* upper bound on matches */
     int *fds = cap > 0 ? malloc((size_t)cap * sizeof *fds) : NULL;
-    pgf_subscription_t *via = cap > 0 ? malloc((size_t)cap * sizeof *via) : NULL;
+    cel_subscription_t *via = cap > 0 ? malloc((size_t)cap * sizeof *via) : NULL;
     int *via_fd = cap > 0 ? malloc((size_t)cap * sizeof *via_fd) : NULL;
     int nf = 0, nv = 0;
     if (fds && via && via_fd) {
         for (rt_node_t *n = g_list; n; n = n->next) {
             if (strcmp(n->sub.table, table) != 0 ||
-                !pgf_rt_row_matches(n->sub.preds, n->sub.npreds, row)) continue;
+                !cel_rt_row_matches(n->sub.preds, n->sub.npreds, row)) continue;
             if (n->sub.via) {            /* copy out for an out-of-lock re-check */
                 if (nv < cap) { via[nv] = n->sub; via_fd[nv] = n->fd; nv++; }
             } else if (nf < cap) {

@@ -1,4 +1,4 @@
-/* pgforge — base64url unit test (no DB). */
+/* cellar — base64url unit test (no DB). */
 #include "base64url.h"
 
 #include <stdio.h>
@@ -15,7 +15,7 @@ int main(void) {
 
     /* known vector: "hello" -> "aGVsbG8" (no padding) */
     char enc[64];
-    chk("encode ok", pgf_b64url_encode((const unsigned char *)"hello", 5, enc, sizeof enc) == 0);
+    chk("encode ok", cel_b64url_encode((const unsigned char *)"hello", 5, enc, sizeof enc) == 0);
     chk("encode = aGVsbG8", strcmp(enc, "aGVsbG8") == 0);
 
     /* round-trip arbitrary bytes (incl. ones that map to '-' and '_') */
@@ -23,8 +23,8 @@ int main(void) {
     char b[64];
     unsigned char back[64];
     size_t n = 0;
-    chk("rt encode", pgf_b64url_encode(raw, sizeof raw, b, sizeof b) == 0);
-    chk("rt decode", pgf_b64url_decode(b, strlen(b), back, sizeof back, &n) == 0);
+    chk("rt encode", cel_b64url_encode(raw, sizeof raw, b, sizeof b) == 0);
+    chk("rt decode", cel_b64url_decode(b, strlen(b), back, sizeof back, &n) == 0);
     chk("rt length", n == sizeof raw);
     chk("rt bytes equal", n == sizeof raw && memcmp(raw, back, n) == 0);
 
@@ -34,10 +34,10 @@ int main(void) {
     chk("url-safe alphabet", clean);
 
     /* invalid characters are rejected */
-    chk("rejects invalid char", pgf_b64url_decode("!!", 2, back, sizeof back, &n) != 0);
+    chk("rejects invalid char", cel_b64url_decode("!!", 2, back, sizeof back, &n) != 0);
 
     /* small output buffer is rejected, not overflowed */
-    chk("encode rejects tiny out", pgf_b64url_encode((const unsigned char *)"hello", 5, enc, 2) != 0);
+    chk("encode rejects tiny out", cel_b64url_encode((const unsigned char *)"hello", 5, enc, 2) != 0);
 
     printf(failures ? "\nFAILED (%d)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;

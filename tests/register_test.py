@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge self-service registration test (#51), over REST.
+"""cellar self-service registration test (#51), over REST.
 
 Boots against the taxi example policy (rider/driver are self-registerable; admin
 is not). Proves: a self-registerable role can sign up and is auto-logged-in; the
@@ -40,7 +40,7 @@ def uniq(prefix):
 
 def main():
     r = R()
-    print(f"== pgforge register harness -> {HOST}:{PORT} ==")
+    print(f"== cellar register harness -> {HOST}:{PORT} ==")
 
     # 1. happy path: register a rider (self-registerable), auto-login.
     rider = uniq("rider")
@@ -80,7 +80,7 @@ def main():
     r.check("short password 400", s == 400, str(s))
 
     # --- admin-provisioned accounts (#51b): a superuser creates users via API ---
-    s, b = req("POST", "/auth/login", {"email": "admin@pgforge.dev", "password": "s3cret-admin"})
+    s, b = req("POST", "/auth/login", {"email": "admin@cellar.dev", "password": "s3cret-admin"})
     admin = (b or {}).get("token")
     r.check("admin login", bool(admin))
 

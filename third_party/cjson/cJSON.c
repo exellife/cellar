@@ -56,7 +56,7 @@
 #pragma GCC visibility pop
 #endif
 
-#include <cjson/cJSON.h>   /* pgforge: vendored at third_party/cjson/include/cjson/ */
+#include <cjson/cJSON.h>   /* cellar: vendored at third_party/cjson/include/cjson/ */
 
 /* define our own boolean type */
 #ifdef true

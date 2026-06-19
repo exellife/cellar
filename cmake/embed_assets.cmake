@@ -41,5 +41,5 @@ file(WRITE "${OUTFILE}"
 "/* GENERATED from web/ by cmake/embed_assets.cmake — do not edit. */\n"
 "#include \"handlers/web_assets.h\"\n\n"
 "${DECLS}\n"
-"const pgf_asset_t PGF_ASSETS[] = {\n${ENTRIES}};\n"
-"const int PGF_ASSETS_COUNT = (int)(sizeof(PGF_ASSETS) / sizeof(PGF_ASSETS[0]));\n")
+"const cel_asset_t CEL_ASSETS[] = {\n${ENTRIES}};\n"
+"const int CEL_ASSETS_COUNT = (int)(sizeof(CEL_ASSETS) / sizeof(CEL_ASSETS[0]));\n")

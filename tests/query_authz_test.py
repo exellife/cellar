@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge richer-read embedding AUTHZ test: an embedded relation is read on the
+"""cellar richer-read embedding AUTHZ test: an embedded relation is read on the
 caller's behalf and must pass the SAME read policy a direct read would.
 
 Booted with config/policies.embed-authz.example.json, where `categories` is
@@ -10,8 +10,8 @@ Booted by the harness, which passes ws://host:port/ as argv[1].
 import http.client, json, sys
 from urllib.parse import urlparse
 
-ADMIN  = ("admin@pgforge.dev",  "s3cret-admin")
-VIEWER = ("viewer@pgforge.dev", "viewer-pw")
+ADMIN  = ("admin@cellar.dev",  "s3cret-admin")
+VIEWER = ("viewer@cellar.dev", "viewer-pw")
 HOST = PORT = None
 
 
@@ -39,7 +39,7 @@ def main():
         print(f"  {'ok' if cond else 'FAIL':<5} {name:<44} {detail}")
         ok += bool(cond); fail += (not cond)
 
-    print(f"== pgforge embedding-authz harness -> {HOST}:{PORT} ==")
+    print(f"== cellar embedding-authz harness -> {HOST}:{PORT} ==")
     admin, viewer = login(ADMIN), login(VIEWER)
     chk("login admin + viewer", bool(admin) and bool(viewer))
 

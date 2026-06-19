@@ -1,5 +1,5 @@
 /* ============================================================================
- * pgforge — wire protocol
+ * cellar — wire protocol
  *
  * Binary framing over WebSocket (8-byte header + payload), big-endian:
  *   [opcode:1][flags:1][message_id:2][payload_length:4][payload:N]
@@ -9,17 +9,17 @@
  * payload, not encoded as a distinct opcode — that is the core difference from
  * a per-entity backend.
  * ============================================================================ */
-#ifndef PGF_PROTOCOL_H
-#define PGF_PROTOCOL_H
+#ifndef CEL_PROTOCOL_H
+#define CEL_PROTOCOL_H
 
 #include <stdint.h>
 
-#define PGF_HEADER_SIZE      8
-#define PGF_MAX_PAYLOAD      (1024 * 1024)   /* 1MB */
+#define CEL_HEADER_SIZE      8
+#define CEL_MAX_PAYLOAD      (1024 * 1024)   /* 1MB */
 
 /* Flag bits (high bits of the flags byte) */
-#define PGF_FLAG_RESPONSE    0x80   /* message is a response to a request */
-#define PGF_FLAG_ERROR       0x40   /* response carries an error */
+#define CEL_FLAG_RESPONSE    0x80   /* message is a response to a request */
+#define CEL_FLAG_ERROR       0x40   /* response carries an error */
 
 /* 8-byte header followed by a variable payload. Multi-byte fields big-endian. */
 typedef struct {
@@ -28,7 +28,7 @@ typedef struct {
     uint16_t message_id;       /* network byte order on the wire */
     uint32_t payload_length;   /* network byte order on the wire */
     uint8_t  payload[];
-} __attribute__((packed)) pgf_message_t;
+} __attribute__((packed)) cel_message_t;
 
 /* ---- System / connectivity (0x01-0x0F) — no auth ---- */
 #define OP_PING              0x01   /* -> PONG */
@@ -56,4 +56,4 @@ typedef struct {
 #define OP_DB_RPC            0xD6   /* { fn, args } */
 #define OP_DB_SCHEMA         0xD7   /* -> catalog JSON for the admin UI */
 
-#endif /* PGF_PROTOCOL_H */
+#endif /* CEL_PROTOCOL_H */

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge realtime end-to-end (#53), over the binary WS protocol.
+"""cellar realtime end-to-end (#53), over the binary WS protocol.
 
 Proves the live wiring the DB-free realtime_test can't: a client SUBSCRIBEs to a
 realtime-enabled table, a write goes through the engine, and the engine pushes a
@@ -14,7 +14,7 @@ OP_LOGIN, OP_SUBSCRIBE, OP_CHANGE, OP_DB_CREATE = 0x10, 0x20, 0x22, 0xD2
 # A regular (owner-scoped) user: its writes force owner_id to itself and its
 # subscription is scoped to owner_id = itself — so a delivered CHANGE proves the
 # authz filter, not just a catch-all.
-USER = ("editor@pgforge.dev", "editor-pw")
+USER = ("editor@cellar.dev", "editor-pw")
 
 
 def connect(host, port):

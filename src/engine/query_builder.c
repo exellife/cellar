@@ -53,14 +53,14 @@ static int sb_put_ident(sb_t *s, const char *ident) {
 
 /* ---- query param management ------------------------------------------------ */
 
-static int q_init(pgf_query_t *q) {
+static int q_init(cel_query_t *q) {
     memset(q, 0, sizeof *q);
     q->cap = 8;
     q->params = malloc(q->cap * sizeof *q->params);
     return q->params ? 0 : -1;
 }
 /* Append a parameter value (owned string, or NULL for SQL NULL). */
-static int q_push(pgf_query_t *q, char *owned_or_null) {
+static int q_push(cel_query_t *q, char *owned_or_null) {
     if (q->nparams == q->cap) {
         int nc = q->cap * 2;
         char **np = realloc(q->params, nc * sizeof *np);
@@ -71,13 +71,13 @@ static int q_push(pgf_query_t *q, char *owned_or_null) {
     return 0;
 }
 /* Emit "$N" for the next parameter slot into the SQL buffer. */
-static int q_placeholder(pgf_query_t *q, sb_t *sql) {
+static int q_placeholder(cel_query_t *q, sb_t *sql) {
     char ph[16];
     snprintf(ph, sizeof ph, "$%d", q->nparams + 1);
     return sb_puts(sql, ph);
 }
 
-void pgf_query_free(pgf_query_t *q) {
+void cel_query_free(cel_query_t *q) {
     if (!q) return;
     for (int i = 0; i < q->nparams; i++) free(q->params[i]);
     free(q->params);
@@ -122,7 +122,7 @@ static const char *sql_operator(const char *op) {
 #define FAIL(...) do { snprintf(errbuf, errlen, __VA_ARGS__); return -1; } while (0)
 
 /* Append one "col OP value" condition (or IS NULL / IN (...) forms). */
-static int build_condition(const pgf_table_t *t, pgf_query_t *q, sb_t *sql,
+static int build_condition(const cel_table_t *t, cel_query_t *q, sb_t *sql,
                            const char *col, const char *op, const cJSON *val,
                            char *errbuf, size_t errlen) {
     if (sb_put_ident(sql, col)) return -1;
@@ -175,7 +175,7 @@ static int build_condition(const pgf_table_t *t, pgf_query_t *q, sb_t *sql,
 
 /* ---- SELECT list ----------------------------------------------------------- */
 
-static int build_select_list(const pgf_table_t *t, const cJSON *req, sb_t *sql,
+static int build_select_list(const cel_table_t *t, const cJSON *req, sb_t *sql,
                              char *errbuf, size_t errlen) {
     const cJSON *sel = req ? cJSON_GetObjectItemCaseSensitive(req, "select") : NULL;
     if (sel && cJSON_IsArray(sel) && cJSON_GetArraySize(sel) > 0) {
@@ -183,7 +183,7 @@ static int build_select_list(const pgf_table_t *t, const cJSON *req, sb_t *sql,
         const cJSON *c;
         cJSON_ArrayForEach(c, sel) {
             if (!cJSON_IsString(c)) FAIL("select entries must be column names");
-            if (!pgf_table_column(t, c->valuestring))
+            if (!cel_table_column(t, c->valuestring))
                 FAIL("unknown column '%s' in select", c->valuestring);
             if (n++ && sb_puts(sql, ", ")) return -1;
             if (sb_put_ident(sql, c->valuestring)) return -1;
@@ -201,7 +201,7 @@ static int build_select_list(const pgf_table_t *t, const cJSON *req, sb_t *sql,
 /* ---- WHERE / ORDER / LIMIT ------------------------------------------------- */
 
 /* Emit "$N" bound to a literal (owned) value. */
-static int append_value_param(pgf_query_t *q, sb_t *sql, const char *value) {
+static int append_value_param(cel_query_t *q, sb_t *sql, const char *value) {
     char *v = strdup(value);
     if (!v) return -1;
     if (q_placeholder(q, sql) || q_push(q, v)) { free(v); return -1; }
@@ -209,13 +209,13 @@ static int append_value_param(pgf_query_t *q, sb_t *sql, const char *value) {
 }
 
 /* Append "col = $N" bound to a literal value (used for ownership predicates). */
-static int append_eq_param(pgf_query_t *q, sb_t *sql, const char *col, const char *value) {
+static int append_eq_param(cel_query_t *q, sb_t *sql, const char *col, const char *value) {
     if (sb_put_ident(sql, col) || sb_puts(sql, " = ")) return -1;
     return append_value_param(q, sql, value);
 }
 
 /* Number of active scope rules (0 for a NULL scope). */
-static int scope_count(const pgf_scope_t *s) { return s ? s->count : 0; }
+static int scope_count(const cel_scope_t *s) { return s ? s->count : 0; }
 
 /* Emit "tbl"."col" (a qualified identifier) for VIA join predicates. */
 static int append_qualified(sb_t *sql, const char *tbl, const char *col) {
@@ -225,9 +225,9 @@ static int append_qualified(sb_t *sql, const char *tbl, const char *col) {
 /* Append one scope rule as a parametrized predicate, per its kind. `t` is the
  * table being scoped (needed to qualify the VIA correlation). EQ output is
  * identical to the original `col = $N` form (pinned by the regression test). */
-static int append_scope_predicate(const pgf_table_t *t, pgf_query_t *q, sb_t *sql,
-                                  const pgf_scope_rule_t *r) {
-    if (r->kind == PGF_SCOPE_OR) {
+static int append_scope_predicate(const cel_table_t *t, cel_query_t *q, sb_t *sql,
+                                  const cel_scope_rule_t *r) {
+    if (r->kind == CEL_SCOPE_OR) {
         if (sb_puts(sql, "(")) return -1;
         for (int i = 0; i < r->ncols; i++) {
             if (i && sb_puts(sql, " OR ")) return -1;
@@ -235,7 +235,7 @@ static int append_scope_predicate(const pgf_table_t *t, pgf_query_t *q, sb_t *sq
         }
         return sb_puts(sql, ")");
     }
-    if (r->kind == PGF_SCOPE_VIA) {
+    if (r->kind == CEL_SCOPE_VIA) {
         if (sb_puts(sql, "EXISTS (SELECT 1 FROM ") || sb_put_ident(sql, r->via_table) ||
             sb_puts(sql, " WHERE ") ||
             append_qualified(sql, r->via_table, r->via_ref) || sb_puts(sql, " = ") ||
@@ -251,7 +251,7 @@ static int append_scope_predicate(const pgf_table_t *t, pgf_query_t *q, sb_t *sq
 /* Build a where node: the AND of its keys. A key is a logical operator (and/or/
  * not — recursed, parenthesized) or a column name (its operator conditions, AND-ed).
  * The flat all-column form is byte-for-byte unchanged from before. */
-static int build_node(const pgf_table_t *t, pgf_query_t *q, sb_t *sql,
+static int build_node(const cel_table_t *t, cel_query_t *q, sb_t *sql,
                       const cJSON *node, char *errbuf, size_t errlen) {
     int n = 0;
     const cJSON *child;
@@ -278,7 +278,7 @@ static int build_node(const pgf_table_t *t, pgf_query_t *q, sb_t *sql,
             if (sb_puts(sql, ")")) return -1;
         } else {
             const char *col = key;
-            if (!pgf_table_column(t, col)) FAIL("unknown column '%s' in where", col);
+            if (!cel_table_column(t, col)) FAIL("unknown column '%s' in where", col);
             if (!cJSON_IsObject(child)) FAIL("'where.%s' must be an object like {\"eq\": v}", col);
             if (cJSON_GetArraySize(child) == 0) FAIL("'where.%s' needs at least one operator", col);
             const cJSON *opspec;
@@ -292,8 +292,8 @@ static int build_node(const pgf_table_t *t, pgf_query_t *q, sb_t *sql,
     return 0;
 }
 
-static int build_where(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *scope,
-                       pgf_query_t *q, sb_t *sql, char *errbuf, size_t errlen) {
+static int build_where(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                       cel_query_t *q, sb_t *sql, char *errbuf, size_t errlen) {
     const cJSON *where = req ? cJSON_GetObjectItemCaseSensitive(req, "where") : NULL;
     if (where && !cJSON_IsObject(where)) FAIL("'where' must be an object");
     bool have_where = cJSON_IsObject(where) && cJSON_GetArraySize(where) > 0;
@@ -313,7 +313,7 @@ static int build_where(const pgf_table_t *t, const cJSON *req, const pgf_scope_t
     return 0;
 }
 
-static int build_order(const pgf_table_t *t, const cJSON *req, sb_t *sql,
+static int build_order(const cel_table_t *t, const cJSON *req, sb_t *sql,
                        char *errbuf, size_t errlen) {
     const cJSON *order = req ? cJSON_GetObjectItemCaseSensitive(req, "order") : NULL;
     if (!order) return 0;
@@ -328,7 +328,7 @@ static int build_order(const pgf_table_t *t, const cJSON *req, sb_t *sql,
         const char *spec = e->valuestring;
         int desc = (spec[0] == '-');
         const char *col = desc ? spec + 1 : spec;
-        if (!pgf_table_column(t, col)) FAIL("unknown column '%s' in order", col);
+        if (!cel_table_column(t, col)) FAIL("unknown column '%s' in order", col);
         if (n++ && sb_puts(sql, ", ")) return -1;
         if (sb_put_ident(sql, col)) return -1;
         if (sb_puts(sql, desc ? " DESC" : " ASC")) return -1;
@@ -339,14 +339,14 @@ static int build_order(const pgf_table_t *t, const cJSON *req, sb_t *sql,
 /* limit/offset are integers we sanitize and inline (never user text). */
 static int build_limit_offset(const cJSON *req, sb_t *sql,
                               char *errbuf, size_t errlen) {
-    long limit = PGF_LIST_DEFAULT_LIMIT, offset = 0;
+    long limit = CEL_LIST_DEFAULT_LIMIT, offset = 0;
     const cJSON *jl = req ? cJSON_GetObjectItemCaseSensitive(req, "limit") : NULL;
     const cJSON *jo = req ? cJSON_GetObjectItemCaseSensitive(req, "offset") : NULL;
     if (jl) {
         if (!cJSON_IsNumber(jl)) FAIL("'limit' must be a number");
         limit = (long)jl->valuedouble;
         if (limit < 1) limit = 1;
-        if (limit > PGF_LIST_MAX_LIMIT) limit = PGF_LIST_MAX_LIMIT;
+        if (limit > CEL_LIST_MAX_LIMIT) limit = CEL_LIST_MAX_LIMIT;
     }
     if (jo) {
         if (!cJSON_IsNumber(jo)) FAIL("'offset' must be a number");
@@ -360,8 +360,8 @@ static int build_limit_offset(const cJSON *req, sb_t *sql,
 
 /* ---- keyset pagination ----------------------------------------------------- */
 
-int pgf_resolve_sortkeys(const pgf_table_t *t, const cJSON *req,
-                         pgf_sortkey_t *keys, int max, char *errbuf, size_t errlen) {
+int cel_resolve_sortkeys(const cel_table_t *t, const cJSON *req,
+                         cel_sortkey_t *keys, int max, char *errbuf, size_t errlen) {
     int n = 0;
     bool have = false, dir = false;
     const cJSON *order = req ? cJSON_GetObjectItemCaseSensitive(req, "order") : NULL;
@@ -373,7 +373,7 @@ int pgf_resolve_sortkeys(const pgf_table_t *t, const cJSON *req,
             const char *spec = e->valuestring;
             bool desc = (spec[0] == '-');
             const char *col = desc ? spec + 1 : spec;
-            if (!pgf_table_column(t, col)) FAIL("unknown column '%s' in order", col);
+            if (!cel_table_column(t, col)) FAIL("unknown column '%s' in order", col);
             if (have && desc != dir) FAIL("keyset pagination needs all order columns in one direction");
             if (n >= max) FAIL("too many sort columns for keyset");
             snprintf(keys[n].column, sizeof keys[n].column, "%s", col);
@@ -394,7 +394,7 @@ int pgf_resolve_sortkeys(const pgf_table_t *t, const cJSON *req,
  * direction). Lexicographic, expanded so each comparison is `col OP $n` (binary,
  * so the bound value's type is inferred from the column). `prefix` is already
  * emitted by the caller. */
-static int build_keyset_predicate(pgf_query_t *q, sb_t *sql, const pgf_sortkey_t *keys,
+static int build_keyset_predicate(cel_query_t *q, sb_t *sql, const cel_sortkey_t *keys,
                                   int nk, const cJSON *cv, char *errbuf, size_t errlen) {
     if (!cJSON_IsArray(cv) || cJSON_GetArraySize(cv) != nk) FAIL("cursor does not match the sort order");
     const char *op = keys[0].desc ? "<" : ">";
@@ -415,7 +415,7 @@ static int build_keyset_predicate(pgf_query_t *q, sb_t *sql, const pgf_sortkey_t
     return sb_puts(sql, ")");
 }
 
-static int build_keyset_order(sb_t *sql, const pgf_sortkey_t *keys, int nk) {
+static int build_keyset_order(sb_t *sql, const cel_sortkey_t *keys, int nk) {
     if (sb_puts(sql, " ORDER BY ")) return -1;
     for (int i = 0; i < nk; i++) {
         if (i && sb_puts(sql, ", ")) return -1;
@@ -426,13 +426,13 @@ static int build_keyset_order(sb_t *sql, const pgf_sortkey_t *keys, int nk) {
 }
 
 static int build_limit_only(const cJSON *req, sb_t *sql, char *errbuf, size_t errlen) {
-    long limit = PGF_LIST_DEFAULT_LIMIT;
+    long limit = CEL_LIST_DEFAULT_LIMIT;
     const cJSON *jl = req ? cJSON_GetObjectItemCaseSensitive(req, "limit") : NULL;
     if (jl) {
         if (!cJSON_IsNumber(jl)) FAIL("'limit' must be a number");
         limit = (long)jl->valuedouble;
         if (limit < 1) limit = 1;
-        if (limit > PGF_LIST_MAX_LIMIT) limit = PGF_LIST_MAX_LIMIT;
+        if (limit > CEL_LIST_MAX_LIMIT) limit = CEL_LIST_MAX_LIMIT;
     }
     char clause[40];
     snprintf(clause, sizeof clause, " LIMIT %ld", limit);
@@ -441,15 +441,15 @@ static int build_limit_only(const cJSON *req, sb_t *sql, char *errbuf, size_t er
 
 /* ---- public builders ------------------------------------------------------- */
 
-int pgf_build_list(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *scope,
-                   const cJSON *cursor, pgf_query_t *out, char *errbuf, size_t errlen) {
+int cel_build_list(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                   const cJSON *cursor, cel_query_t *out, char *errbuf, size_t errlen) {
     sb_t sql;
-    if (q_init(out) || sb_init(&sql)) { pgf_query_free(out); FAIL("out of memory"); }
+    if (q_init(out) || sb_init(&sql)) { cel_query_free(out); FAIL("out of memory"); }
 
     int rc;
     if (cursor) {                                   /* keyset mode */
-        pgf_sortkey_t keys[PGF_MAX_SORTKEYS];
-        int nk = pgf_resolve_sortkeys(t, req, keys, PGF_MAX_SORTKEYS, errbuf, errlen);
+        cel_sortkey_t keys[CEL_MAX_SORTKEYS];
+        int nk = cel_resolve_sortkeys(t, req, keys, CEL_MAX_SORTKEYS, errbuf, errlen);
         const cJSON *w = req ? cJSON_GetObjectItemCaseSensitive(req, "where") : NULL;
         bool emitted_where = (cJSON_IsObject(w) && cJSON_GetArraySize(w) > 0) || scope_count(scope) > 0;
         bool has_vals = cJSON_IsArray(cursor) && cJSON_GetArraySize(cursor) > 0;
@@ -472,7 +472,7 @@ int pgf_build_list(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *sc
              build_limit_offset(req, &sql, errbuf, errlen);
     }
     if (rc) {
-        free(sql.buf); pgf_query_free(out);
+        free(sql.buf); cel_query_free(out);
         if (!errbuf[0]) snprintf(errbuf, errlen, "failed to build query");
         return -1;
     }
@@ -484,14 +484,14 @@ int pgf_build_list(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *sc
  * limit). Reuses build_where verbatim, so the total is exactly the size of the
  * unpaginated result the caller is authorized to see. Returns one row, column
  * "count". */
-int pgf_build_count(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *scope,
-                    pgf_query_t *out, char *errbuf, size_t errlen) {
+int cel_build_count(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                    cel_query_t *out, char *errbuf, size_t errlen) {
     sb_t sql;
-    if (q_init(out) || sb_init(&sql)) { pgf_query_free(out); FAIL("out of memory"); }
+    if (q_init(out) || sb_init(&sql)) { cel_query_free(out); FAIL("out of memory"); }
 
     if (sb_puts(&sql, "SELECT count(*) AS count FROM ") || sb_put_ident(&sql, t->name) ||
         build_where(t, req, scope, out, &sql, errbuf, errlen)) {
-        free(sql.buf); pgf_query_free(out);
+        free(sql.buf); cel_query_free(out);
         if (!errbuf[0]) snprintf(errbuf, errlen, "failed to build count");
         return -1;
     }
@@ -510,8 +510,8 @@ static const char *agg_func(const char *f) {
 }
 
 /* Build the SELECT/group body of an aggregate into `sql`. Returns 0/-1 (errbuf). */
-static int build_aggregate_body(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *scope,
-                                pgf_query_t *q, sb_t *sql, char *errbuf, size_t errlen) {
+static int build_aggregate_body(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                                cel_query_t *q, sb_t *sql, char *errbuf, size_t errlen) {
     const cJSON *group = cJSON_GetObjectItemCaseSensitive(req, "group");
     const cJSON *aggs  = cJSON_GetObjectItemCaseSensitive(req, "aggregate");
     bool has_group = cJSON_IsArray(group) && cJSON_GetArraySize(group) > 0;
@@ -524,7 +524,7 @@ static int build_aggregate_body(const pgf_table_t *t, const cJSON *req, const pg
         const cJSON *g;
         cJSON_ArrayForEach(g, group) {
             if (!cJSON_IsString(g)) FAIL("'group' entries must be column names");
-            if (!pgf_table_column(t, g->valuestring)) FAIL("unknown column '%s' in group", g->valuestring);
+            if (!cel_table_column(t, g->valuestring)) FAIL("unknown column '%s' in group", g->valuestring);
             if (n++ && sb_puts(sql, ", ")) return -1;
             if (sb_put_ident(sql, g->valuestring)) return -1;
         }
@@ -544,7 +544,7 @@ static int build_aggregate_body(const pgf_table_t *t, const cJSON *req, const pg
             const char *col = colon ? colon + 1 : NULL;
             if (n++ && sb_puts(sql, ", ")) return -1;
             if (col && *col) {
-                if (!pgf_table_column(t, col)) FAIL("unknown column '%s' in aggregate", col);
+                if (!cel_table_column(t, col)) FAIL("unknown column '%s' in aggregate", col);
                 char alias[80];
                 snprintf(alias, sizeof alias, "%s_%s", fn, col);
                 if (sb_puts(sql, fn) || sb_puts(sql, "(") || sb_put_ident(sql, col) ||
@@ -575,12 +575,12 @@ static int build_aggregate_body(const pgf_table_t *t, const cJSON *req, const pg
     return 0;
 }
 
-int pgf_build_aggregate(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *scope,
-                        pgf_query_t *out, char *errbuf, size_t errlen) {
+int cel_build_aggregate(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                        cel_query_t *out, char *errbuf, size_t errlen) {
     sb_t sql;
-    if (q_init(out) || sb_init(&sql)) { pgf_query_free(out); FAIL("out of memory"); }
+    if (q_init(out) || sb_init(&sql)) { cel_query_free(out); FAIL("out of memory"); }
     if (build_aggregate_body(t, req, scope, out, &sql, errbuf, errlen) != 0) {
-        free(sql.buf); pgf_query_free(out);
+        free(sql.buf); cel_query_free(out);
         if (!errbuf[0]) snprintf(errbuf, errlen, "failed to build aggregate");
         return -1;
     }
@@ -588,8 +588,8 @@ int pgf_build_aggregate(const pgf_table_t *t, const cJSON *req, const pgf_scope_
     return 0;
 }
 
-int pgf_build_get(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *scope,
-                  pgf_query_t *out, char *errbuf, size_t errlen) {
+int cel_build_get(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                  cel_query_t *out, char *errbuf, size_t errlen) {
     if (t->pk_index < 0) FAIL("table '%s' has no primary key", t->name);
     const cJSON *id = req ? cJSON_GetObjectItemCaseSensitive(req, "id") : NULL;
     if (!id || cJSON_IsNull(id)) FAIL("'id' is required");
@@ -597,7 +597,7 @@ int pgf_build_get(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *sco
     if (!idtxt) FAIL("'id' must be a scalar value");
 
     sb_t sql;
-    if (q_init(out) || sb_init(&sql)) { free(idtxt); pgf_query_free(out); FAIL("out of memory"); }
+    if (q_init(out) || sb_init(&sql)) { free(idtxt); cel_query_free(out); FAIL("out of memory"); }
 
     const char *pk = t->cols[t->pk_index].name;
     int rc = sb_puts(&sql, "SELECT ") ||
@@ -608,7 +608,7 @@ int pgf_build_get(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *sco
     for (int i = 0; !rc && i < scope_count(scope); i++)
         rc = sb_puts(&sql, " AND ") || append_scope_predicate(t, out, &sql, &scope->rule[i]);
     if (rc) {
-        free(sql.buf); free(idtxt); pgf_query_free(out);
+        free(sql.buf); free(idtxt); cel_query_free(out);
         if (!errbuf[0]) snprintf(errbuf, errlen, "failed to build query");
         return -1;
     }
@@ -620,7 +620,7 @@ int pgf_build_get(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *sco
 /* ---- write builders -------------------------------------------------------- */
 
 /* Append "RETURNING c1, c2, ..." for every column (so callers get the row back). */
-static int append_returning_all(const pgf_table_t *t, sb_t *sql) {
+static int append_returning_all(const cel_table_t *t, sb_t *sql) {
     if (sb_puts(sql, " RETURNING ")) return -1;
     for (int i = 0; i < t->ncols; i++) {
         if (i && sb_puts(sql, ", ")) return -1;
@@ -630,7 +630,7 @@ static int append_returning_all(const pgf_table_t *t, sb_t *sql) {
 }
 
 /* Emit a "$N" placeholder bound to a JSON value (null -> SQL NULL). */
-static int push_value(pgf_query_t *q, sb_t *sql, const cJSON *v,
+static int push_value(cel_query_t *q, sb_t *sql, const cJSON *v,
                       const char *col, char *errbuf, size_t errlen) {
     if (q_placeholder(q, sql)) return -1;
     if (cJSON_IsNull(v)) return q_push(q, NULL);
@@ -642,15 +642,15 @@ static int push_value(pgf_query_t *q, sb_t *sql, const cJSON *v,
 /* True if `col` is an EQ-forced scoped column (so a client-supplied value for it
  * is ignored on create / rejected on update). Only EQ rules force a column; OR
  * and VIA are read filters and never force/reject a column. */
-static int is_scoped_col(const pgf_scope_t *s, const char *col) {
+static int is_scoped_col(const cel_scope_t *s, const char *col) {
     for (int i = 0; i < scope_count(s); i++)
-        if (s->rule[i].kind == PGF_SCOPE_EQ && s->rule[i].column &&
+        if (s->rule[i].kind == CEL_SCOPE_EQ && s->rule[i].column &&
             !strcmp(s->rule[i].column, col)) return 1;
     return 0;
 }
 
-int pgf_build_create(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *scope,
-                     pgf_query_t *out, char *errbuf, size_t errlen) {
+int cel_build_create(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                     cel_query_t *out, char *errbuf, size_t errlen) {
     const cJSON *values = req ? cJSON_GetObjectItemCaseSensitive(req, "values") : NULL;
     if (!cJSON_IsObject(values) || cJSON_GetArraySize(values) == 0)
         FAIL("'values' object is required");
@@ -658,7 +658,7 @@ int pgf_build_create(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *
     /* validate every client column up front */
     const cJSON *m;
     cJSON_ArrayForEach(m, values)
-        if (!pgf_table_column(t, m->string)) FAIL("unknown column '%s'", m->string);
+        if (!cel_table_column(t, m->string)) FAIL("unknown column '%s'", m->string);
 
     int nscope = scope_count(scope);   /* scoped columns are forced, not client-supplied */
 
@@ -668,11 +668,11 @@ int pgf_build_create(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *
      * or create an unowned row. make_scope already rejects an owner_any/owner_via
      * create policy; fail hard here too so no caller can drive a spoofable insert. */
     for (int i = 0; i < nscope; i++)
-        if (scope->rule[i].kind != PGF_SCOPE_EQ)
+        if (scope->rule[i].kind != CEL_SCOPE_EQ)
             FAIL("create cannot enforce owner_any/owner_via scope on '%s' (use owner_column)", t->name);
 
     sb_t sql;
-    if (q_init(out) || sb_init(&sql)) { pgf_query_free(out); FAIL("out of memory"); }
+    if (q_init(out) || sb_init(&sql)) { cel_query_free(out); FAIL("out of memory"); }
 
     int rc = sb_puts(&sql, "INSERT INTO ") || sb_put_ident(&sql, t->name) || sb_puts(&sql, " (");
     int n = 0;
@@ -682,7 +682,7 @@ int pgf_build_create(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *
         if (!rc) rc = sb_put_ident(&sql, m->string);
     }
     for (int i = 0; !rc && i < nscope; i++) {
-        if (scope->rule[i].kind != PGF_SCOPE_EQ) continue;  /* OR/VIA never forced on insert */
+        if (scope->rule[i].kind != CEL_SCOPE_EQ) continue;  /* OR/VIA never forced on insert */
         if (n++) rc = sb_puts(&sql, ", ");
         if (!rc) rc = sb_put_ident(&sql, scope->rule[i].column);
     }
@@ -694,20 +694,20 @@ int pgf_build_create(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *
         if (!rc) rc = push_value(out, &sql, m, m->string, errbuf, errlen);
     }
     for (int i = 0; !rc && i < nscope; i++) {
-        if (scope->rule[i].kind != PGF_SCOPE_EQ) continue;  /* OR/VIA never forced on insert */
+        if (scope->rule[i].kind != CEL_SCOPE_EQ) continue;  /* OR/VIA never forced on insert */
         if (n++) rc = sb_puts(&sql, ", ");
         if (!rc) rc = append_value_param(out, &sql, scope->rule[i].value);
     }
     if (!rc) rc = sb_puts(&sql, ")") || append_returning_all(t, &sql);
-    if (rc) { free(sql.buf); pgf_query_free(out);
+    if (rc) { free(sql.buf); cel_query_free(out);
               if (!errbuf[0]) snprintf(errbuf, errlen, "failed to build query");
               return -1; }
     out->sql = sql.buf;
     return 0;
 }
 
-int pgf_build_update(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *scope,
-                     pgf_query_t *out, char *errbuf, size_t errlen) {
+int cel_build_update(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                     cel_query_t *out, char *errbuf, size_t errlen) {
     if (t->pk_index < 0) FAIL("table '%s' has no primary key", t->name);
     const cJSON *values = req ? cJSON_GetObjectItemCaseSensitive(req, "values") : NULL;
     const cJSON *id     = req ? cJSON_GetObjectItemCaseSensitive(req, "id") : NULL;
@@ -717,12 +717,12 @@ int pgf_build_update(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *
 
     const cJSON *m;
     cJSON_ArrayForEach(m, values) {
-        if (!pgf_table_column(t, m->string)) FAIL("unknown column '%s'", m->string);
+        if (!cel_table_column(t, m->string)) FAIL("unknown column '%s'", m->string);
         if (is_scoped_col(scope, m->string)) FAIL("cannot modify a scoped column");
     }
 
     sb_t sql;
-    if (q_init(out) || sb_init(&sql)) { pgf_query_free(out); FAIL("out of memory"); }
+    if (q_init(out) || sb_init(&sql)) { cel_query_free(out); FAIL("out of memory"); }
 
     int rc = sb_puts(&sql, "UPDATE ") || sb_put_ident(&sql, t->name) || sb_puts(&sql, " SET ");
     int n = 0;
@@ -737,21 +737,21 @@ int pgf_build_update(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *
     for (int i = 0; !rc && i < scope_count(scope); i++)
         rc = sb_puts(&sql, " AND ") || append_scope_predicate(t, out, &sql, &scope->rule[i]);
     if (!rc) rc = append_returning_all(t, &sql);
-    if (rc) { free(sql.buf); pgf_query_free(out);
+    if (rc) { free(sql.buf); cel_query_free(out);
               if (!errbuf[0]) snprintf(errbuf, errlen, "failed to build query");
               return -1; }
     out->sql = sql.buf;
     return 0;
 }
 
-int pgf_build_delete(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *scope,
-                     pgf_query_t *out, char *errbuf, size_t errlen) {
+int cel_build_delete(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                     cel_query_t *out, char *errbuf, size_t errlen) {
     if (t->pk_index < 0) FAIL("table '%s' has no primary key", t->name);
     const cJSON *id = req ? cJSON_GetObjectItemCaseSensitive(req, "id") : NULL;
     if (!id || cJSON_IsNull(id)) FAIL("'id' is required");
 
     sb_t sql;
-    if (q_init(out) || sb_init(&sql)) { pgf_query_free(out); FAIL("out of memory"); }
+    if (q_init(out) || sb_init(&sql)) { cel_query_free(out); FAIL("out of memory"); }
 
     int rc = sb_puts(&sql, "DELETE FROM ") || sb_put_ident(&sql, t->name) ||
              sb_puts(&sql, " WHERE ") || sb_put_ident(&sql, t->cols[t->pk_index].name) ||
@@ -759,19 +759,19 @@ int pgf_build_delete(const pgf_table_t *t, const cJSON *req, const pgf_scope_t *
     for (int i = 0; !rc && i < scope_count(scope); i++)
         rc = sb_puts(&sql, " AND ") || append_scope_predicate(t, out, &sql, &scope->rule[i]);
     if (!rc) rc = append_returning_all(t, &sql);
-    if (rc) { free(sql.buf); pgf_query_free(out);
+    if (rc) { free(sql.buf); cel_query_free(out);
               if (!errbuf[0]) snprintf(errbuf, errlen, "failed to build query");
               return -1; }
     out->sql = sql.buf;
     return 0;
 }
 
-int pgf_build_rpc(const char *fn, const cJSON *args,
-                  pgf_query_t *out, char *errbuf, size_t errlen) {
+int cel_build_rpc(const char *fn, const cJSON *args,
+                  cel_query_t *out, char *errbuf, size_t errlen) {
     if (!is_safe_ident(fn)) FAIL("invalid function name");
 
     sb_t sql;
-    if (q_init(out) || sb_init(&sql)) { pgf_query_free(out); FAIL("out of memory"); }
+    if (q_init(out) || sb_init(&sql)) { cel_query_free(out); FAIL("out of memory"); }
 
     int rc = sb_puts(&sql, "SELECT * FROM ") || sb_put_ident(&sql, fn) || sb_puts(&sql, "(");
     int n = 0;
@@ -779,7 +779,7 @@ int pgf_build_rpc(const char *fn, const cJSON *args,
         const cJSON *a;
         cJSON_ArrayForEach(a, args) {
             if (!is_safe_ident(a->string)) {
-                free(sql.buf); pgf_query_free(out);
+                free(sql.buf); cel_query_free(out);
                 snprintf(errbuf, errlen, "invalid argument name '%s'", a->string ? a->string : "");
                 return -1;
             }
@@ -791,7 +791,7 @@ int pgf_build_rpc(const char *fn, const cJSON *args,
         }
     }
     if (!rc) rc = sb_puts(&sql, ")");
-    if (rc) { free(sql.buf); pgf_query_free(out);
+    if (rc) { free(sql.buf); cel_query_free(out);
               if (!errbuf[0]) snprintf(errbuf, errlen, "failed to build query");
               return -1; }
     out->sql = sql.buf;

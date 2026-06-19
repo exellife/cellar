@@ -58,12 +58,12 @@ static const char *env_for(const char *name, const char *suffix) {
     size_t i = 0;
     for (; name[i] && i < sizeof up - 1; i++) up[i] = (char)toupper((unsigned char)name[i]);
     up[i] = '\0';
-    snprintf(key, sizeof key, "PGF_OAUTH_%s_%s", up, suffix);
+    snprintf(key, sizeof key, "CEL_OAUTH_%s_%s", up, suffix);
     return getenv(key);
 }
 
-void pgf_oauth_init(void) {
-    const char *list = getenv("PGF_OAUTH_PROVIDERS");
+void cel_oauth_init(void) {
+    const char *list = getenv("CEL_OAUTH_PROVIDERS");
     if (!list || !*list) return;
 
     char *dup = strdup(list);
@@ -95,16 +95,16 @@ void pgf_oauth_init(void) {
     free(dup);
 }
 
-bool pgf_oauth_enabled(void) { return g_nproviders > 0; }
+bool cel_oauth_enabled(void) { return g_nproviders > 0; }
 
 /* True iff a federated identity from `provider` may be auto-linked to an existing
  * local account with this `email` — i.e. the email's domain is in the provider's
- * configured PGF_OAUTH_<NAME>_TRUSTED_DOMAINS allow-list. Fails closed: no
+ * configured CEL_OAUTH_<NAME>_TRUSTED_DOMAINS allow-list. Fails closed: no
  * allow-list (or unknown provider / missing domain) => never link (H-3). This
  * stops a loose or hostile IdP from asserting a victim's "verified" email to take
  * over the account; merging by email is allowed only for domains the operator
  * vouches the provider is authoritative for. Matching is case-insensitive. */
-bool pgf_oauth_email_link_allowed(const char *provider, const char *email) {
+bool cel_oauth_email_link_allowed(const char *provider, const char *email) {
     if (!provider || !email) return false;
     const char *at = strrchr(email, '@');
     if (!at || !at[1]) return false;
@@ -347,7 +347,7 @@ static EVP_PKEY *jwks_get_key(const char *jwks_uri, const char *kid) {
     return NULL;
 }
 
-void pgf_oauth_cleanup(void) {
+void cel_oauth_cleanup(void) {
     pthread_mutex_lock(&g_jwks_lock);
     for (int i = 0; i < MAX_PROVIDERS; i++) if (g_jwks[i].used) entry_free_keys(&g_jwks[i]);
     pthread_mutex_unlock(&g_jwks_lock);
@@ -376,8 +376,8 @@ static bool claim_true(const cJSON *v) {
     return false;
 }
 
-int pgf_oauth_verify(const char *provider, const char *id_token, const char *expected_nonce,
-                     pgf_oauth_claims_t *out, char *errbuf, size_t errlen) {
+int cel_oauth_verify(const char *provider, const char *id_token, const char *expected_nonce,
+                     cel_oauth_claims_t *out, char *errbuf, size_t errlen) {
     errbuf[0] = '\0';
     const provider_t *p = provider ? find_provider(provider) : NULL;
     if (!p) { snprintf(errbuf, errlen, "unknown provider"); return -1; }

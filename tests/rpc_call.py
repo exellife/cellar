@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge RPC end-to-end (#54): call a whitelisted SQL function over REST.
+"""cellar RPC end-to-end (#54): call a whitelisted SQL function over REST.
 
 Boots (via the harness) against a DB with rpc_add(a,b) defined and a policy that
 whitelists it for admin only. Proves: an admin call returns the function result
@@ -37,7 +37,7 @@ def main():
         print(f"  {'ok' if cond else 'FAIL':<5} {name:<32} {detail}")
         ok += bool(cond); fail += (not cond)
 
-    admin = login("admin@pgforge.dev", "s3cret-admin")
+    admin = login("admin@cellar.dev", "s3cret-admin")
     chk("admin login", bool(admin))
 
     # whitelisted function, allowed role -> result
@@ -49,7 +49,7 @@ def main():
         chk("rpc_add == 42 (typed int)", result[0].get("rpc_add") == 42, str(result[0]))
 
     # a non-whitelisted role is denied
-    editor = login("editor@pgforge.dev", "editor-pw")
+    editor = login("editor@cellar.dev", "editor-pw")
     s, b = req("POST", "/rpc/rpc_add", {"a": 1, "b": 1}, token=editor)
     chk("editor denied 403", s == 403, str(s))
 

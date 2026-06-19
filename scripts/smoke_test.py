@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge smoke test: framed PING/ECHO/INFO + full auth flow (login/verify/logout)."""
+"""cellar smoke test: framed PING/ECHO/INFO + full auth flow (login/verify/logout)."""
 import asyncio, struct, sys, json, os
 import websockets
 
@@ -40,11 +40,11 @@ async def main(url, email, password):
         op, fl, mid, pl = await r.call(ws, OP_PING)
         r.check("PING -> PONG", op == OP_PING | FLAG_RESPONSE and pl == b"PONG")
 
-        op, fl, mid, pl = await r.call(ws, OP_ECHO, b"hello pgforge")
-        r.check("ECHO", pl == b"hello pgforge")
+        op, fl, mid, pl = await r.call(ws, OP_ECHO, b"hello cellar")
+        r.check("ECHO", pl == b"hello cellar")
 
         op, fl, mid, pl = await r.call(ws, OP_INFO)
-        r.check("SERVER_INFO", b"pgforge" in pl)
+        r.check("SERVER_INFO", b"cellar" in pl)
 
         # bad login -> error flag + error status
         op, fl, mid, pl = await r.call(ws, OP_LOGIN, {"email": email, "password": "wrong-password"})
@@ -75,7 +75,7 @@ async def main(url, email, password):
         tables = {t["name"]: t for t in cat.get("tables", [])}
         r.check("DB_SCHEMA tables", {"products", "categories"} <= set(tables),
                 "found=" + ",".join(sorted(tables)))
-        r.check("DB_SCHEMA no internals", "pgf_users" not in tables and "pgf_sessions" not in tables)
+        r.check("DB_SCHEMA no internals", "cel_users" not in tables and "cel_sessions" not in tables)
         prod = tables.get("products", {})
         r.check("DB_SCHEMA primary_key", prod.get("primary_key") == "id")
         cols = {c["name"]: c for c in prod.get("columns", [])}
@@ -114,7 +114,7 @@ async def main(url, email, password):
         r.check("DB_GET not found", (fl & FLAG_ERROR) and json.loads(pl).get("status") == "error")
 
         # ---- security: internal tables hidden, identifiers validated, values bound ----
-        _, fl, _, pl = await r.call(ws, OP_DB_LIST, {"table": "pgf_users", **T})
+        _, fl, _, pl = await r.call(ws, OP_DB_LIST, {"table": "cel_users", **T})
         r.check("DB_LIST internal hidden", json.loads(pl).get("message") == "unknown table")
 
         _, fl, _, pl = await r.call(ws, OP_DB_LIST, {"table": "products",
@@ -162,6 +162,6 @@ async def main(url, email, password):
 
 if __name__ == "__main__":
     url   = sys.argv[1] if len(sys.argv) > 1 else "ws://127.0.0.1:8080/"
-    email = os.environ.get("PGF_TEST_EMAIL", "admin@pgforge.dev")
-    pw    = os.environ.get("PGF_TEST_PASSWORD", "s3cret-admin")
+    email = os.environ.get("CEL_TEST_EMAIL", "admin@cellar.dev")
+    pw    = os.environ.get("CEL_TEST_PASSWORD", "s3cret-admin")
     asyncio.run(main(url, email, pw))

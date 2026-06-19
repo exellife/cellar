@@ -14,7 +14,7 @@ static int dec_val(unsigned char c) {
     return -1;
 }
 
-int pgf_b64url_encode(const unsigned char *in, size_t inlen, char *out, size_t out_size) {
+int cel_b64url_encode(const unsigned char *in, size_t inlen, char *out, size_t out_size) {
     size_t need = (inlen * 8 + 5) / 6;        /* output chars, no padding */
     if (out_size < need + 1) return -1;
     size_t oi = 0;
@@ -30,7 +30,7 @@ int pgf_b64url_encode(const unsigned char *in, size_t inlen, char *out, size_t o
     return 0;
 }
 
-int pgf_b64url_decode(const char *in, size_t inlen, unsigned char *out,
+int cel_b64url_decode(const char *in, size_t inlen, unsigned char *out,
                       size_t out_size, size_t *outlen) {
     uint32_t buf = 0;
     int bits = 0;

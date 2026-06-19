@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Pooled multi-tenancy (Model B) end-to-end: two tenants on ONE pgforge, proving
+# Pooled multi-tenancy (Model B) end-to-end: two tenants on ONE cellar, proving
 # cross-tenant isolation — a tenant sees only its own rows, and CREATE forces the
 # caller's tenant even if the client tries to spoof another. Usage:
-#   tenancy_test.sh <pgforge-binary>
+#   tenancy_test.sh <cellar-binary>
 set -euo pipefail
 
-BIN="${1:?usage: tenancy_test.sh <pgforge-binary>}"
-H="${PGF_DB_HOST:-localhost}"
-U="${PGF_DB_USER:-postgres}"
-DB="pgf_tenancy_test"
+BIN="${1:?usage: tenancy_test.sh <cellar-binary>}"
+H="${CEL_DB_HOST:-localhost}"
+U="${CEL_DB_USER:-postgres}"
+DB="cel_tenancy_test"
 PSQL="psql -h $H -U $U"
 
 cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true
@@ -19,15 +19,15 @@ $PSQL -tc "SELECT 1 FROM pg_database WHERE datname='$DB'" | grep -q 1 \
   && $PSQL -c "DROP DATABASE $DB" >/dev/null
 $PSQL -c "CREATE DATABASE $DB" >/dev/null
 
-export PGF_DB_HOST="$H" PGF_DB_USER="$U" PGF_DB_NAME="$DB"
+export CEL_DB_HOST="$H" CEL_DB_USER="$U" CEL_DB_NAME="$DB"
 
-# 1. core + tenancy schema (pgf_tenants, pgf_users.tenant_id)
+# 1. core + tenancy schema (cel_tenants, cel_users.tenant_id)
 "$BIN" migrate --tenancy >/dev/null
 
 # 2. two tenants + a tenant-scoped business table, populated for both tenants.
 #    items carries tenant_id, so the engine auto-scopes it in pooled mode.
-T1=$($PSQL -d "$DB" -tAc "INSERT INTO pgf_tenants(name) VALUES('Acme')   RETURNING id" | head -n1 | tr -d '[:space:]')
-T2=$($PSQL -d "$DB" -tAc "INSERT INTO pgf_tenants(name) VALUES('Globex') RETURNING id" | head -n1 | tr -d '[:space:]')
+T1=$($PSQL -d "$DB" -tAc "INSERT INTO cel_tenants(name) VALUES('Acme')   RETURNING id" | head -n1 | tr -d '[:space:]')
+T2=$($PSQL -d "$DB" -tAc "INSERT INTO cel_tenants(name) VALUES('Globex') RETURNING id" | head -n1 | tr -d '[:space:]')
 $PSQL -d "$DB" >/dev/null <<SQL
 CREATE TABLE items (
     id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -41,8 +41,8 @@ SQL
 
 # 3. boot in pooled mode; seed one user per tenant (tenant_id set below).
 PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
-PGF_PORT="$PORT" PGF_TENANT_COLUMN=tenant_id PGF_LOG_LEVEL=warn \
-  PGF_SEED_USERS="u1@x.io:pw1:editor;u2@x.io:pw2:editor" "$BIN" >/tmp/pgf_tenancy_srv.log 2>&1 &
+CEL_PORT="$PORT" CEL_TENANT_COLUMN=tenant_id CEL_LOG_LEVEL=warn \
+  CEL_SEED_USERS="u1@x.io:pw1:editor;u2@x.io:pw2:editor" "$BIN" >/tmp/cel_tenancy_srv.log 2>&1 &
 SRV=$!
 for i in $(seq 1 80); do
   (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null && { exec 3>&-; break; }
@@ -50,8 +50,8 @@ for i in $(seq 1 80); do
 done
 
 # 4. assign each seeded user to a tenant (identity resolves tenant_id per request).
-$PSQL -d "$DB" -c "UPDATE pgf_users SET tenant_id='$T1' WHERE email='u1@x.io'" >/dev/null
-$PSQL -d "$DB" -c "UPDATE pgf_users SET tenant_id='$T2' WHERE email='u2@x.io'" >/dev/null
+$PSQL -d "$DB" -c "UPDATE cel_users SET tenant_id='$T1' WHERE email='u1@x.io'" >/dev/null
+$PSQL -d "$DB" -c "UPDATE cel_users SET tenant_id='$T2' WHERE email='u2@x.io'" >/dev/null
 
 # 5. REST assertions.
 PORT="$PORT" T1="$T1" T2="$T2" python3 - <<'PY'

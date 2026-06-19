@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Auth hardening: session tokens stored hashed at rest, revoke-sessions CLI kills
 # them, and over-length passwords are rejected. Boots its own server (needs the
-# binary for both serving and the CLI). auth_hardening_test.sh <pgforge-binary>
+# binary for both serving and the CLI). auth_hardening_test.sh <cellar-binary>
 set -euo pipefail
 
-BIN="${1:?usage: auth_hardening_test.sh <pgforge-binary>}"
-H="${PGF_DB_HOST:-localhost}"; U="${PGF_DB_USER:-postgres}"; DB="${PGF_DB_NAME:-pgforge}"
+BIN="${1:?usage: auth_hardening_test.sh <cellar-binary>}"
+H="${CEL_DB_HOST:-localhost}"; U="${CEL_DB_USER:-postgres}"; DB="${CEL_DB_NAME:-cellar}"
 PSQL="psql -h $H -U $U -d $DB -tAc"
 PORT=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
 
-PGF_PORT=$PORT PGF_DB_HOST=$H PGF_DB_USER=$U PGF_DB_NAME=$DB PGF_LOG_LEVEL=warn \
-  PGF_AUTH_RATELIMIT=0 PGF_SEED_USERS="admin@pgforge.dev:s3cret-admin:admin" \
+CEL_PORT=$PORT CEL_DB_HOST=$H CEL_DB_USER=$U CEL_DB_NAME=$DB CEL_LOG_LEVEL=warn \
+  CEL_AUTH_RATELIMIT=0 CEL_SEED_USERS="admin@cellar.dev:s3cret-admin:admin" \
   "$BIN" >/tmp/ah_$$.log 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null; rm -f /tmp/ah_$$.log' EXIT
@@ -21,17 +21,17 @@ chk() { if [ "$2" = "$3" ]; then echo "  ok    $1 ($2)"; else echo "  FAIL  $1: 
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
 TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
-        -d '{"email":"admin@pgforge.dev","password":"s3cret-admin"}' \
+        -d '{"email":"admin@cellar.dev","password":"s3cret-admin"}' \
         "http://127.0.0.1:$PORT/auth/login" | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
 HASH=$(python3 -c "import hashlib,sys;print(hashlib.sha256('$TOKEN'.encode()).hexdigest())")
 
-chk "raw token NOT at rest"  "$($PSQL "SELECT count(*) FROM pgf_sessions WHERE token='$TOKEN'")" "0"
-chk "hashed token at rest"   "$($PSQL "SELECT count(*) FROM pgf_sessions WHERE token='$HASH'")"  "1"
+chk "raw token NOT at rest"  "$($PSQL "SELECT count(*) FROM cel_sessions WHERE token='$TOKEN'")" "0"
+chk "hashed token at rest"   "$($PSQL "SELECT count(*) FROM cel_sessions WHERE token='$HASH'")"  "1"
 chk "token authenticates"    "$(code -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/schema")" "200"
 
 # revoke-sessions CLI kills the token (cache is off -> immediate)
-PGF_DB_HOST=$H PGF_DB_USER=$U PGF_DB_NAME=$DB PGF_LOG_LEVEL=error \
-  "$BIN" revoke-sessions admin@pgforge.dev >/dev/null 2>&1
+CEL_DB_HOST=$H CEL_DB_USER=$U CEL_DB_NAME=$DB CEL_LOG_LEVEL=error \
+  "$BIN" revoke-sessions admin@cellar.dev >/dev/null 2>&1
 chk "revoked token rejected"  "$(code -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/schema")" "401"
 
 # over-length password rejected before Argon2id

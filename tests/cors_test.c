@@ -1,4 +1,4 @@
-/* pgforge — CORS origin-policy unit test (no DB). Drives pgf_cors_init via env. */
+/* cellar — CORS origin-policy unit test (no DB). Drives cel_cors_init via env. */
 #include "cors.h"
 
 #include <stdio.h>
@@ -17,9 +17,9 @@ static int eq(const char *got, const char *want) {
 }
 
 static void configure(const char *origins, const char *creds) {
-    if (origins) setenv("PGF_CORS_ORIGINS", origins, 1); else unsetenv("PGF_CORS_ORIGINS");
-    if (creds)   setenv("PGF_CORS_CREDENTIALS", creds, 1); else unsetenv("PGF_CORS_CREDENTIALS");
-    pgf_cors_init();
+    if (origins) setenv("CEL_CORS_ORIGINS", origins, 1); else unsetenv("CEL_CORS_ORIGINS");
+    if (creds)   setenv("CEL_CORS_CREDENTIALS", creds, 1); else unsetenv("CEL_CORS_CREDENTIALS");
+    cel_cors_init();
 }
 
 int main(void) {
@@ -27,30 +27,30 @@ int main(void) {
 
     /* disabled by default */
     configure(NULL, NULL);
-    chk("disabled when unset", !pgf_cors_enabled());
-    chk("disabled -> no allow", eq(pgf_cors_allow_origin("https://a.test"), NULL));
+    chk("disabled when unset", !cel_cors_enabled());
+    chk("disabled -> no allow", eq(cel_cors_allow_origin("https://a.test"), NULL));
 
     /* explicit allowlist */
     configure("https://a.test, https://b.test", NULL);
-    chk("enabled", pgf_cors_enabled());
-    chk("listed origin echoed", eq(pgf_cors_allow_origin("https://a.test"), "https://a.test"));
-    chk("second listed origin", eq(pgf_cors_allow_origin("https://b.test"), "https://b.test"));
-    chk("unlisted origin denied", eq(pgf_cors_allow_origin("https://evil.test"), NULL));
-    chk("empty origin denied", eq(pgf_cors_allow_origin(""), NULL));
-    chk("no credentials by default", !pgf_cors_allow_credentials());
+    chk("enabled", cel_cors_enabled());
+    chk("listed origin echoed", eq(cel_cors_allow_origin("https://a.test"), "https://a.test"));
+    chk("second listed origin", eq(cel_cors_allow_origin("https://b.test"), "https://b.test"));
+    chk("unlisted origin denied", eq(cel_cors_allow_origin("https://evil.test"), NULL));
+    chk("empty origin denied", eq(cel_cors_allow_origin(""), NULL));
+    chk("no credentials by default", !cel_cors_allow_credentials());
 
     /* trailing slash is trimmed when matching */
     configure("https://a.test/", NULL);
-    chk("trailing slash trimmed", eq(pgf_cors_allow_origin("https://a.test"), "https://a.test"));
+    chk("trailing slash trimmed", eq(cel_cors_allow_origin("https://a.test"), "https://a.test"));
 
     /* wildcard without credentials -> "*" */
     configure("*", NULL);
-    chk("wildcard echoes *", eq(pgf_cors_allow_origin("https://anything.test"), "*"));
+    chk("wildcard echoes *", eq(cel_cors_allow_origin("https://anything.test"), "*"));
 
     /* wildcard WITH credentials -> echo the specific origin (spec: no "*" + creds) */
     configure("*", "1");
-    chk("wildcard+creds echoes origin", eq(pgf_cors_allow_origin("https://anything.test"), "https://anything.test"));
-    chk("credentials enabled", pgf_cors_allow_credentials());
+    chk("wildcard+creds echoes origin", eq(cel_cors_allow_origin("https://anything.test"), "https://anything.test"));
+    chk("credentials enabled", cel_cors_allow_credentials());
 
     printf(failures ? "\nFAILED (%d)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;

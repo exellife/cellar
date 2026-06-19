@@ -1,5 +1,5 @@
 {
-  "_comment": "Test fixture for richer-read embedding authz: categories are readable by admin only. A viewer can read products but must NOT be able to embed categories — embedding re-runs the caller's read policy on the related table, so the to-one embed is forbidden for a viewer and allowed for an admin (superuser). '_default':'allow' keeps the permissive fallback so 'products' (unlisted) stays readable by viewer/editor — pgforge otherwise fails closed on unlisted tables.",
+  "_comment": "Test fixture for richer-read embedding authz: categories are readable by admin only. A viewer can read products but must NOT be able to embed categories — embedding re-runs the caller's read policy on the related table, so the to-one embed is forbidden for a viewer and allowed for an admin (superuser). '_default':'allow' keeps the permissive fallback so 'products' (unlisted) stays readable by viewer/editor — cellar otherwise fails closed on unlisted tables.",
 
   "_default": "allow",
 

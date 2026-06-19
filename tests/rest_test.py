@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge REST front-door test (http.client, no external deps).
+"""cellar REST front-door test (http.client, no external deps).
 
 Covers schema/list/get/CRUD over HTTP, the engine's security properties
 (internal tables hidden, identifier validation, value binding), and the policy
@@ -8,10 +8,10 @@ engine (anon -> 401, role-gated writes/deletes).
 import http.client, json, sys
 from urllib.parse import urlparse, quote
 
-ADMIN   = ("admin@pgforge.dev",   "s3cret-admin")
-EDITOR  = ("editor@pgforge.dev",  "editor-pw")
-EDITOR2 = ("editor2@pgforge.dev", "editor2-pw")
-VIEWER  = ("viewer@pgforge.dev",  "viewer-pw")
+ADMIN   = ("admin@cellar.dev",   "s3cret-admin")
+EDITOR  = ("editor@cellar.dev",  "editor-pw")
+EDITOR2 = ("editor2@cellar.dev", "editor2-pw")
+VIEWER  = ("viewer@cellar.dev",  "viewer-pw")
 
 HOST = PORT = None
 
@@ -43,7 +43,7 @@ def login(creds):
 
 def main():
     r = R()
-    print(f"== pgforge REST harness -> {HOST}:{PORT} ==")
+    print(f"== cellar REST harness -> {HOST}:{PORT} ==")
     admin, editor, viewer = login(ADMIN), login(EDITOR), login(VIEWER)
     editor2 = login(EDITOR2)
     r.check("login (admin/editor/viewer/editor2)", all([admin, editor, viewer, editor2]))
@@ -64,7 +64,7 @@ def main():
     s, b = req("GET", "/schema", token=admin)
     tables = {t["name"] for t in (b or {}).get("tables", [])}
     r.check("GET /schema", s == 200 and {"products", "categories"} <= tables)
-    r.check("schema hides internals", "pgf_users" not in tables)
+    r.check("schema hides internals", "cel_users" not in tables)
 
     s, b = req("GET", "/api/categories", token=admin)
     r.check("GET /api/categories", s == 200 and b.get("count") == 2)
@@ -80,7 +80,7 @@ def main():
     s, b = req("GET", f"/api/products/{pid}", token=admin)
     r.check("GET /api/products/<id>", s == 200 and b["row"]["id"] == pid)
 
-    s, _ = req("GET", "/api/pgf_users", token=admin)
+    s, _ = req("GET", "/api/cel_users", token=admin)
     r.check("internal table -> 404", s == 404)
 
     s, b = req("GET", "/api/products?order=" + quote("name; DROP TABLE products"), token=admin)

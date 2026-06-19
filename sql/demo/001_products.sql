@@ -1,4 +1,4 @@
--- pgforge 002: demo product catalog (for engine development / introspection).
+-- cellar 002: demo product catalog (for engine development / introspection).
 -- Representative of a real admin dashboard: a parent table + a child with an FK,
 -- a mix of column types, defaults, nullability.
 

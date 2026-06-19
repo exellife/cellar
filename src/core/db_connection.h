@@ -59,7 +59,7 @@ void db_connection_release(PGconn *conn);
  * profiling showed dominates execution. The cache is cleared automatically when
  * a connection is reset, and self-heals stale plans after DDL.
  *
- * Set PGF_PREPARED_STATEMENTS=0 to disable (falls back to plain PQexecParams).
+ * Set CEL_PREPARED_STATEMENTS=0 to disable (falls back to plain PQexecParams).
  * The caller owns the returned PGresult and must PQclear it.
  *
  * @param conn    A connection obtained from db_connection_acquire().
@@ -89,7 +89,7 @@ int db_connection_prepare_cached(PGconn *conn, const char *sql, int nparams,
                                  char *name_out, size_t cap);
 
 /**
- * @brief Whether pooled-mode pipelining is enabled (PGF_DB_PIPELINE=1 and the
+ * @brief Whether pooled-mode pipelining is enabled (CEL_DB_PIPELINE=1 and the
  *        libpq build supports it). When true, the data-API path may send the
  *        BEGIN/set_config/query/COMMIT transaction as a single pipelined round trip.
  */

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Boot a pgforge server, run a test script against it, tear it down.
+"""Boot a cellar server, run a test script against it, tear it down.
 
-Usage: run_with_server.py <pgforge_binary> <test_script.py>
+Usage: run_with_server.py <cellar_binary> <test_script.py>
 
 Picks a free port, seeds an admin, waits for the listener, runs
   python3 <test_script.py> ws://127.0.0.1:<port>/
@@ -35,27 +35,27 @@ def main():
 
     env = dict(os.environ)
     env.update(
-        PGF_PORT=str(port),
-        PGF_LOG_LEVEL=env.get("PGF_LOG_LEVEL", "warn"),
-        PGF_DB_NAME=env.get("PGF_DB_NAME", "pgforge"),
+        CEL_PORT=str(port),
+        CEL_LOG_LEVEL=env.get("CEL_LOG_LEVEL", "warn"),
+        CEL_DB_NAME=env.get("CEL_DB_NAME", "cellar"),
         # Seed users per role (two editors, to exercise row-level ownership).
-        PGF_SEED_USERS=env.get("PGF_SEED_USERS",
-            "admin@pgforge.dev:s3cret-admin:admin;"
-            "editor@pgforge.dev:editor-pw:editor;"
-            "editor2@pgforge.dev:editor2-pw:editor;"
-            "viewer@pgforge.dev:viewer-pw:viewer"),
+        CEL_SEED_USERS=env.get("CEL_SEED_USERS",
+            "admin@cellar.dev:s3cret-admin:admin;"
+            "editor@cellar.dev:editor-pw:editor;"
+            "editor2@cellar.dev:editor2-pw:editor;"
+            "viewer@cellar.dev:viewer-pw:viewer"),
         # Policy overrides (row-level ownership for `notes`).
-        PGF_POLICY_FILE=env.get("PGF_POLICY_FILE",
+        CEL_POLICY_FILE=env.get("CEL_POLICY_FILE",
             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "config", "policies.json")),
-        PGF_TEST_EMAIL=env.get("PGF_TEST_EMAIL", "admin@pgforge.dev"),
-        PGF_TEST_PASSWORD=env.get("PGF_TEST_PASSWORD", "s3cret-admin"),
+        CEL_TEST_EMAIL=env.get("CEL_TEST_EMAIL", "admin@cellar.dev"),
+        CEL_TEST_PASSWORD=env.get("CEL_TEST_PASSWORD", "s3cret-admin"),
         # Disable the auth rate limiter by default so functional tests can log in
         # / register freely; the dedicated rate-limit test overrides this.
-        PGF_AUTH_RATELIMIT=env.get("PGF_AUTH_RATELIMIT", "0"),
+        CEL_AUTH_RATELIMIT=env.get("CEL_AUTH_RATELIMIT", "0"),
     )
 
-    log = tempfile.NamedTemporaryFile(prefix="pgforge-", suffix=".log", delete=False)
+    log = tempfile.NamedTemporaryFile(prefix="cellar-", suffix=".log", delete=False)
     proc = subprocess.Popen([binary], env=env, stdout=log, stderr=subprocess.STDOUT)
     try:
         if not wait_listen(port, proc):

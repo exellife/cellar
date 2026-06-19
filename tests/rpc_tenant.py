@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""pgforge M-3 regression: pooled-mode RPC fails closed on an empty tenant.
+"""cellar M-3 regression: pooled-mode RPC fails closed on an empty tenant.
 
-Booted with PGF_TENANT_COLUMN set (pooled mode) and a policy that whitelists
+Booted with CEL_TENANT_COLUMN set (pooled mode) and a policy that whitelists
 rpc_add for 'anon'. The unauthenticated caller is permitted by the whitelist but
 has no tenant, so the RPC must be DENIED (403) rather than run with
 app.tenant_id='' in an undefined RLS context. Pre-fix the call returned 200 (the

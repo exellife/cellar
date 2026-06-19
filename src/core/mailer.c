@@ -1,5 +1,5 @@
 #include "mailer.h"
-#include "password.h"   /* pgf_random_token_hex (Message-ID) */
+#include "password.h"   /* cel_random_token_hex (Message-ID) */
 #include "logger.h"
 
 #include <curl/curl.h>
@@ -24,18 +24,18 @@ static void setenv_str(char *dst, size_t cap, const char *name) {
     if (v && *v) snprintf(dst, cap, "%s", v);
 }
 
-void pgf_mailer_init(void) {
-    setenv_str(g_url,       sizeof g_url,       "PGF_SMTP_URL");
-    setenv_str(g_user,      sizeof g_user,      "PGF_SMTP_USER");
-    setenv_str(g_pass,      sizeof g_pass,      "PGF_SMTP_PASS");
-    setenv_str(g_from,      sizeof g_from,      "PGF_MAIL_FROM");
-    setenv_str(g_from_name, sizeof g_from_name, "PGF_MAIL_FROM_NAME");
-    const char *tls = getenv("PGF_SMTP_TLS");
+void cel_mailer_init(void) {
+    setenv_str(g_url,       sizeof g_url,       "CEL_SMTP_URL");
+    setenv_str(g_user,      sizeof g_user,      "CEL_SMTP_USER");
+    setenv_str(g_pass,      sizeof g_pass,      "CEL_SMTP_PASS");
+    setenv_str(g_from,      sizeof g_from,      "CEL_MAIL_FROM");
+    setenv_str(g_from_name, sizeof g_from_name, "CEL_MAIL_FROM_NAME");
+    const char *tls = getenv("CEL_SMTP_TLS");
     if (tls) g_tls = !strcmp(tls, "none") ? TLS_NONE : !strcmp(tls, "try") ? TLS_TRY : TLS_REQUIRE;
-    if (pgf_mail_enabled()) LOG_INFO("mailer: SMTP via %s (from %s)", g_url, g_from);
+    if (cel_mail_enabled()) LOG_INFO("mailer: SMTP via %s (from %s)", g_url, g_from);
 }
 
-bool pgf_mail_enabled(void) { return g_url[0] && g_from[0]; }
+bool cel_mail_enabled(void) { return g_url[0] && g_from[0]; }
 
 /* libcurl pulls the message body through this callback. */
 typedef struct { const char *data; size_t len, sent; } upload_t;
@@ -62,8 +62,8 @@ static void rfc822_date(char *out, size_t n) {
              tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
-int pgf_mail_send(const char *to, const char *subject, const char *body) {
-    if (!pgf_mail_enabled() || !to || !subject || !body) return -1;
+int cel_mail_send(const char *to, const char *subject, const char *body) {
+    if (!cel_mail_enabled() || !to || !subject || !body) return -1;
     if (has_crlf(to) || has_crlf(subject)) {            /* header-injection guard */
         LOG_WARN("mailer: refusing recipient/subject with CR/LF");
         return -1;
@@ -71,8 +71,8 @@ int pgf_mail_send(const char *to, const char *subject, const char *body) {
 
     char date[64];
     rfc822_date(date, sizeof date);
-    char mid[33] = "pgforge";
-    pgf_random_token_hex(mid, sizeof mid, 16);          /* best-effort Message-ID */
+    char mid[33] = "cellar";
+    cel_random_token_hex(mid, sizeof mid, 16);          /* best-effort Message-ID */
     const char *at = strchr(g_from, '@');
 
     size_t cap = strlen(body) + strlen(subject) + strlen(to) + strlen(g_from) + 512;

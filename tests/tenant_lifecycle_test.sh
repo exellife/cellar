@@ -3,13 +3,13 @@
 #   - create-platform-admin / create-tenant provisioning CLIs
 #   - a tenant-admin is confined to its own tenant; the platform-admin sees ALL
 #   - suspend-tenant blocks the tenant's users from authenticating; resume restores
-#   tenant_lifecycle_test.sh <pgforge-binary>
+#   tenant_lifecycle_test.sh <cellar-binary>
 set -euo pipefail
 
-BIN="${1:?usage: tenant_lifecycle_test.sh <pgforge-binary>}"
-H="${PGF_DB_HOST:-localhost}"
-U="${PGF_DB_USER:-postgres}"
-DB="pgf_lifecycle_test"
+BIN="${1:?usage: tenant_lifecycle_test.sh <cellar-binary>}"
+H="${CEL_DB_HOST:-localhost}"
+U="${CEL_DB_USER:-postgres}"
+DB="cel_lifecycle_test"
 PSQL="psql -h $H -U $U"
 
 cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true
@@ -18,7 +18,7 @@ trap cleanup EXIT
 $PSQL -c "DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1 || true
 $PSQL -c "CREATE DATABASE $DB" >/dev/null
 
-export PGF_DB_HOST="$H" PGF_DB_USER="$U" PGF_DB_NAME="$DB" PGF_TENANT_COLUMN=tenant_id PGF_LOG_LEVEL=warn
+export CEL_DB_HOST="$H" CEL_DB_USER="$U" CEL_DB_NAME="$DB" CEL_TENANT_COLUMN=tenant_id CEL_LOG_LEVEL=warn
 
 # provision via the CLIs (all pre-boot)
 "$BIN" migrate --tenancy >/dev/null
@@ -27,15 +27,15 @@ export PGF_DB_HOST="$H" PGF_DB_USER="$U" PGF_DB_NAME="$DB" PGF_TENANT_COLUMN=ten
 "$BIN" create-tenant Globex admin@globex.io pw-globex >/dev/null
 
 # a tenant-scoped business table, populated for both tenants
-T1=$($PSQL -d "$DB" -tAc "SELECT id FROM pgf_tenants WHERE name='Acme'"   | tr -d '[:space:]')
-T2=$($PSQL -d "$DB" -tAc "SELECT id FROM pgf_tenants WHERE name='Globex'" | tr -d '[:space:]')
+T1=$($PSQL -d "$DB" -tAc "SELECT id FROM cel_tenants WHERE name='Acme'"   | tr -d '[:space:]')
+T2=$($PSQL -d "$DB" -tAc "SELECT id FROM cel_tenants WHERE name='Globex'" | tr -d '[:space:]')
 $PSQL -d "$DB" >/dev/null <<SQL
 CREATE TABLE items (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID, name TEXT);
 INSERT INTO items(tenant_id,name) VALUES ('$T1','acme-1'), ('$T1','acme-2'), ('$T2','globex-1');
 SQL
 
 PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
-PGF_PORT="$PORT" "$BIN" >/tmp/pgf_lifecycle_srv.log 2>&1 &
+CEL_PORT="$PORT" "$BIN" >/tmp/cel_lifecycle_srv.log 2>&1 &
 SRV=$!
 for i in $(seq 1 80); do (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null && { exec 3>&-; break; }; sleep 0.1; done
 

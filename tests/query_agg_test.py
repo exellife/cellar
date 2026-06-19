@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""pgforge group-by aggregates end-to-end (#54). Two isolated categories with
+"""cellar group-by aggregates end-to-end (#54). Two isolated categories with
 priced products; group by category and check count/sum/avg/min/max, a no-group
 totals query, and rejection of an unknown aggregate function. Self-cleaning.
 """
 import http.client, json, sys
 from urllib.parse import urlparse
 
-ADMIN = ("admin@pgforge.dev", "s3cret-admin")
+ADMIN = ("admin@cellar.dev", "s3cret-admin")
 HOST = PORT = None
 
 

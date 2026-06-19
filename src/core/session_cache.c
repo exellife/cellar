@@ -16,7 +16,7 @@
 
 typedef struct sc_node {
     char token[129];
-    pgf_user_t user;
+    cel_user_t user;
     time_t revalidate_at;     /* served only while now < revalidate_at */
     struct sc_node *next;
 } sc_node_t;
@@ -32,20 +32,20 @@ static unsigned bucket_of(const char *t) {
     return h & (NBUCKETS - 1);
 }
 
-void pgf_session_cache_init(int ttl_seconds) { g_ttl = ttl_seconds; }
+void cel_session_cache_init(int ttl_seconds) { g_ttl = ttl_seconds; }
 
 static void free_chain(sc_node_t *n) { while (n) { sc_node_t *nx = n->next; free(n); n = nx; } }
 
-void pgf_session_cache_cleanup(void) {
+void cel_session_cache_cleanup(void) {
     pthread_mutex_lock(&g_lock);
     for (int i = 0; i < NBUCKETS; i++) { free_chain(g_buckets[i]); g_buckets[i] = NULL; }
     g_count = 0;
     pthread_mutex_unlock(&g_lock);
 }
 
-void pgf_session_cache_clear(void) { pgf_session_cache_cleanup(); }
+void cel_session_cache_clear(void) { cel_session_cache_cleanup(); }
 
-bool pgf_session_cache_get(const char *token, pgf_user_t *user) {
+bool cel_session_cache_get(const char *token, cel_user_t *user) {
     if (g_ttl <= 0 || !token || !*token) return false;
     time_t now = time(NULL);
     bool hit = false;
@@ -58,7 +58,7 @@ bool pgf_session_cache_get(const char *token, pgf_user_t *user) {
         }
     }
     pthread_mutex_unlock(&g_lock);
-    pgf_metric_inc(hit ? PGF_M_SCACHE_HIT : PGF_M_SCACHE_MISS);
+    cel_metric_inc(hit ? CEL_M_SCACHE_HIT : CEL_M_SCACHE_MISS);
     return hit;
 }
 
@@ -74,7 +74,7 @@ static sc_node_t *sweep_chain(sc_node_t *n, time_t now) {
     return head;
 }
 
-void pgf_session_cache_put(const char *token, const pgf_user_t *user) {
+void cel_session_cache_put(const char *token, const cel_user_t *user) {
     if (g_ttl <= 0 || !token || !*token) return;
     time_t now = time(NULL);
     unsigned b = bucket_of(token);
@@ -100,7 +100,7 @@ void pgf_session_cache_put(const char *token, const pgf_user_t *user) {
     pthread_mutex_unlock(&g_lock);
 }
 
-void pgf_session_cache_evict(const char *token) {
+void cel_session_cache_evict(const char *token) {
     if (!token || !*token) return;
     unsigned b = bucket_of(token);
     pthread_mutex_lock(&g_lock);

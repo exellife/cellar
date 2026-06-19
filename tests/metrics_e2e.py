@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge observability end-to-end (#Phase 9): GET /metrics is a live Prometheus
+"""cellar observability end-to-end (#Phase 9): GET /metrics is a live Prometheus
 scrape and the counters actually move with traffic.
 
 Scrape once for a baseline, drive a little traffic (health checks + one bad login),
@@ -12,7 +12,7 @@ import http.client, json, os, sys
 from urllib.parse import urlparse
 
 HOST = PORT = None
-TOKEN = os.environ.get("PGF_METRICS_TOKEN", "")   # /metrics is bearer-gated (L-3)
+TOKEN = os.environ.get("CEL_METRICS_TOKEN", "")   # /metrics is bearer-gated (L-3)
 
 
 def conn():
@@ -63,29 +63,29 @@ def main():
     st, ct, doc = get("/metrics", token=TOKEN)
     chk("/metrics 200", st == 200, f"status={st}")
     chk("content-type is prometheus text", ct.startswith("text/plain"), ct)
-    chk("has TYPE metadata", "# TYPE pgf_http_requests_total counter" in doc)
-    chk("has build_info", "pgf_build_info{version=" in doc)
-    chk("has uptime gauge", metric(doc, "pgf_uptime_seconds") is not None)
-    chk("has active connections gauge", metric(doc, "pgf_active_connections") is not None)
-    chk("active connections non-negative", (metric(doc, "pgf_active_connections") or 0) >= 0)
-    chk("has db pool gauge", 'pgf_db_pool_connections{state="total"}' in doc)
+    chk("has TYPE metadata", "# TYPE cel_http_requests_total counter" in doc)
+    chk("has build_info", "cel_build_info{version=" in doc)
+    chk("has uptime gauge", metric(doc, "cel_uptime_seconds") is not None)
+    chk("has active connections gauge", metric(doc, "cel_active_connections") is not None)
+    chk("active connections non-negative", (metric(doc, "cel_active_connections") or 0) >= 0)
+    chk("has db pool gauge", 'cel_db_pool_connections{state="total"}' in doc)
 
-    base_2xx  = metric(doc, 'pgf_http_requests_total{status="2xx"}') or 0
-    base_hist = metric(doc, "pgf_http_request_duration_seconds_count") or 0
-    base_fail = metric(doc, 'pgf_auth_logins_total{result="fail"}') or 0
+    base_2xx  = metric(doc, 'cel_http_requests_total{status="2xx"}') or 0
+    base_hist = metric(doc, "cel_http_request_duration_seconds_count") or 0
+    base_fail = metric(doc, 'cel_auth_logins_total{result="fail"}') or 0
 
     # ---- drive traffic ----
     for _ in range(5):
         get("/health")
-    bad = post("/auth/login", {"email": "nobody@pgforge.dev", "password": "wrong-pw"})
+    bad = post("/auth/login", {"email": "nobody@cellar.dev", "password": "wrong-pw"})
     chk("bad login rejected", bad in (400, 401), f"status={bad}")
 
     # ---- scrape again; the counters moved ----
     st, _, doc2 = get("/metrics", token=TOKEN)
     chk("/metrics 200 (again)", st == 200)
-    new_2xx  = metric(doc2, 'pgf_http_requests_total{status="2xx"}') or 0
-    new_hist = metric(doc2, "pgf_http_request_duration_seconds_count") or 0
-    new_fail = metric(doc2, 'pgf_auth_logins_total{result="fail"}') or 0
+    new_2xx  = metric(doc2, 'cel_http_requests_total{status="2xx"}') or 0
+    new_hist = metric(doc2, "cel_http_request_duration_seconds_count") or 0
+    new_fail = metric(doc2, 'cel_auth_logins_total{result="fail"}') or 0
 
     # 5 /health + the two /metrics scrapes are all 2xx -> at least +6 since baseline.
     chk("2xx counter advanced", new_2xx >= base_2xx + 6, f"{base_2xx} -> {new_2xx}")

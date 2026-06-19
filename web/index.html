@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pgforge admin</title>
+<title>cellar admin</title>
 <style>
   :root { --bg:#0f1419; --panel:#1a2029; --line:#2a323d; --fg:#e6e9ee; --mut:#8a94a3;
           --acc:#4f9cf9; --danger:#e0556b; --ok:#3fb98a; }
@@ -61,7 +61,7 @@
 
   <!-- LOGIN -->
   <div class="login" v-if="!authed">
-    <h1>pgforge</h1>
+    <h1>cellar</h1>
     <div class="muted">schema-driven admin</div>
     <label>Email</label>
     <input v-model="loginEmail" @keyup.enter="login()" autofocus>
@@ -74,7 +74,7 @@
   <!-- APP -->
   <div v-if="authed">
     <div class="topbar">
-      <span class="brand">pgforge</span>
+      <span class="brand">cellar</span>
       <span class="muted">{{ current ? current.name : 'select a table' }}</span>
       <span class="grow"></span>
       <span class="muted">{{ user && user.email }} <span class="pill">{{ user && user.role }}</span></span>

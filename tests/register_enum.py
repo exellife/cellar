@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""pgforge H-5: /auth/register is not an account-enumeration oracle by default.
+"""cellar H-5: /auth/register is not an account-enumeration oracle by default.
 
-With the secure default (no PGF_REGISTER_AUTOLOGIN), register returns an identical
+With the secure default (no CEL_REGISTER_AUTOLOGIN), register returns an identical
 uniform 202 for a brand-new email and an already-registered one — no session
 token, no distinguishing 409 — so an attacker cannot probe which emails exist.
 The account is still created (the user can log in afterward).
@@ -30,7 +30,7 @@ def main():
         print(f"  {'ok' if cond else 'FAIL':<5} {n:<42} {d}")
         ok += bool(cond); fail += (not cond)
 
-    print(f"== pgforge register-enumeration harness -> {HOST}:{PORT} ==")
+    print(f"== cellar register-enumeration harness -> {HOST}:{PORT} ==")
     email = f"enum-{int(time.time()*1000)}@test.local"
     body = {"email": email, "password": "enum-pass-123", "role": "rider"}
 

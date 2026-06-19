@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-handler_result_t pgf_respond_json(opcode_context_t *ctx, cJSON *obj, bool is_error) {
+handler_result_t cel_respond_json(opcode_context_t *ctx, cJSON *obj, bool is_error) {
     char *s = cJSON_PrintUnformatted(obj);
     cJSON_Delete(obj);
     if (!s) return RESULT_ERROR;
@@ -18,13 +18,13 @@ handler_result_t pgf_respond_json(opcode_context_t *ctx, cJSON *obj, bool is_err
     ctx->response_data = buf;
     ctx->response_size = n;
     ctx->owns_data     = true;
-    if (is_error) ctx->flags |= PGF_FLAG_ERROR;
+    if (is_error) ctx->flags |= CEL_FLAG_ERROR;
     return RESULT_SUCCESS;
 }
 
-handler_result_t pgf_respond_error(opcode_context_t *ctx, const char *message) {
+handler_result_t cel_respond_error(opcode_context_t *ctx, const char *message) {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "error");
     cJSON_AddStringToObject(o, "message", message);
-    return pgf_respond_json(ctx, o, true);
+    return cel_respond_json(ctx, o, true);
 }

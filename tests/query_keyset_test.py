@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge keyset/cursor pagination end-to-end (#50).
+"""cellar keyset/cursor pagination end-to-end (#50).
 
 Creates an isolated category with 7 products, then walks them with keyset
 pagination (order=sku, limit=3, following next_cursor). Verifies the pages tile
@@ -10,7 +10,7 @@ Postgres (column-typed bind inference). Self-cleaning. Booted by the harness.
 import http.client, json, sys
 from urllib.parse import urlparse, quote
 
-ADMIN = ("admin@pgforge.dev", "s3cret-admin")
+ADMIN = ("admin@cellar.dev", "s3cret-admin")
 HOST = PORT = None
 
 
@@ -38,7 +38,7 @@ def main():
         print(f"  {'ok' if cond else 'FAIL':<5} {name:<42} {detail}")
         ok += bool(cond); fail += (not cond)
 
-    print(f"== pgforge keyset pagination harness -> {HOST}:{PORT} ==")
+    print(f"== cellar keyset pagination harness -> {HOST}:{PORT} ==")
     admin = login(ADMIN)
     chk("login admin", bool(admin))
 

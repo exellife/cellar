@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""pgforge session-cache end-to-end (#55): prove the cache actually serves auth.
+"""cellar session-cache end-to-end (#55): prove the cache actually serves auth.
 
-With PGF_SESSION_CACHE_TTL>0, a token resolved once is cached. We then DELETE its
+With CEL_SESSION_CACHE_TTL>0, a token resolved once is cached. We then DELETE its
 session row directly in the DB — without a cache, the next authed request would
 401; with the cache it still succeeds (within TTL). That a *deleted* session keeps
 working for the TTL window is exactly the staleness the design documents, and is
 unambiguous proof the cache is on the request path. Run via the harness with the
-cache enabled. Reads PGF_DB_* from the environment for the psql step.
+cache enabled. Reads CEL_DB_* from the environment for the psql step.
 """
 import http.client, json, os, subprocess, sys
 from urllib.parse import urlparse
 
 HOST = PORT = None
-USER = ("editor@pgforge.dev", "editor-pw")
+USER = ("editor@cellar.dev", "editor-pw")
 
 
 def req(method, path, body=None, token=None):
@@ -27,9 +27,9 @@ def req(method, path, body=None, token=None):
 
 def psql(sql):
     subprocess.run(
-        ["psql", "-h", os.environ.get("PGF_DB_HOST", "localhost"),
-         "-U", os.environ.get("PGF_DB_USER", "postgres"),
-         "-d", os.environ.get("PGF_DB_NAME", "pgforge"), "-c", sql],
+        ["psql", "-h", os.environ.get("CEL_DB_HOST", "localhost"),
+         "-U", os.environ.get("CEL_DB_USER", "postgres"),
+         "-d", os.environ.get("CEL_DB_NAME", "cellar"), "-c", sql],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -56,7 +56,7 @@ def main():
     # it. Tokens are stored hashed at rest, so delete by sha256(token).
     import hashlib
     thash = hashlib.sha256(token.encode()).hexdigest()
-    psql(f"DELETE FROM pgf_sessions WHERE token = '{thash}'")
+    psql(f"DELETE FROM cel_sessions WHERE token = '{thash}'")
     chk("deleted-session still 200 (cache)", req("GET", "/schema", token=token) == 200)
 
     print(f"\n{'PASS' if fail == 0 else 'FAIL'}  ({ok} ok, {fail} failed)")

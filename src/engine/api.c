@@ -22,21 +22,21 @@
  * password is a CPU-DoS. 128 is well above any real password. */
 #define MAX_PASSWORD_LEN 128
 
-static pgf_api_result_t session_result(const char *token, const pgf_user_t *user);
+static cel_api_result_t session_result(const char *token, const cel_user_t *user);
 static void send_email_verification(const char *user_id);
 
-static pgf_api_result_t result_error(int status, const char *message) {
+static cel_api_result_t result_error(int status, const char *message) {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "error");
     cJSON_AddStringToObject(o, "message", message);
-    pgf_api_result_t r = { o, status };
+    cel_api_result_t r = { o, status };
     return r;
 }
 
-static const pgf_table_t *resolve_table(const cJSON *req) {
+static const cel_table_t *resolve_table(const cJSON *req) {
     const cJSON *t = cJSON_GetObjectItemCaseSensitive(req, "table");
     if (!cJSON_IsString(t)) return NULL;
-    return pgf_catalog_find(pgf_catalog_active(), t->valuestring);
+    return cel_catalog_find(cel_catalog_active(), t->valuestring);
 }
 
 /* Map a Postgres SQLSTATE to an HTTP status (client vs server error). */
@@ -69,8 +69,8 @@ static const char *sqlstate_message(const char *ss) {
  * when there is no RLS context (single-tenant). "*" is the platform-admin
  * sentinel (sees all tenants); otherwise the caller's tenant. A tenant user with
  * no tenant never reaches here — make_scope denies it first. */
-static const char *rls_tenant_setting(const pgf_identity_t *who) {
-    if (!pgf_tenancy_column()) return NULL;                  /* single-tenant: no RLS */
+static const char *rls_tenant_setting(const cel_identity_t *who) {
+    if (!cel_tenancy_column()) return NULL;                  /* single-tenant: no RLS */
     if (!strcmp(who->role, "platform_admin")) return "*";   /* global */
     return who->tenant_id;
 }
@@ -86,7 +86,7 @@ static const char *rls_tenant_setting(const pgf_identity_t *who) {
  * with the server connected as a non-superuser role, RLS confines every query to
  * the caller's tenant even if the app-level scope were somehow bypassed. */
 #ifdef LIBPQ_HAS_PIPELINING
-/* Pooled-mode fast path (opt-in, PGF_DB_PIPELINE=1): send BEGIN + set_config
+/* Pooled-mode fast path (opt-in, CEL_DB_PIPELINE=1): send BEGIN + set_config
  * (app.tenant_id) + the query + COMMIT as ONE pipelined round trip instead of
  * four. Both inner statements ride the per-connection prepared-statement cache
  * (PQsendQueryPrepared). Returns 1 if it ran the pipeline (out/http/errmsg set),
@@ -94,7 +94,7 @@ static const char *rls_tenant_setting(const pgf_identity_t *who) {
  * the sequential path). The tenant-scoped transaction semantics are identical to
  * run_rows: set_config(..., is_local=true) binds app.tenant_id for the txn only,
  * and a query error aborts the pipeline so Postgres rolls the txn back. */
-static int run_rows_pipelined(PGconn *c, const pgf_query_t *q, const pgf_table_t *t,
+static int run_rows_pipelined(PGconn *c, const cel_query_t *q, const cel_table_t *t,
                               const char *rls_tenant, cJSON **out,
                               int *http, char *errmsg, size_t errlen) {
     static const char *SET_SQL = "SELECT set_config('app.tenant_id', $1, true)";
@@ -134,7 +134,7 @@ static int run_rows_pipelined(PGconn *c, const pgf_query_t *q, const pgf_table_t
                 if (st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK) pre_error = 1;
             } else if (cmd == 2) {                       /* the actual query */
                 if (st == PGRES_TUPLES_OK || st == PGRES_COMMAND_OK) {
-                    rows = t ? pgf_rows_to_json(r, t) : pgf_result_to_json(r);
+                    rows = t ? cel_rows_to_json(r, t) : cel_result_to_json(r);
                 } else if (st == PGRES_PIPELINE_ABORTED) {
                     pre_error = 1;                       /* an earlier command failed */
                 } else {
@@ -163,13 +163,13 @@ static int run_rows_pipelined(PGconn *c, const pgf_query_t *q, const pgf_table_t
         if (errmsg) snprintf(errmsg, errlen, "tenant context failed");
         if (rows) { cJSON_Delete(rows); rows = NULL; }
     }
-    if (queued) pgf_metric_inc(PGF_M_DB_PIPELINE);
+    if (queued) cel_metric_inc(CEL_M_DB_PIPELINE);
     *out = rows;
     return 1;
 }
 #endif /* LIBPQ_HAS_PIPELINING */
 
-static cJSON *run_rows(const pgf_query_t *q, const pgf_table_t *t, const char *rls_tenant,
+static cJSON *run_rows(const cel_query_t *q, const cel_table_t *t, const char *rls_tenant,
                        int *http, char *errmsg, size_t errlen) {
     PGconn *c = db_connection_acquire();
     if (!c) { *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable"); return NULL; }
@@ -213,7 +213,7 @@ static cJSON *run_rows(const pgf_query_t *q, const pgf_table_t *t, const char *r
     int success = (st == PGRES_TUPLES_OK || st == PGRES_COMMAND_OK);
     if (success) {
         /* t == NULL: a table-less result (RPC) — type columns by result OID. */
-        rows = t ? pgf_rows_to_json(r, t) : pgf_result_to_json(r);   /* COMMAND_OK => empty set */
+        rows = t ? cel_rows_to_json(r, t) : cel_result_to_json(r);   /* COMMAND_OK => empty set */
     } else {
         const char *ss = PQresultErrorField(r, PG_DIAG_SQLSTATE);
         *http = map_sqlstate(ss);
@@ -249,8 +249,8 @@ static bool is_safe_ident(const char *s) {
     return true;
 }
 
-static int make_scope(const pgf_table_t *t, pgf_action_t action,
-                      const pgf_identity_t *who, pgf_scope_t *scope) {
+static int make_scope(const cel_table_t *t, cel_action_t action,
+                      const cel_identity_t *who, cel_scope_t *scope) {
     memset(scope, 0, sizeof *scope);   /* every rule slot starts EQ/zeroed */
     scope->count = 0;
 
@@ -258,11 +258,11 @@ static int make_scope(const pgf_table_t *t, pgf_action_t action,
      * column is confined to the caller's tenant. The global platform_admin is
      * exempt (it manages every tenant). A non-platform caller with no tenant in
      * pooled mode is a misconfiguration — deny rather than risk a cross-tenant
-     * leak. In single-tenant mode pgf_tenancy_column() is NULL, so this is a
+     * leak. In single-tenant mode cel_tenancy_column() is NULL, so this is a
      * no-op and the produced SQL is identical to before (guarded by the
      * query_builder regression test). */
-    const char *tcol = pgf_tenancy_column();
-    if (tcol && pgf_table_column(t, tcol) && strcmp(who->role, "platform_admin") != 0) {
+    const char *tcol = cel_tenancy_column();
+    if (tcol && cel_table_column(t, tcol) && strcmp(who->role, "platform_admin") != 0) {
         if (!who->tenant_id[0]) return -1;
         scope->rule[scope->count].column = tcol;
         scope->rule[scope->count].value  = who->tenant_id;
@@ -271,38 +271,38 @@ static int make_scope(const pgf_table_t *t, pgf_action_t action,
 
     /* Owner scope (row-level ownership, within the tenant). May be a single
      * column (EQ), any of several (OR), or membership in a related table (VIA). */
-    pgf_owner_spec_t os;
-    if (pgf_policy_owner_scope(t->name, action, who->role, &os)) {
+    cel_owner_spec_t os;
+    if (cel_policy_owner_scope(t->name, action, who->role, &os)) {
         /* SECURITY (H-9): OR (owner_any) / VIA (owner_via) are read filters — they
          * cannot be enforced on INSERT (no single column to force, no membership to
          * assert at create time). A create policy using them would leave ownership
          * client-controlled (owner spoofing) or the row unowned, so reject the
          * misconfiguration (-> 500) rather than silently create a spoofable row.
          * Only EQ (owner_column) is forceable on create. */
-        if (action == PGF_ACT_CREATE && os.kind != PGF_OWNER_EQ) return -1;
-        if (scope->count >= PGF_MAX_SCOPE) return -1;
-        pgf_scope_rule_t *r = &scope->rule[scope->count];
+        if (action == CEL_ACT_CREATE && os.kind != CEL_OWNER_EQ) return -1;
+        if (scope->count >= CEL_MAX_SCOPE) return -1;
+        cel_scope_rule_t *r = &scope->rule[scope->count];
         r->value = who->user_id;
         switch (os.kind) {
-        case PGF_OWNER_EQ:
-            if (!pgf_table_column(t, os.column)) return -1;
-            r->kind = PGF_SCOPE_EQ; r->column = os.column;
+        case CEL_OWNER_EQ:
+            if (!cel_table_column(t, os.column)) return -1;
+            r->kind = CEL_SCOPE_EQ; r->column = os.column;
             break;
-        case PGF_OWNER_ANY:
-            if (os.ncolumns < 1 || os.ncolumns > PGF_MAX_OR) return -1;
+        case CEL_OWNER_ANY:
+            if (os.ncolumns < 1 || os.ncolumns > CEL_MAX_OR) return -1;
             for (int i = 0; i < os.ncolumns; i++) {
-                if (!pgf_table_column(t, os.columns[i])) return -1;
+                if (!cel_table_column(t, os.columns[i])) return -1;
                 r->cols[i] = os.columns[i];
             }
-            r->kind = PGF_SCOPE_OR; r->ncols = os.ncolumns;
+            r->kind = CEL_SCOPE_OR; r->ncols = os.ncolumns;
             break;
-        case PGF_OWNER_VIA:
+        case CEL_OWNER_VIA:
             /* local is a column on this table; the related identifiers can't be
              * catalog-checked here, so charset-validate them (then quoted). */
-            if (!pgf_table_column(t, os.via.local)) return -1;
+            if (!cel_table_column(t, os.via.local)) return -1;
             if (!is_safe_ident(os.via.table) || !is_safe_ident(os.via.ref) ||
                 !is_safe_ident(os.via.user)) return -1;
-            r->kind = PGF_SCOPE_VIA;
+            r->kind = CEL_SCOPE_VIA;
             r->via_table = os.via.table; r->via_ref   = os.via.ref;
             r->via_local = os.via.local; r->via_user  = os.via.user;
             break;
@@ -317,38 +317,38 @@ static int make_scope(const pgf_table_t *t, pgf_action_t action,
 /* Emit a realtime change event after a successful write. Demand-gated: does
  * nothing unless some client is subscribed AND the table is realtime-enabled, so
  * the write path pays nothing when nobody is listening / realtime is off. */
-static void rt_emit(const char *table, pgf_action_t action, const cJSON *row) {
-    if (!pgf_realtime_active()) return;
-    if (!pgf_policy_realtime_enabled(table)) return;
-    const char *op = action == PGF_ACT_CREATE ? "INSERT"
-                   : action == PGF_ACT_UPDATE ? "UPDATE"
-                   : action == PGF_ACT_DELETE ? "DELETE" : "?";
-    pgf_realtime_publish(table, op, row);
+static void rt_emit(const char *table, cel_action_t action, const cJSON *row) {
+    if (!cel_realtime_active()) return;
+    if (!cel_policy_realtime_enabled(table)) return;
+    const char *op = action == CEL_ACT_CREATE ? "INSERT"
+                   : action == CEL_ACT_UPDATE ? "UPDATE"
+                   : action == CEL_ACT_DELETE ? "DELETE" : "?";
+    cel_realtime_publish(table, op, row);
 }
 
 /* Shared shape for the write builders: build -> run -> {status, row}. */
-typedef int (*build_fn)(const pgf_table_t *, const cJSON *, const pgf_scope_t *,
-                        pgf_query_t *, char *, size_t);
+typedef int (*build_fn)(const cel_table_t *, const cJSON *, const cel_scope_t *,
+                        cel_query_t *, char *, size_t);
 
-static pgf_api_result_t run_write(const pgf_identity_t *who, const cJSON *req,
-                                  build_fn build, pgf_action_t action,
+static cel_api_result_t run_write(const cel_identity_t *who, const cJSON *req,
+                                  build_fn build, cel_action_t action,
                                   int ok_status, int require_row) {
     if (!who->authenticated) return result_error(401, "authentication required");
-    const pgf_table_t *t = resolve_table(req);
+    const cel_table_t *t = resolve_table(req);
     if (!t) return result_error(404, "unknown table");
-    if (!pgf_policy_allows(t->name, action, who->role)) return result_error(403, "forbidden");
+    if (!cel_policy_allows(t->name, action, who->role)) return result_error(403, "forbidden");
 
-    pgf_scope_t scope;
+    cel_scope_t scope;
     if (make_scope(t, action, who, &scope) != 0) return result_error(500, "policy misconfiguration");
 
     char err[256] = {0};
-    pgf_query_t q;
+    cel_query_t q;
     if (build(t, req, &scope, &q, err, sizeof err) != 0) return result_error(400, err);
 
     int http = 200;
     char emsg[256] = {0};
     cJSON *rows = run_rows(&q, t, rls_tenant_setting(who), &http, emsg, sizeof emsg);
-    pgf_query_free(&q);
+    cel_query_free(&q);
     if (!rows) return result_error(http, emsg[0] ? emsg : "query failed");
 
     int found = cJSON_GetArraySize(rows) > 0;
@@ -361,7 +361,7 @@ static pgf_api_result_t run_write(const pgf_identity_t *who, const cJSON *req,
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     if (row) cJSON_AddItemToObject(o, "row", row);
-    pgf_api_result_t r = { o, ok_status };
+    cel_api_result_t r = { o, ok_status };
     return r;
 }
 
@@ -369,21 +369,21 @@ static pgf_api_result_t run_write(const pgf_identity_t *who, const cJSON *req,
 
 typedef struct {
     int   to_many;             /* 0 = to-one (forward FK); 1 = to-many (reverse FK) */
-    const pgf_table_t *remote; /* the related table to pull in */
+    const cel_table_t *remote; /* the related table to pull in */
     const char *local_key;     /* join column on the base table */
     const char *remote_key;    /* join column on the remote table */
-} pgf_relation_t;
+} cel_relation_t;
 
 /* Resolve an embed name (a RELATED TABLE NAME) against the catalog FK graph: a
  * forward FK on the base table (base.col -> name.pk) is to-one; a reverse FK
  * (name.col -> base.pk) is to-many. Ambiguity (more than one FK either way) is
  * rejected — never a silent guess. Returns an HTTP status (0 == resolved). */
-static int resolve_relation(const pgf_table_t *base, const char *name,
-                            pgf_relation_t *out, char *err, size_t errlen) {
-    const pgf_table_t *remote = pgf_catalog_find(pgf_catalog_active(), name);
+static int resolve_relation(const cel_table_t *base, const char *name,
+                            cel_relation_t *out, char *err, size_t errlen) {
+    const cel_table_t *remote = cel_catalog_find(cel_catalog_active(), name);
     if (!remote) { snprintf(err, errlen, "no relation '%s' on '%s'", name, base->name); return 400; }
 
-    const pgf_column_t *fk = NULL; int nfk = 0;          /* to-one: forward FK on base */
+    const cel_column_t *fk = NULL; int nfk = 0;          /* to-one: forward FK on base */
     for (int i = 0; i < base->ncols; i++)
         if (base->cols[i].is_fk && !strcmp(base->cols[i].fk_table, name)) { fk = &base->cols[i]; nfk++; }
     if (nfk > 1) { snprintf(err, errlen, "ambiguous relation '%s' (multiple FKs)", name); return 400; }
@@ -394,7 +394,7 @@ static int resolve_relation(const pgf_table_t *base, const char *name,
     }
 
     if (base->pk_index < 0) { snprintf(err, errlen, "no relation '%s' on '%s'", name, base->name); return 400; }
-    const pgf_column_t *rfk = NULL; int nrfk = 0;        /* to-many: reverse FK on remote */
+    const cel_column_t *rfk = NULL; int nrfk = 0;        /* to-many: reverse FK on remote */
     for (int i = 0; i < remote->ncols; i++)
         if (remote->cols[i].is_fk && !strcmp(remote->cols[i].fk_table, base->name)) { rfk = &remote->cols[i]; nrfk++; }
     if (nrfk > 1) { snprintf(err, errlen, "ambiguous relation '%s' (multiple FKs)", name); return 400; }
@@ -419,10 +419,10 @@ static char *join_key(const cJSON *v) {
  * table, fetch its rows by `remote_key IN (base local keys)`, and stitch them
  * onto each base row under the relation name (object for to-one, array for
  * to-many). One query per relation — not N+1. Returns an HTTP status (0 == ok). */
-static int embed_one(const pgf_identity_t *who, const pgf_table_t *base, cJSON *rows,
-                     const char *name, const pgf_table_t **out_remote, bool *out_to_many,
+static int embed_one(const cel_identity_t *who, const cel_table_t *base, cJSON *rows,
+                     const char *name, const cel_table_t **out_remote, bool *out_to_many,
                      char *err, size_t errlen) {
-    pgf_relation_t rel;
+    cel_relation_t rel;
     int rc = resolve_relation(base, name, &rel, err, errlen);
     if (rc) return rc;
     *out_remote = rel.remote;        /* so a dotted path can recurse into these rows */
@@ -430,7 +430,7 @@ static int embed_one(const pgf_identity_t *who, const pgf_table_t *base, cJSON *
 
     /* The related table is read on the caller's behalf — it must pass the same
      * read policy a direct LIST would. No leaking related rows you can't see. */
-    if (!pgf_policy_allows(rel.remote->name, PGF_ACT_LIST, who->role)) {
+    if (!cel_policy_allows(rel.remote->name, CEL_ACT_LIST, who->role)) {
         snprintf(err, errlen, "forbidden: cannot read '%s'", rel.remote->name);
         return 403;
     }
@@ -458,19 +458,19 @@ static int embed_one(const pgf_identity_t *who, const pgf_table_t *base, cJSON *
     cJSON_AddStringToObject(sreq, "table", rel.remote->name);
     cJSON *cond = cJSON_AddObjectToObject(cJSON_AddObjectToObject(sreq, "where"), rel.remote_key);
     cJSON_AddItemToObject(cond, "in", in);               /* takes ownership of `in` */
-    cJSON_AddNumberToObject(sreq, "limit", PGF_LIST_MAX_LIMIT);
+    cJSON_AddNumberToObject(sreq, "limit", CEL_LIST_MAX_LIMIT);
 
-    pgf_scope_t scope;
-    if (make_scope(rel.remote, PGF_ACT_LIST, who, &scope) != 0) {
+    cel_scope_t scope;
+    if (make_scope(rel.remote, CEL_ACT_LIST, who, &scope) != 0) {
         cJSON_Delete(sreq); snprintf(err, errlen, "policy misconfiguration"); return 500;
     }
-    pgf_query_t q; char qerr[256] = {0};
-    if (pgf_build_list(rel.remote, sreq, &scope, NULL, &q, qerr, sizeof qerr) != 0) {
+    cel_query_t q; char qerr[256] = {0};
+    if (cel_build_list(rel.remote, sreq, &scope, NULL, &q, qerr, sizeof qerr) != 0) {
         cJSON_Delete(sreq); snprintf(err, errlen, "%s", qerr); return 400;
     }
     int http = 200; char emsg[256] = {0};
     cJSON *related = run_rows(&q, rel.remote, rls_tenant_setting(who), &http, emsg, sizeof emsg);
-    pgf_query_free(&q);
+    cel_query_free(&q);
     cJSON_Delete(sreq);
     if (!related) { snprintf(err, errlen, "%s", emsg[0] ? emsg : "embed query failed"); return http; }
 
@@ -505,15 +505,15 @@ static int embed_one(const pgf_identity_t *who, const pgf_table_t *base, cJSON *
     return 0;
 }
 
-#define PGF_MAX_EMBED_DEPTH 4
+#define CEL_MAX_EMBED_DEPTH 4
 
 /* Embed a (possibly dotted) relation path like "order_items.product": embed the
  * first relation into `rows`, then recurse into the just-embedded rows for the
  * rest. Each level re-runs the caller's authz + row scope (embed_one). Returns an
  * HTTP status (0 == ok). */
-static int embed_path(const pgf_identity_t *who, const pgf_table_t *base, cJSON *rows,
+static int embed_path(const cel_identity_t *who, const cel_table_t *base, cJSON *rows,
                       const char *path, int depth, char *err, size_t errlen) {
-    if (depth > PGF_MAX_EMBED_DEPTH) { snprintf(err, errlen, "embed nested too deeply"); return 400; }
+    if (depth > CEL_MAX_EMBED_DEPTH) { snprintf(err, errlen, "embed nested too deeply"); return 400; }
 
     char first[64];
     const char *dot = strchr(path, '.');
@@ -523,7 +523,7 @@ static int embed_path(const pgf_identity_t *who, const pgf_table_t *base, cJSON 
     first[flen] = '\0';
     const char *rest = dot ? dot + 1 : NULL;
 
-    const pgf_table_t *remote = NULL;
+    const cel_table_t *remote = NULL;
     bool to_many = false;
     int rc = embed_one(who, base, rows, first, &remote, &to_many, err, errlen);
     if (rc || !rest || !*rest) return rc;
@@ -556,7 +556,7 @@ static cJSON *decode_cursor(const char *token, bool *bad) {
     if (!*token) return cJSON_CreateArray();
     unsigned char buf[1024];
     size_t n = 0;
-    if (pgf_b64url_decode(token, strlen(token), buf, sizeof buf - 1, &n) != 0) { *bad = true; return NULL; }
+    if (cel_b64url_decode(token, strlen(token), buf, sizeof buf - 1, &n) != 0) { *bad = true; return NULL; }
     buf[n] = '\0';
     cJSON *arr = cJSON_Parse((char *)buf);
     if (!cJSON_IsArray(arr)) { cJSON_Delete(arr); *bad = true; return NULL; }
@@ -564,10 +564,10 @@ static cJSON *decode_cursor(const char *token, bool *bad) {
 }
 
 /* Build the next-page cursor token from the last row's sort-key values. */
-static char *encode_next_cursor(const pgf_table_t *t, const cJSON *req, const cJSON *last_row) {
-    pgf_sortkey_t keys[PGF_MAX_SORTKEYS];
+static char *encode_next_cursor(const cel_table_t *t, const cJSON *req, const cJSON *last_row) {
+    cel_sortkey_t keys[CEL_MAX_SORTKEYS];
     char e[128] = {0};
-    int nk = pgf_resolve_sortkeys(t, req, keys, PGF_MAX_SORTKEYS, e, sizeof e);
+    int nk = cel_resolve_sortkeys(t, req, keys, CEL_MAX_SORTKEYS, e, sizeof e);
     if (nk < 0) return NULL;
     cJSON *arr = cJSON_CreateArray();
     for (int i = 0; i < nk; i++) {
@@ -579,19 +579,19 @@ static char *encode_next_cursor(const pgf_table_t *t, const cJSON *req, const cJ
     if (!json) return NULL;
     size_t cap = (strlen(json) * 4) / 3 + 8;
     char *tok = malloc(cap);
-    if (tok && pgf_b64url_encode((const unsigned char *)json, strlen(json), tok, cap) != 0) { free(tok); tok = NULL; }
+    if (tok && cel_b64url_encode((const unsigned char *)json, strlen(json), tok, cap) != 0) { free(tok); tok = NULL; }
     free(json);
     return tok;
 }
 
-pgf_api_result_t pgf_api_list(const pgf_identity_t *who, const cJSON *req) {
+cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req) {
     if (!who->authenticated) return result_error(401, "authentication required");
-    const pgf_table_t *t = resolve_table(req);
+    const cel_table_t *t = resolve_table(req);
     if (!t) return result_error(404, "unknown table");
-    if (!pgf_policy_allows(t->name, PGF_ACT_LIST, who->role)) return result_error(403, "forbidden");
+    if (!cel_policy_allows(t->name, CEL_ACT_LIST, who->role)) return result_error(403, "forbidden");
 
-    pgf_scope_t scope;
-    if (make_scope(t, PGF_ACT_LIST, who, &scope) != 0) return result_error(500, "policy misconfiguration");
+    cel_scope_t scope;
+    if (make_scope(t, CEL_ACT_LIST, who, &scope) != 0) return result_error(500, "policy misconfiguration");
 
     /* Aggregate mode: { group?, aggregate? } -> GROUP BY rollups under the same
      * filters + row scope (so totals never include rows the caller can't see). A
@@ -601,18 +601,18 @@ pgf_api_result_t pgf_api_list(const pgf_identity_t *who, const cJSON *req) {
     if ((cJSON_IsArray(grp) && cJSON_GetArraySize(grp) > 0) ||
         (cJSON_IsArray(agg) && cJSON_GetArraySize(agg) > 0)) {
         char aerr[256] = {0};
-        pgf_query_t aq;
-        if (pgf_build_aggregate(t, req, &scope, &aq, aerr, sizeof aerr) != 0)
+        cel_query_t aq;
+        if (cel_build_aggregate(t, req, &scope, &aq, aerr, sizeof aerr) != 0)
             return result_error(400, aerr);
         int ahttp = 200; char aemsg[256] = {0};
         cJSON *arows = run_rows(&aq, NULL, rls_tenant_setting(who), &ahttp, aemsg, sizeof aemsg);
-        pgf_query_free(&aq);
+        cel_query_free(&aq);
         if (!arows) return result_error(ahttp, aemsg[0] ? aemsg : "query failed");
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "status", "ok");
         cJSON_AddNumberToObject(o, "count", cJSON_GetArraySize(arows));
         cJSON_AddItemToObject(o, "rows", arows);
-        pgf_api_result_t r = { o, 200 };
+        cel_api_result_t r = { o, 200 };
         return r;
     }
 
@@ -627,15 +627,15 @@ pgf_api_result_t pgf_api_list(const pgf_identity_t *who, const cJSON *req) {
     }
 
     char err[256] = {0};
-    pgf_query_t q;
-    int brc = pgf_build_list(t, req, &scope, cursor_vals, &q, err, sizeof err);
+    cel_query_t q;
+    int brc = cel_build_list(t, req, &scope, cursor_vals, &q, err, sizeof err);
     cJSON_Delete(cursor_vals);   /* values are copied into the query params */
     if (brc != 0) return result_error(400, err);
 
     int http = 200;
     char emsg[256] = {0};
     cJSON *rows = run_rows(&q, t, rls_tenant_setting(who), &http, emsg, sizeof emsg);
-    pgf_query_free(&q);
+    cel_query_free(&q);
     if (!rows) return result_error(http, emsg[0] ? emsg : "query failed");
 
     /* Relationship embedding: { "embed": ["categories", ...] } — each name is a
@@ -659,11 +659,11 @@ pgf_api_result_t pgf_api_list(const pgf_identity_t *who, const cJSON *req) {
      * of the unpaginated result under the same filters + scope. */
     const cJSON *cnt = cJSON_GetObjectItemCaseSensitive(req, "count");
     if (cJSON_IsString(cnt) && !strcasecmp(cnt->valuestring, "exact")) {
-        pgf_query_t cq; char cerr[256] = {0};
-        if (pgf_build_count(t, req, &scope, &cq, cerr, sizeof cerr) == 0) {
+        cel_query_t cq; char cerr[256] = {0};
+        if (cel_build_count(t, req, &scope, &cq, cerr, sizeof cerr) == 0) {
             int chttp = 200; char cemsg[256] = {0};
             cJSON *cr = run_rows(&cq, NULL, rls_tenant_setting(who), &chttp, cemsg, sizeof cemsg);
-            pgf_query_free(&cq);
+            cel_query_free(&cq);
             if (cr) {
                 cJSON *first = cJSON_GetArrayItem(cr, 0);
                 cJSON *cv = first ? cJSON_GetObjectItemCaseSensitive(first, "count") : NULL;
@@ -679,12 +679,12 @@ pgf_api_result_t pgf_api_list(const pgf_identity_t *who, const cJSON *req) {
     /* Keyset: hand back a next_cursor when the page came back full (more may exist). */
     if (keyset) {
         int page = cJSON_GetArraySize(rows);
-        long limit = PGF_LIST_DEFAULT_LIMIT;
+        long limit = CEL_LIST_DEFAULT_LIMIT;
         const cJSON *jl = cJSON_GetObjectItemCaseSensitive(req, "limit");
         if (cJSON_IsNumber(jl)) {
             limit = (long)jl->valuedouble;
             if (limit < 1) limit = 1;
-            if (limit > PGF_LIST_MAX_LIMIT) limit = PGF_LIST_MAX_LIMIT;
+            if (limit > CEL_LIST_MAX_LIMIT) limit = CEL_LIST_MAX_LIMIT;
         }
         if (page >= limit) {
             char *nc = encode_next_cursor(t, req, cJSON_GetArrayItem(rows, page - 1));
@@ -693,27 +693,27 @@ pgf_api_result_t pgf_api_list(const pgf_identity_t *who, const cJSON *req) {
     }
 
     cJSON_AddItemToObject(o, "rows", rows);
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_get(const pgf_identity_t *who, const cJSON *req) {
+cel_api_result_t cel_api_get(const cel_identity_t *who, const cJSON *req) {
     if (!who->authenticated) return result_error(401, "authentication required");
-    const pgf_table_t *t = resolve_table(req);
+    const cel_table_t *t = resolve_table(req);
     if (!t) return result_error(404, "unknown table");
-    if (!pgf_policy_allows(t->name, PGF_ACT_GET, who->role)) return result_error(403, "forbidden");
+    if (!cel_policy_allows(t->name, CEL_ACT_GET, who->role)) return result_error(403, "forbidden");
 
-    pgf_scope_t scope;
-    if (make_scope(t, PGF_ACT_GET, who, &scope) != 0) return result_error(500, "policy misconfiguration");
+    cel_scope_t scope;
+    if (make_scope(t, CEL_ACT_GET, who, &scope) != 0) return result_error(500, "policy misconfiguration");
 
     char err[256] = {0};
-    pgf_query_t q;
-    if (pgf_build_get(t, req, &scope, &q, err, sizeof err) != 0) return result_error(400, err);
+    cel_query_t q;
+    if (cel_build_get(t, req, &scope, &q, err, sizeof err) != 0) return result_error(400, err);
 
     int http = 200;
     char emsg[256] = {0};
     cJSON *rows = run_rows(&q, t, rls_tenant_setting(who), &http, emsg, sizeof emsg);
-    pgf_query_free(&q);
+    cel_query_free(&q);
     if (!rows) return result_error(http, emsg[0] ? emsg : "query failed");
 
     if (cJSON_GetArraySize(rows) == 0) { cJSON_Delete(rows); return result_error(404, "not found"); }
@@ -723,25 +723,25 @@ pgf_api_result_t pgf_api_get(const pgf_identity_t *who, const cJSON *req) {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     cJSON_AddItemToObject(o, "row", row);
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_create(const pgf_identity_t *who, const cJSON *req) {
-    return run_write(who, req, pgf_build_create, PGF_ACT_CREATE, 201, 0);
+cel_api_result_t cel_api_create(const cel_identity_t *who, const cJSON *req) {
+    return run_write(who, req, cel_build_create, CEL_ACT_CREATE, 201, 0);
 }
-pgf_api_result_t pgf_api_update(const pgf_identity_t *who, const cJSON *req) {
-    return run_write(who, req, pgf_build_update, PGF_ACT_UPDATE, 200, 1);
+cel_api_result_t cel_api_update(const cel_identity_t *who, const cJSON *req) {
+    return run_write(who, req, cel_build_update, CEL_ACT_UPDATE, 200, 1);
 }
-pgf_api_result_t pgf_api_delete(const pgf_identity_t *who, const cJSON *req) {
-    return run_write(who, req, pgf_build_delete, PGF_ACT_DELETE, 200, 1);
+cel_api_result_t cel_api_delete(const cel_identity_t *who, const cJSON *req) {
+    return run_write(who, req, cel_build_delete, CEL_ACT_DELETE, 200, 1);
 }
 
-pgf_api_result_t pgf_api_rpc(const pgf_identity_t *who, const cJSON *req) {
+cel_api_result_t cel_api_rpc(const cel_identity_t *who, const cJSON *req) {
     const cJSON *fn = cJSON_GetObjectItemCaseSensitive(req, "fn");
     if (!cJSON_IsString(fn) || !fn->valuestring[0]) return result_error(400, "fn required");
     /* Deny-by-default whitelist (a non-whitelisted fn is unreachable by anyone). */
-    if (!pgf_policy_rpc_allows(fn->valuestring, who->role)) return result_error(403, "forbidden");
+    if (!cel_policy_rpc_allows(fn->valuestring, who->role)) return result_error(403, "forbidden");
 
     /* SECURITY (M-3): fail closed on an empty tenant context. Unlike the data
      * paths, run_rows here can't lean on make_scope's seatbelt — so an anon or
@@ -750,31 +750,31 @@ pgf_api_result_t pgf_api_rpc(const pgf_identity_t *who, const cJSON *req) {
      * pooled mode every RPC must run within a concrete tenant; platform_admin
      * ("*") is the global exception. Single-tenant mode (no tenancy column) is
      * unaffected — no RLS context is needed there. Mirrors make_scope (api.c). */
-    if (pgf_tenancy_column() && strcmp(who->role, "platform_admin") != 0 && !who->tenant_id[0])
+    if (cel_tenancy_column() && strcmp(who->role, "platform_admin") != 0 && !who->tenant_id[0])
         return result_error(403, "forbidden");
 
     const cJSON *args = cJSON_GetObjectItemCaseSensitive(req, "args");   /* optional object */
 
     char err[256] = {0};
-    pgf_query_t q;
-    if (pgf_build_rpc(fn->valuestring, args, &q, err, sizeof err) != 0)
+    cel_query_t q;
+    if (cel_build_rpc(fn->valuestring, args, &q, err, sizeof err) != 0)
         return result_error(400, err);
 
     int http = 200;
     char emsg[256] = {0};
     /* table = NULL -> table-less result; runs inside the caller's tenant context. */
     cJSON *rows = run_rows(&q, NULL, rls_tenant_setting(who), &http, emsg, sizeof emsg);
-    pgf_query_free(&q);
+    cel_query_free(&q);
     if (!rows) return result_error(http, emsg[0] ? emsg : "rpc failed");
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     cJSON_AddItemToObject(o, "result", rows);
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-void pgf_rpc_audit_security_definer(void) {
+void cel_rpc_audit_security_definer(void) {
     /* H-4: a whitelisted RPC function defined SECURITY DEFINER executes as its
      * (often privileged) owner and BYPASSES row-level security. The RPC path
      * relies on RLS as its only tenant boundary, so in pooled/multi-tenant mode
@@ -783,11 +783,11 @@ void pgf_rpc_audit_security_definer(void) {
      * the misconfiguration is visible — the function should be SECURITY INVOKER,
      * or enforce tenant scope itself. */
     const char *names[64];
-    int n = pgf_policy_rpc_names(names, 64);
+    int n = cel_policy_rpc_names(names, 64);
     if (n == 0) return;
     PGconn *c = db_connection_acquire();
     if (!c) return;
-    bool pooled = pgf_tenancy_column() != NULL;
+    bool pooled = cel_tenancy_column() != NULL;
     for (int i = 0; i < n; i++) {
         const char *p[1] = { names[i] };
         PGresult *r = PQexecParams(c,
@@ -809,15 +809,15 @@ void pgf_rpc_audit_security_definer(void) {
     db_connection_release(c);
 }
 
-pgf_api_result_t pgf_api_schema(const pgf_identity_t *who) {
+cel_api_result_t cel_api_schema(const cel_identity_t *who) {
     if (!who->authenticated) return result_error(401, "authentication required");
-    cJSON *cat = pgf_catalog_to_cjson(pgf_catalog_active());
+    cJSON *cat = cel_catalog_to_cjson(cel_catalog_active());
     cJSON_AddStringToObject(cat, "status", "ok");
-    pgf_api_result_t r = { cat, 200 };
+    cel_api_result_t r = { cat, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_login(const cJSON *req) {
+cel_api_result_t cel_api_login(const cJSON *req) {
     const cJSON *email = cJSON_GetObjectItemCaseSensitive(req, "email");
     const cJSON *pass  = cJSON_GetObjectItemCaseSensitive(req, "password");
     if (!cJSON_IsString(email) || !cJSON_IsString(pass))
@@ -827,17 +827,17 @@ pgf_api_result_t pgf_api_login(const cJSON *req) {
         return result_error(401, "invalid credentials");
 
     char token[129], challenge[129];
-    pgf_user_t user;
-    int rc = pgf_auth_login(email->valuestring, pass->valuestring,
+    cel_user_t user;
+    int rc = cel_auth_login(email->valuestring, pass->valuestring,
                             SESSION_TTL_SECONDS, token, sizeof token,
                             challenge, sizeof challenge, &user);
-    if (rc == PGF_AUTH_MFA_REQUIRED) {
+    if (rc == CEL_AUTH_MFA_REQUIRED) {
         /* Factor one passed; no session yet. The client submits the challenge +
          * a TOTP code to /auth/mfa/verify to finish logging in. */
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "status", "mfa_required");
         cJSON_AddStringToObject(o, "challenge", challenge);
-        pgf_api_result_t r = { o, 200 };
+        cel_api_result_t r = { o, 200 };
         return r;
     }
     /* L-1: a locked account must be indistinguishable from a wrong password or a
@@ -846,16 +846,16 @@ pgf_api_result_t pgf_api_login(const cJSON *req) {
      * return a uniform 401. (Lockout still throttles server-side; the account just
      * isn't advertised as locked. Trade-off: a locked legitimate user sees
      * "invalid credentials" rather than a lockout notice.) */
-    if (rc == PGF_AUTH_LOCKED || rc == PGF_AUTH_INVALID)
+    if (rc == CEL_AUTH_LOCKED || rc == CEL_AUTH_INVALID)
         return result_error(401, "invalid credentials");
-    if (rc != PGF_AUTH_OK)      return result_error(500, "server error");
+    if (rc != CEL_AUTH_OK)      return result_error(500, "server error");
 
     return session_result(token, &user);
 }
 
 /* Shared {status, token, user} body for a completed login (password path or the
  * MFA second step). */
-static pgf_api_result_t session_result(const char *token, const pgf_user_t *user) {
+static cel_api_result_t session_result(const char *token, const cel_user_t *user) {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     cJSON_AddStringToObject(o, "token", token);
@@ -864,23 +864,23 @@ static pgf_api_result_t session_result(const char *token, const pgf_user_t *user
     cJSON_AddStringToObject(u, "email", user->email);
     cJSON_AddStringToObject(u, "role", user->role);
     cJSON_AddBoolToObject(u, "email_verified", user->email_verified);
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_mfa_enroll(const pgf_identity_t *who) {
+cel_api_result_t cel_api_mfa_enroll(const cel_identity_t *who) {
     if (!who->authenticated) return result_error(401, "authentication required");
     char secret[64], uri[256];
-    int rc = pgf_mfa_enroll(who->user_id, secret, sizeof secret, uri, sizeof uri);
-    if (rc == PGF_MFA_DISABLED) return result_error(403, "two-factor auth is not enabled");
-    if (rc == PGF_MFA_ALREADY)  return result_error(409, "already enrolled");
-    if (rc != PGF_MFA_OK)       return result_error(500, "server error");
+    int rc = cel_mfa_enroll(who->user_id, secret, sizeof secret, uri, sizeof uri);
+    if (rc == CEL_MFA_DISABLED) return result_error(403, "two-factor auth is not enabled");
+    if (rc == CEL_MFA_ALREADY)  return result_error(409, "already enrolled");
+    if (rc != CEL_MFA_OK)       return result_error(500, "server error");
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     cJSON_AddStringToObject(o, "secret", secret);          /* show once, for the QR */
     cJSON_AddStringToObject(o, "otpauth_uri", uri);
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
@@ -891,75 +891,75 @@ static const char *mfa_code(const cJSON *req) {
 }
 
 /* The one-time recovery codes as a JSON array (returned once at confirm/regen). */
-static cJSON *recovery_codes_json(char codes[][PGF_MFA_RECOVERY_LEN]) {
+static cJSON *recovery_codes_json(char codes[][CEL_MFA_RECOVERY_LEN]) {
     cJSON *arr = cJSON_CreateArray();
-    for (int i = 0; i < PGF_MFA_RECOVERY_N; i++)
+    for (int i = 0; i < CEL_MFA_RECOVERY_N; i++)
         cJSON_AddItemToArray(arr, cJSON_CreateString(codes[i]));
     return arr;
 }
 
-pgf_api_result_t pgf_api_mfa_confirm(const pgf_identity_t *who, const cJSON *req) {
+cel_api_result_t cel_api_mfa_confirm(const cel_identity_t *who, const cJSON *req) {
     if (!who->authenticated) return result_error(401, "authentication required");
     const char *code = mfa_code(req);
     if (!code) return result_error(400, "code required");
-    char codes[PGF_MFA_RECOVERY_N][PGF_MFA_RECOVERY_LEN];
-    int rc = pgf_mfa_confirm(who->user_id, code, codes);
-    if (rc == PGF_MFA_DISABLED)     return result_error(403, "two-factor auth is not enabled");
-    if (rc == PGF_MFA_NOT_ENROLLED) return result_error(400, "no pending enrollment");
-    if (rc == PGF_MFA_INVALID)      return result_error(401, "invalid code");
-    if (rc != PGF_MFA_OK)           return result_error(500, "server error");
+    char codes[CEL_MFA_RECOVERY_N][CEL_MFA_RECOVERY_LEN];
+    int rc = cel_mfa_confirm(who->user_id, code, codes);
+    if (rc == CEL_MFA_DISABLED)     return result_error(403, "two-factor auth is not enabled");
+    if (rc == CEL_MFA_NOT_ENROLLED) return result_error(400, "no pending enrollment");
+    if (rc == CEL_MFA_INVALID)      return result_error(401, "invalid code");
+    if (rc != CEL_MFA_OK)           return result_error(500, "server error");
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "confirmed");
     cJSON_AddItemToObject(o, "recovery_codes", recovery_codes_json(codes));  /* show once */
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_mfa_recovery(const pgf_identity_t *who, const cJSON *req) {
+cel_api_result_t cel_api_mfa_recovery(const cel_identity_t *who, const cJSON *req) {
     if (!who->authenticated) return result_error(401, "authentication required");
     const char *code = mfa_code(req);
     if (!code) return result_error(400, "code required");
-    char codes[PGF_MFA_RECOVERY_N][PGF_MFA_RECOVERY_LEN];
-    int rc = pgf_mfa_regenerate_recovery(who->user_id, code, codes);
-    if (rc == PGF_MFA_NOT_ENROLLED) return result_error(400, "not enrolled");
-    if (rc == PGF_MFA_INVALID)      return result_error(401, "invalid code");
-    if (rc != PGF_MFA_OK)           return result_error(500, "server error");
+    char codes[CEL_MFA_RECOVERY_N][CEL_MFA_RECOVERY_LEN];
+    int rc = cel_mfa_regenerate_recovery(who->user_id, code, codes);
+    if (rc == CEL_MFA_NOT_ENROLLED) return result_error(400, "not enrolled");
+    if (rc == CEL_MFA_INVALID)      return result_error(401, "invalid code");
+    if (rc != CEL_MFA_OK)           return result_error(500, "server error");
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     cJSON_AddItemToObject(o, "recovery_codes", recovery_codes_json(codes));
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_mfa_disable(const pgf_identity_t *who, const cJSON *req) {
+cel_api_result_t cel_api_mfa_disable(const cel_identity_t *who, const cJSON *req) {
     if (!who->authenticated) return result_error(401, "authentication required");
     const char *code = mfa_code(req);
     if (!code) return result_error(400, "code required");
-    int rc = pgf_mfa_disable(who->user_id, code);
-    if (rc == PGF_MFA_NOT_ENROLLED) return result_error(400, "not enrolled");
-    if (rc == PGF_MFA_INVALID)      return result_error(401, "invalid code");
-    if (rc != PGF_MFA_OK)           return result_error(500, "server error");
+    int rc = cel_mfa_disable(who->user_id, code);
+    if (rc == CEL_MFA_NOT_ENROLLED) return result_error(400, "not enrolled");
+    if (rc == CEL_MFA_INVALID)      return result_error(401, "invalid code");
+    if (rc != CEL_MFA_OK)           return result_error(500, "server error");
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "disabled");
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_mfa_verify(const cJSON *req) {
+cel_api_result_t cel_api_mfa_verify(const cJSON *req) {
     const cJSON *challenge = cJSON_GetObjectItemCaseSensitive(req, "challenge");
     const cJSON *code      = cJSON_GetObjectItemCaseSensitive(req, "code");
     if (!cJSON_IsString(challenge) || !cJSON_IsString(code))
         return result_error(400, "challenge and code required");
 
     char token[129];
-    pgf_user_t user;
-    int rc = pgf_mfa_verify_login(challenge->valuestring, code->valuestring,
+    cel_user_t user;
+    int rc = cel_mfa_verify_login(challenge->valuestring, code->valuestring,
                                   SESSION_TTL_SECONDS, token, sizeof token, &user);
-    if (rc == PGF_MFA_INVALID) return result_error(401, "invalid code or challenge");
-    if (rc != PGF_MFA_OK)      return result_error(500, "server error");
+    if (rc == CEL_MFA_INVALID) return result_error(401, "invalid code or challenge");
+    if (rc != CEL_MFA_OK)      return result_error(500, "server error");
 
     return session_result(token, &user);
 }
@@ -968,11 +968,11 @@ pgf_api_result_t pgf_api_mfa_verify(const cJSON *req) {
  * if the mailer is off or the email is already verified). Shared by register and
  * the resend endpoint. */
 static void send_email_verification(const char *user_id) {
-    if (!pgf_mail_enabled()) return;
+    if (!cel_mail_enabled()) return;
     char token[129], to[256];
-    if (pgf_auth_create_email_verification(user_id, token, sizeof token, to, sizeof to) != PGF_AUTH_OK)
+    if (cel_auth_create_email_verification(user_id, token, sizeof token, to, sizeof to) != CEL_AUTH_OK)
         return;
-    const char *app = getenv("PGF_APP_URL");
+    const char *app = getenv("CEL_APP_URL");
     char body[1024];
     if (app && *app)
         snprintf(body, sizeof body,
@@ -982,41 +982,41 @@ static void send_email_verification(const char *user_id) {
         snprintf(body, sizeof body,
             "Welcome! Confirm your email address with this token (expires in 24 hours):\r\n%s\r\n",
             token);
-    pgf_mail_send(to, "Verify your email", body);
+    cel_mail_send(to, "Verify your email", body);
 }
 
-pgf_api_result_t pgf_api_verify_email(const cJSON *req) {
+cel_api_result_t cel_api_verify_email(const cJSON *req) {
     const cJSON *token = cJSON_GetObjectItemCaseSensitive(req, "token");
     if (!cJSON_IsString(token)) return result_error(400, "token required");
-    int rc = pgf_auth_verify_email(token->valuestring);
-    if (rc == PGF_AUTH_INVALID) return result_error(400, "invalid or expired token");
-    if (rc != PGF_AUTH_OK)      return result_error(500, "server error");
+    int rc = cel_auth_verify_email(token->valuestring);
+    if (rc == CEL_AUTH_INVALID) return result_error(400, "invalid or expired token");
+    if (rc != CEL_AUTH_OK)      return result_error(500, "server error");
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     cJSON_AddStringToObject(o, "message", "email verified");
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_verify_email_resend(const pgf_identity_t *who) {
+cel_api_result_t cel_api_verify_email_resend(const cel_identity_t *who) {
     if (!who->authenticated) return result_error(401, "authentication required");
     send_email_verification(who->user_id);   /* best-effort; idempotent if already verified */
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     cJSON_AddStringToObject(o, "message", "if your email is unverified, a verification link has been sent");
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_password_forgot(const cJSON *req) {
+cel_api_result_t cel_api_password_forgot(const cJSON *req) {
     const cJSON *email = cJSON_GetObjectItemCaseSensitive(req, "email");
     if (!cJSON_IsString(email) || !email->valuestring[0])
         return result_error(400, "email required");
 
     char token[129];
-    if (pgf_auth_create_password_reset(email->valuestring, token, sizeof token) == PGF_AUTH_OK
-        && pgf_mail_enabled()) {
-        const char *app = getenv("PGF_APP_URL");
+    if (cel_auth_create_password_reset(email->valuestring, token, sizeof token) == CEL_AUTH_OK
+        && cel_mail_enabled()) {
+        const char *app = getenv("CEL_APP_URL");
         char body[1024];
         if (app && *app)
             snprintf(body, sizeof body,
@@ -1029,18 +1029,18 @@ pgf_api_result_t pgf_api_password_forgot(const cJSON *req) {
                 "Someone requested a password reset for your account.\r\n\r\n"
                 "Your reset token (expires in 1 hour):\r\n%s\r\n\r\n"
                 "If you didn't request this, ignore this email.\r\n", token);
-        pgf_mail_send(email->valuestring, "Reset your password", body);
+        cel_mail_send(email->valuestring, "Reset your password", body);
     }
 
     /* Always 200 with the same body — never reveal whether the email is registered. */
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     cJSON_AddStringToObject(o, "message", "if that email is registered, a reset link has been sent");
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_password_reset(const cJSON *req) {
+cel_api_result_t cel_api_password_reset(const cJSON *req) {
     const cJSON *token = cJSON_GetObjectItemCaseSensitive(req, "token");
     const cJSON *pass  = cJSON_GetObjectItemCaseSensitive(req, "password");
     if (!cJSON_IsString(token) || !cJSON_IsString(pass))
@@ -1049,18 +1049,18 @@ pgf_api_result_t pgf_api_password_reset(const cJSON *req) {
     if (plen < MIN_PASSWORD_LEN) return result_error(400, "password too short (min 8 characters)");
     if (plen > MAX_PASSWORD_LEN) return result_error(400, "password too long (max 128 characters)");
 
-    int rc = pgf_auth_perform_password_reset(token->valuestring, pass->valuestring);
-    if (rc == PGF_AUTH_INVALID) return result_error(400, "invalid or expired reset token");
-    if (rc != PGF_AUTH_OK)      return result_error(500, "server error");
+    int rc = cel_auth_perform_password_reset(token->valuestring, pass->valuestring);
+    if (rc == CEL_AUTH_INVALID) return result_error(400, "invalid or expired reset token");
+    if (rc != CEL_AUTH_OK)      return result_error(500, "server error");
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     cJSON_AddStringToObject(o, "message", "password updated");
-    pgf_api_result_t r = { o, 200 };
+    cel_api_result_t r = { o, 200 };
     return r;
 }
 
-pgf_api_result_t pgf_api_oauth(const cJSON *req) {
+cel_api_result_t cel_api_oauth(const cJSON *req) {
     const cJSON *provider = cJSON_GetObjectItemCaseSensitive(req, "provider");
     const cJSON *token    = cJSON_GetObjectItemCaseSensitive(req, "id_token");
     if (!cJSON_IsString(provider) || !cJSON_IsString(token))
@@ -1070,9 +1070,9 @@ pgf_api_result_t pgf_api_oauth(const cJSON *req) {
      * trusting any claim. A client doing the nonce dance passes the nonce it minted. */
     const cJSON *nonce = cJSON_GetObjectItemCaseSensitive(req, "nonce");
     const char *exp_nonce = cJSON_IsString(nonce) ? nonce->valuestring : NULL;
-    pgf_oauth_claims_t claims;
+    cel_oauth_claims_t claims;
     char verr[128] = {0};
-    if (pgf_oauth_verify(provider->valuestring, token->valuestring, exp_nonce, &claims, verr, sizeof verr) != 0) {
+    if (cel_oauth_verify(provider->valuestring, token->valuestring, exp_nonce, &claims, verr, sizeof verr) != 0) {
         /* L-2: don't return the verification-stage reason ("issuer mismatch",
          * "audience mismatch", "signature invalid", ...) to the client — it's a
          * stage oracle and leaks the enforced iss/aud. Log it server-side. */
@@ -1084,41 +1084,41 @@ pgf_api_result_t pgf_api_oauth(const cJSON *req) {
     /* Auto-provisioning, if it happens, follows the self-registration policy:
      * a new federated user gets the default signup role (if one is configured). */
     char role[32];
-    const char *prole = pgf_role_default_signup(role, sizeof role) ? role : NULL;
+    const char *prole = cel_role_default_signup(role, sizeof role) ? role : NULL;
 
     /* M-4: no federated self-provisioning in pooled mode — a brand-new OAuth user
      * has no tenant to bind to and would land tenant-less, slipping past the
      * pooled-mode lockdown that /auth/register enforces. An existing identity (or a
      * trusted-domain link to an existing account) still logs in; only creation of a
-     * new account is refused (PGF_AUTH_INVALID -> 403). */
-    if (pgf_tenancy_column()) prole = NULL;
+     * new account is refused (CEL_AUTH_INVALID -> 403). */
+    if (cel_tenancy_column()) prole = NULL;
 
     /* May this provider auto-link to an existing local account with this email?
      * Only if the operator trusts it for the email's domain (H-3). */
-    bool link_trusted = pgf_oauth_email_link_allowed(provider->valuestring, claims.email);
+    bool link_trusted = cel_oauth_email_link_allowed(provider->valuestring, claims.email);
 
     char stoken[129], challenge[129];
-    pgf_user_t user;
-    int rc = pgf_auth_oauth_login(provider->valuestring, claims.sub, claims.email,
+    cel_user_t user;
+    int rc = cel_auth_oauth_login(provider->valuestring, claims.sub, claims.email,
                                   claims.email_verified, link_trusted, prole, SESSION_TTL_SECONDS,
                                   stoken, sizeof stoken, challenge, sizeof challenge, &user);
-    if (rc == PGF_AUTH_MFA_REQUIRED) {
+    if (rc == CEL_AUTH_MFA_REQUIRED) {
         /* Federated factor one passed; no session yet. Same flow as password login:
          * the client submits the challenge + a TOTP code to /auth/mfa/verify. */
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "status", "mfa_required");
         cJSON_AddStringToObject(o, "challenge", challenge);
-        pgf_api_result_t r = { o, 200 };
+        cel_api_result_t r = { o, 200 };
         return r;
     }
-    if (rc == PGF_AUTH_INVALID) return result_error(403, "no account for this identity");
-    if (rc != PGF_AUTH_OK)      return result_error(500, "server error");
+    if (rc == CEL_AUTH_INVALID) return result_error(403, "no account for this identity");
+    if (rc != CEL_AUTH_OK)      return result_error(500, "server error");
     return session_result(stoken, &user);
 }
 
-pgf_api_result_t pgf_api_create_user(const pgf_identity_t *who, const cJSON *req) {
+cel_api_result_t cel_api_create_user(const cel_identity_t *who, const cJSON *req) {
     if (!who->authenticated)               return result_error(401, "authentication required");
-    if (!pgf_role_is_superuser(who->role)) return result_error(403, "forbidden");
+    if (!cel_role_is_superuser(who->role)) return result_error(403, "forbidden");
 
     const cJSON *email  = cJSON_GetObjectItemCaseSensitive(req, "email");
     const cJSON *pass   = cJSON_GetObjectItemCaseSensitive(req, "password");
@@ -1144,7 +1144,7 @@ pgf_api_result_t pgf_api_create_user(const pgf_identity_t *who, const cJSON *req
      * create within its OWN tenant — never trust a client-supplied tenant_id;
      * the global platform_admin must name the target tenant explicitly. */
     const char *tenant = "";   /* empty => tenant column left unset (single-tenant) */
-    if (pgf_tenancy_column()) {
+    if (cel_tenancy_column()) {
         if (!strcmp(who->role, "platform_admin")) {
             const cJSON *t = cJSON_GetObjectItemCaseSensitive(req, "tenant_id");
             if (!cJSON_IsString(t) || !t->valuestring[0])
@@ -1157,11 +1157,11 @@ pgf_api_result_t pgf_api_create_user(const pgf_identity_t *who, const cJSON *req
     }
 
     char id[37];
-    int rc = pgf_auth_create_user(email->valuestring, pass->valuestring, role, tenant,
+    int rc = cel_auth_create_user(email->valuestring, pass->valuestring, role, tenant,
                                   id, sizeof id);
-    if (rc == PGF_AUTH_CONFLICT) return result_error(409, "email already registered");
-    if (rc == PGF_AUTH_INVALID)  return result_error(400, "invalid tenant");
-    if (rc != PGF_AUTH_OK)       return result_error(500, "server error");
+    if (rc == CEL_AUTH_CONFLICT) return result_error(409, "email already registered");
+    if (rc == CEL_AUTH_INVALID)  return result_error(400, "invalid tenant");
+    if (rc != CEL_AUTH_OK)       return result_error(500, "server error");
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
@@ -1170,7 +1170,7 @@ pgf_api_result_t pgf_api_create_user(const pgf_identity_t *who, const cJSON *req
     cJSON_AddStringToObject(u, "email", email->valuestring);
     cJSON_AddStringToObject(u, "role", role);
     if (tenant[0]) cJSON_AddStringToObject(u, "tenant_id", tenant);
-    pgf_api_result_t r = { o, 201 };
+    cel_api_result_t r = { o, 201 };
     return r;
 }
 
@@ -1217,28 +1217,28 @@ static bool rt_membership(const char *via_table, const char *via_ref, const char
 /* Publish-time re-authorization callback (M-5): the subscription carries the VIA
  * membership coordinates captured at subscribe; re-verify them against the live
  * membership table (with the same tenant context). */
-bool pgf_api_rt_recheck_member(const pgf_subscription_t *sub) {
+bool cel_api_rt_recheck_member(const cel_subscription_t *sub) {
     if (!sub->via) return true;   /* not a membership subscription */
     return rt_membership(sub->via_table, sub->via_ref, sub->via_user,
                          sub->via_key, sub->user_id, sub->tenant);
 }
 
-int pgf_api_authorize_subscription(const pgf_identity_t *who, const cJSON *req,
-                                   pgf_subscription_t *sub, char *errbuf, size_t errlen) {
+int cel_api_authorize_subscription(const cel_identity_t *who, const cJSON *req,
+                                   cel_subscription_t *sub, char *errbuf, size_t errlen) {
     memset(sub, 0, sizeof *sub);
     if (!who->authenticated) { snprintf(errbuf, errlen, "authentication required"); return 401; }
-    const pgf_table_t *t = resolve_table(req);
+    const cel_table_t *t = resolve_table(req);
     if (!t) { snprintf(errbuf, errlen, "unknown table"); return 404; }
-    if (!pgf_policy_allows(t->name, PGF_ACT_LIST, who->role)) {
+    if (!cel_policy_allows(t->name, CEL_ACT_LIST, who->role)) {
         snprintf(errbuf, errlen, "forbidden"); return 403;
     }
-    if (!pgf_policy_realtime_enabled(t->name)) {
+    if (!cel_policy_realtime_enabled(t->name)) {
         snprintf(errbuf, errlen, "realtime not enabled for table"); return 403;
     }
     snprintf(sub->table, sizeof sub->table, "%s", t->name);
 
-    pgf_scope_t scope;
-    if (make_scope(t, PGF_ACT_LIST, who, &scope) != 0) {
+    cel_scope_t scope;
+    if (make_scope(t, CEL_ACT_LIST, who, &scope) != 0) {
         snprintf(errbuf, errlen, "policy misconfiguration"); return 500;
     }
 
@@ -1249,21 +1249,21 @@ int pgf_api_authorize_subscription(const pgf_identity_t *who, const cJSON *req,
     const char *key_col = cJSON_IsString(kc) ? kc->valuestring : NULL;
     const char *key_val = cJSON_IsString(kv) ? kv->valuestring : NULL;
 
-    for (int i = 0; i < scope.count && sub->npreds < PGF_RT_MAX_PREDS; i++) {
-        const pgf_scope_rule_t *r = &scope.rule[i];
-        pgf_rt_pred_t *p = &sub->preds[sub->npreds];
-        if (r->kind == PGF_SCOPE_EQ) {
+    for (int i = 0; i < scope.count && sub->npreds < CEL_RT_MAX_PREDS; i++) {
+        const cel_scope_rule_t *r = &scope.rule[i];
+        cel_rt_pred_t *p = &sub->preds[sub->npreds];
+        if (r->kind == CEL_SCOPE_EQ) {
             p->is_or = false;
             snprintf(p->column, sizeof p->column, "%s", r->column);
             snprintf(p->value,  sizeof p->value,  "%s", r->value);
             sub->npreds++;
-        } else if (r->kind == PGF_SCOPE_OR) {
+        } else if (r->kind == CEL_SCOPE_OR) {
             p->is_or = true; p->ncols = r->ncols;
             for (int j = 0; j < r->ncols; j++)
                 snprintf(p->cols[j], sizeof p->cols[j], "%s", r->cols[j]);
             snprintf(p->value, sizeof p->value, "%s", r->value);
             sub->npreds++;
-        } else { /* PGF_SCOPE_VIA: require a key on the local column + membership */
+        } else { /* CEL_SCOPE_VIA: require a key on the local column + membership */
             if (!key_col || !key_val || strcmp(key_col, r->via_local) != 0) {
                 snprintf(errbuf, errlen,
                          "subscription requires key { column: \"%s\", value }", r->via_local);
@@ -1293,7 +1293,7 @@ int pgf_api_authorize_subscription(const pgf_identity_t *who, const cJSON *req,
     return 200;
 }
 
-pgf_api_result_t pgf_api_register(const cJSON *req) {
+cel_api_result_t cel_api_register(const cJSON *req) {
     const cJSON *email  = cJSON_GetObjectItemCaseSensitive(req, "email");
     const cJSON *pass   = cJSON_GetObjectItemCaseSensitive(req, "password");
     const cJSON *role_j = cJSON_GetObjectItemCaseSensitive(req, "role");
@@ -1307,7 +1307,7 @@ pgf_api_result_t pgf_api_register(const cJSON *req) {
     /* Pooled mode: open self-registration needs a tenant to bind the new user
      * to; resolving that (e.g. by subdomain) is a later task. Until then signup
      * is single-tenant only — provision tenant users via the tenant admin. */
-    if (pgf_tenancy_column())
+    if (cel_tenancy_column())
         return result_error(403, "self-registration is not available in pooled mode");
 
     /* Resolve the requested role (explicit, else the configured default), then
@@ -1315,33 +1315,33 @@ pgf_api_result_t pgf_api_register(const cJSON *req) {
     char role[32];
     if (cJSON_IsString(role_j) && role_j->valuestring[0]) {
         snprintf(role, sizeof role, "%s", role_j->valuestring);
-    } else if (!pgf_role_default_signup(role, sizeof role)) {
+    } else if (!cel_role_default_signup(role, sizeof role)) {
         return result_error(403, "self-registration is not enabled");
     }
-    if (!pgf_role_can_self_register(role))
+    if (!cel_role_can_self_register(role))
         return result_error(403, "role is not open to self-registration");
 
     char token[129];
-    pgf_user_t user;
-    int rc = pgf_auth_register(email->valuestring, pass->valuestring, role,
+    cel_user_t user;
+    int rc = cel_auth_register(email->valuestring, pass->valuestring, role,
                                SESSION_TTL_SECONDS, token, sizeof token, &user);
 
-    if (rc == PGF_AUTH_OK) send_email_verification(user.id);  /* only on a real new account */
+    if (rc == CEL_AUTH_OK) send_email_verification(user.id);  /* only on a real new account */
 
     /* H-5: by default register does NOT auto-login and does NOT reveal whether the
      * email already exists — a token (or a 409) returned only for NEW emails is an
      * account-enumeration oracle. A successful new registration and an existing-
      * email conflict return the SAME uniform 202; the client signs in separately
      * via /auth/login. Operators who accept the enumeration trade-off can restore
-     * auto-login (201 + token, 409 on conflict) with PGF_REGISTER_AUTOLOGIN=1.
+     * auto-login (201 + token, 409 on conflict) with CEL_REGISTER_AUTOLOGIN=1.
      * (Residual: when SMTP is configured the verification email above adds latency
      * on the new-account path only — a weaker timing side-channel, not closed here.) */
-    const char *al = getenv("PGF_REGISTER_AUTOLOGIN");
+    const char *al = getenv("CEL_REGISTER_AUTOLOGIN");
     bool autologin = al && (!strcmp(al, "1") || !strcmp(al, "true") || !strcmp(al, "yes"));
 
     if (autologin) {
-        if (rc == PGF_AUTH_CONFLICT) return result_error(409, "email already registered");
-        if (rc != PGF_AUTH_OK)       return result_error(500, "server error");
+        if (rc == CEL_AUTH_CONFLICT) return result_error(409, "email already registered");
+        if (rc != CEL_AUTH_OK)       return result_error(500, "server error");
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "status", "ok");
         cJSON_AddStringToObject(o, "token", token);
@@ -1350,17 +1350,17 @@ pgf_api_result_t pgf_api_register(const cJSON *req) {
         cJSON_AddStringToObject(u, "email", user.email);
         cJSON_AddStringToObject(u, "role", user.role);
         cJSON_AddBoolToObject(u, "email_verified", user.email_verified);
-        pgf_api_result_t r = { o, 201 };
+        cel_api_result_t r = { o, 201 };
         return r;
     }
 
     /* Secure default: identical response for OK and CONFLICT (no existence signal);
      * only a genuine server error differs, which is not correlated with existence. */
-    if (rc == PGF_AUTH_OK || rc == PGF_AUTH_CONFLICT) {
+    if (rc == CEL_AUTH_OK || rc == CEL_AUTH_CONFLICT) {
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "status", "ok");
         cJSON_AddStringToObject(o, "message", "registration received");
-        pgf_api_result_t r = { o, 202 };
+        cel_api_result_t r = { o, 202 };
         return r;
     }
     return result_error(500, "server error");

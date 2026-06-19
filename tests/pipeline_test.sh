@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 # libpq pipelining (perf lever) end-to-end. In pooled mode the data-API path
 # normally does BEGIN + set_config(app.tenant_id) + query + COMMIT as four round
-# trips; with PGF_DB_PIPELINE=1 they go as ONE pipelined round trip. This proves
+# trips; with CEL_DB_PIPELINE=1 they go as ONE pipelined round trip. This proves
 # two things at once:
 #   (1) CORRECTNESS — the same cross-tenant isolation the sequential path
 #       guarantees (a tenant sees only its rows; CREATE forces the caller's
 #       tenant) still holds when the transaction is pipelined.
-#   (2) ACTIVE — pgf_db_pipelined_txns_total actually advances with traffic.
+#   (2) ACTIVE — cel_db_pipelined_txns_total actually advances with traffic.
 #
-# Negative control: re-run with PGF_DB_PIPELINE=0 (or unset) — the server takes
+# Negative control: re-run with CEL_DB_PIPELINE=0 (or unset) — the server takes
 # the sequential path, the counter stays 0, and the "pipelining active" assertion
 # below fails (so the test genuinely exercises the lever).
 #
-#   pipeline_test.sh <pgforge-binary>
+#   pipeline_test.sh <cellar-binary>
 set -euo pipefail
 
-BIN="${1:?usage: pipeline_test.sh <pgforge-binary>}"
-H="${PGF_DB_HOST:-localhost}"
-U="${PGF_DB_USER:-postgres}"
-DB="pgf_pipeline_test"
+BIN="${1:?usage: pipeline_test.sh <cellar-binary>}"
+H="${CEL_DB_HOST:-localhost}"
+U="${CEL_DB_USER:-postgres}"
+DB="cel_pipeline_test"
 PSQL="psql -h $H -U $U"
 
 cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true
@@ -29,12 +29,12 @@ $PSQL -tc "SELECT 1 FROM pg_database WHERE datname='$DB'" | grep -q 1 \
   && $PSQL -c "DROP DATABASE $DB" >/dev/null
 $PSQL -c "CREATE DATABASE $DB" >/dev/null
 
-export PGF_DB_HOST="$H" PGF_DB_USER="$U" PGF_DB_NAME="$DB"
+export CEL_DB_HOST="$H" CEL_DB_USER="$U" CEL_DB_NAME="$DB"
 
 "$BIN" migrate --tenancy >/dev/null
 
-T1=$($PSQL -d "$DB" -tAc "INSERT INTO pgf_tenants(name) VALUES('Acme')   RETURNING id" | head -n1 | tr -d '[:space:]')
-T2=$($PSQL -d "$DB" -tAc "INSERT INTO pgf_tenants(name) VALUES('Globex') RETURNING id" | head -n1 | tr -d '[:space:]')
+T1=$($PSQL -d "$DB" -tAc "INSERT INTO cel_tenants(name) VALUES('Acme')   RETURNING id" | head -n1 | tr -d '[:space:]')
+T2=$($PSQL -d "$DB" -tAc "INSERT INTO cel_tenants(name) VALUES('Globex') RETURNING id" | head -n1 | tr -d '[:space:]')
 $PSQL -d "$DB" >/dev/null <<SQL
 CREATE TABLE items (
     id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -47,18 +47,18 @@ INSERT INTO items(tenant_id, name) VALUES
 SQL
 
 PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
-# PGF_DB_PIPELINE defaults to 1 here; override to 0 for the negative control.
-PGF_PORT="$PORT" PGF_TENANT_COLUMN=tenant_id PGF_LOG_LEVEL=warn \
-  PGF_DB_PIPELINE="${PGF_DB_PIPELINE:-1}" PGF_METRICS_TOKEN="pipe-scrape-secret" \
-  PGF_SEED_USERS="u1@x.io:pw1:editor;u2@x.io:pw2:editor" "$BIN" >/tmp/pgf_pipeline_srv.log 2>&1 &
+# CEL_DB_PIPELINE defaults to 1 here; override to 0 for the negative control.
+CEL_PORT="$PORT" CEL_TENANT_COLUMN=tenant_id CEL_LOG_LEVEL=warn \
+  CEL_DB_PIPELINE="${CEL_DB_PIPELINE:-1}" CEL_METRICS_TOKEN="pipe-scrape-secret" \
+  CEL_SEED_USERS="u1@x.io:pw1:editor;u2@x.io:pw2:editor" "$BIN" >/tmp/cel_pipeline_srv.log 2>&1 &
 SRV=$!
 for i in $(seq 1 80); do
   (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null && { exec 3>&-; break; }
   sleep 0.1
 done
 
-$PSQL -d "$DB" -c "UPDATE pgf_users SET tenant_id='$T1' WHERE email='u1@x.io'" >/dev/null
-$PSQL -d "$DB" -c "UPDATE pgf_users SET tenant_id='$T2' WHERE email='u2@x.io'" >/dev/null
+$PSQL -d "$DB" -c "UPDATE cel_users SET tenant_id='$T1' WHERE email='u1@x.io'" >/dev/null
+$PSQL -d "$DB" -c "UPDATE cel_users SET tenant_id='$T2' WHERE email='u2@x.io'" >/dev/null
 
 PORT="$PORT" T1="$T1" T2="$T2" python3 - <<'PY'
 import http.client, json, os, sys
@@ -84,7 +84,7 @@ def pipelined():
     c.request("GET","/metrics",headers={"Authorization":"Bearer "+TOKEN})
     doc=c.getresponse().read().decode(); c.close()
     for line in doc.splitlines():
-        if line.startswith("pgf_db_pipelined_txns_total") and not line.startswith("#"):
+        if line.startswith("cel_db_pipelined_txns_total") and not line.startswith("#"):
             return float(line.split()[-1])
     return 0.0
 
@@ -117,7 +117,7 @@ check("create forces caller tenant",
 for _ in range(10):
     req("GET","/api/items",token=t1)
 after=pipelined()
-print(f"  .. pgf_db_pipelined_txns_total {base:.0f} -> {after:.0f}")
+print(f"  .. cel_db_pipelined_txns_total {base:.0f} -> {after:.0f}")
 check("pipelining active (counter advanced)", after >= base + 10, f"+{after-base:.0f}")
 
 print(f"\n== pipeline: {ok} ok, {fail} fail ==")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pgforge load generator (stdlib only — no wrk/hey needed).
+"""cellar load generator (stdlib only — no wrk/hey needed).
 
 Closed-loop HTTP load: `connections` persistent keep-alive connections (spread
 across worker processes so the GIL doesn't cap the generator) each fire requests

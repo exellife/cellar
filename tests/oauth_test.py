@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""pgforge OIDC sign-in end-to-end (#auth, PLAN §7e, "Option B").
+"""cellar OIDC sign-in end-to-end (#auth, PLAN §7e, "Option B").
 
 Mints real RS256 ID tokens with a throwaway RSA key (signed via the openssl CLI,
-no Python crypto lib) whose public half pgforge fetches from a local JWKS server
+no Python crypto lib) whose public half cellar fetches from a local JWKS server
 (see oauth_test.sh). Exercises the whole verify + find-or-link path offline:
 auto-provision, replay (existing identity), link-by-verified-email, and the
 rejection paths (bad signature, wrong audience, expired, unknown provider).
 
-Env (set by oauth_test.sh): PGF_OAUTH_KEY (private key), PGF_OAUTH_KID, OIDC_ISS,
+Env (set by oauth_test.sh): CEL_OAUTH_KEY (private key), CEL_OAUTH_KID, OIDC_ISS,
 OIDC_AUD, plus the seeded LINK_EMAIL. The harness passes ws://host:port/ as argv[1].
 """
 import base64, hashlib, hmac, json, os, struct, subprocess, sys, time
 from urllib.parse import urlparse
 
-KEY = os.environ["PGF_OAUTH_KEY"]
-KID = os.environ.get("PGF_OAUTH_KID", "test-key-1")
+KEY = os.environ["CEL_OAUTH_KEY"]
+KID = os.environ.get("CEL_OAUTH_KID", "test-key-1")
 ISS = os.environ.get("OIDC_ISS", "https://test.issuer")
 AUD = os.environ.get("OIDC_AUD", "test-client")
 LINK_EMAIL = os.environ.get("LINK_EMAIL", "linkme@test.local")
@@ -77,7 +77,7 @@ def main():
         print(f"  {'ok' if cond else 'FAIL':<5} {name:<44} {detail}")
         ok += bool(cond); fail += (not cond)
 
-    print(f"== pgforge OIDC sign-in harness -> {HOST}:{PORT} ==")
+    print(f"== cellar OIDC sign-in harness -> {HOST}:{PORT} ==")
 
     # 1. a brand-new verified identity auto-provisions an account + logs in
     s, b = oauth("test", mint("oidc|new-1", NEW_EMAIL))
@@ -165,7 +165,7 @@ def main():
     chk("nonce match -> 200 (M-6)", s == 200 and bool((b or {}).get("token")), f"status={s}")
 
     # ---- L-6: an undersized RSA JWKS key is rejected for RS256 ----
-    weak_key = os.environ.get("PGF_OAUTH_WEAK_KEY")
+    weak_key = os.environ.get("CEL_OAUTH_WEAK_KEY")
     if weak_key:
         wkid = os.environ.get("WEAK_KID", "weak-1024")
         s, _ = oauth("test", mint("oidc|x", NEW_EMAIL, kid=wkid, key=weak_key))

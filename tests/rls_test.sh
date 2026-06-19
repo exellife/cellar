@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Postgres RLS defense-in-depth: prove the DATABASE confines a raw query to the
-# caller's tenant, independent of pgforge's app-level scoping. We SET ROLE to a
+# caller's tenant, independent of cellar's app-level scoping. We SET ROLE to a
 # non-superuser (superusers bypass RLS), bind app.tenant_id, and run a plain
 # `SELECT * FROM items` — RLS, not the app, does the filtering.
-#   rls_test.sh <pgforge-binary>
+#   rls_test.sh <cellar-binary>
 set -euo pipefail
 
-BIN="${1:?usage: rls_test.sh <pgforge-binary>}"
-H="${PGF_DB_HOST:-localhost}"
-U="${PGF_DB_USER:-postgres}"
-DB="pgf_rls_test"
-ROLE="pgf_app_rlstest"
+BIN="${1:?usage: rls_test.sh <cellar-binary>}"
+H="${CEL_DB_HOST:-localhost}"
+U="${CEL_DB_USER:-postgres}"
+DB="cel_rls_test"
+ROLE="cel_app_rlstest"
 PSQL="psql -h $H -U $U"
 
 cleanup() {
@@ -22,11 +22,11 @@ cleanup
 $PSQL -c "CREATE DATABASE $DB" >/dev/null
 $PSQL -c "CREATE ROLE $ROLE NOLOGIN" >/dev/null   # SET ROLE only; no login needed
 
-export PGF_DB_HOST="$H" PGF_DB_USER="$U" PGF_DB_NAME="$DB" PGF_TENANT_COLUMN=tenant_id
+export CEL_DB_HOST="$H" CEL_DB_USER="$U" CEL_DB_NAME="$DB" CEL_TENANT_COLUMN=tenant_id
 "$BIN" migrate --tenancy >/dev/null
 
-T1=$($PSQL -d "$DB" -tAc "INSERT INTO pgf_tenants(name) VALUES('A') RETURNING id" | head -n1 | tr -d '[:space:]')
-T2=$($PSQL -d "$DB" -tAc "INSERT INTO pgf_tenants(name) VALUES('B') RETURNING id" | head -n1 | tr -d '[:space:]')
+T1=$($PSQL -d "$DB" -tAc "INSERT INTO cel_tenants(name) VALUES('A') RETURNING id" | head -n1 | tr -d '[:space:]')
+T2=$($PSQL -d "$DB" -tAc "INSERT INTO cel_tenants(name) VALUES('B') RETURNING id" | head -n1 | tr -d '[:space:]')
 $PSQL -d "$DB" >/dev/null <<SQL
 CREATE TABLE items (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), tenant_id UUID, name TEXT);
 INSERT INTO items(tenant_id,name) VALUES ('$T1','a1'),('$T1','a2'),('$T2','b1');

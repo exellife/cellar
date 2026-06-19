@@ -14,22 +14,22 @@ static cJSON *g_config = NULL;
 
 static char g_tenant_column[64] = {0};
 
-void pgf_tenancy_init(void) {
-    const char *c = getenv("PGF_TENANT_COLUMN");
+void cel_tenancy_init(void) {
+    const char *c = getenv("CEL_TENANT_COLUMN");
     if (c && *c) snprintf(g_tenant_column, sizeof g_tenant_column, "%s", c);
 }
 
-const char *pgf_tenancy_column(void) {
+const char *cel_tenancy_column(void) {
     return g_tenant_column[0] ? g_tenant_column : NULL;
 }
 
-void pgf_identity_from_token(const char *token, pgf_identity_t *out) {
+void cel_identity_from_token(const char *token, cel_identity_t *out) {
     memset(out, 0, sizeof *out);
     snprintf(out->role, sizeof out->role, "%s", "anon");
     if (!token || !*token) return;
 
-    pgf_user_t u;
-    if (pgf_auth_resolve(token, &u) == PGF_AUTH_OK) {   /* cache-aware (no DB hit on a hit) */
+    cel_user_t u;
+    if (cel_auth_resolve(token, &u) == CEL_AUTH_OK) {   /* cache-aware (no DB hit on a hit) */
         out->authenticated = true;
         snprintf(out->user_id, sizeof out->user_id, "%s", u.id);
         snprintf(out->role, sizeof out->role, "%s", u.role);
@@ -37,13 +37,13 @@ void pgf_identity_from_token(const char *token, pgf_identity_t *out) {
     }
 }
 
-static const char *action_name(pgf_action_t a) {
+static const char *action_name(cel_action_t a) {
     switch (a) {
-        case PGF_ACT_LIST:   return "list";
-        case PGF_ACT_GET:    return "get";
-        case PGF_ACT_CREATE: return "create";
-        case PGF_ACT_UPDATE: return "update";
-        case PGF_ACT_DELETE: return "delete";
+        case CEL_ACT_LIST:   return "list";
+        case CEL_ACT_GET:    return "get";
+        case CEL_ACT_CREATE: return "create";
+        case CEL_ACT_UPDATE: return "update";
+        case CEL_ACT_DELETE: return "delete";
         default:             return "";
     }
 }
@@ -82,15 +82,15 @@ static bool action_in_array(const cJSON *arr, const char *act) {
 /* Default action set for a role on a table that has no explicit policy entry.
  * Declarative when the role has an "_roles" entry (its "allow" list; nothing if
  * absent); otherwise the built-in defaults. Superusers never reach here — they
- * short-circuit in pgf_policy_allows. */
-static bool default_allows(pgf_action_t a, const char *role) {
+ * short-circuit in cel_policy_allows. */
+static bool default_allows(cel_action_t a, const char *role) {
     const cJSON *rd = role_def(role);
     if (rd) {
         const cJSON *allow = cJSON_GetObjectItemCaseSensitive(rd, "allow");
         return cJSON_IsArray(allow) && action_in_array(allow, action_name(a));
     }
-    if (!strcmp(role, "editor")) return a != PGF_ACT_DELETE;
-    if (!strcmp(role, "viewer")) return a == PGF_ACT_LIST || a == PGF_ACT_GET;
+    if (!strcmp(role, "editor")) return a != CEL_ACT_DELETE;
+    if (!strcmp(role, "viewer")) return a == CEL_ACT_LIST || a == CEL_ACT_GET;
     return false;   /* anon / unknown roles: nothing */
 }
 
@@ -122,7 +122,7 @@ static bool role_in_array(const cJSON *roles, const char *role) {
  * are accepted, so the documented object form and the terse string form both work:
  *   "_default": "allow" | "deny"
  *   "_default": { "allow": true } | { "deny": true }   (deny:false == allow)
- * Absent or unrecognized => deny (pgf_policy_init warns about this at load).
+ * Absent or unrecognized => deny (cel_policy_init warns about this at load).
  *
  * SECURITY (H-1): previously an unlisted table fell through to the built-in
  * editor/viewer grants unless "_default" was EXACTLY the string "deny" — so a
@@ -140,7 +140,7 @@ static bool policy_default_is_allow(void) {
     return false;   /* fail closed */
 }
 
-bool pgf_policy_allows(const char *table, pgf_action_t action, const char *role) {
+bool cel_policy_allows(const char *table, cel_action_t action, const char *role) {
     if (is_superuser_role(role)) return true;
 
     if (g_config) {
@@ -161,7 +161,7 @@ bool pgf_policy_allows(const char *table, pgf_action_t action, const char *role)
     return default_allows(action, role);
 }
 
-const char *pgf_policy_owner_column(const char *table, pgf_action_t action, const char *role) {
+const char *cel_policy_owner_column(const char *table, cel_action_t action, const char *role) {
     if (!g_config) return NULL;                 /* built-in defaults: no row scoping */
     if (is_superuser_role(role)) return NULL;   /* superuser sees/edits all rows */
 
@@ -173,18 +173,18 @@ const char *pgf_policy_owner_column(const char *table, pgf_action_t action, cons
     return cJSON_IsString(oc) ? oc->valuestring : NULL;
 }
 
-bool pgf_role_is_superuser(const char *role) {
+bool cel_role_is_superuser(const char *role) {
     return is_superuser_role(role);
 }
 
-bool pgf_policy_realtime_enabled(const char *table) {
+bool cel_policy_realtime_enabled(const char *table) {
     if (!g_config) return false;
     const cJSON *tbl = cJSON_GetObjectItemCaseSensitive(g_config, table);
     if (!cJSON_IsObject(tbl)) return false;
     return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(tbl, "realtime"));
 }
 
-bool pgf_policy_rpc_allows(const char *fn, const char *role) {
+bool cel_policy_rpc_allows(const char *fn, const char *role) {
     if (!g_config) return false;
     const cJSON *rpc = cJSON_GetObjectItemCaseSensitive(g_config, "_rpc");
     if (!cJSON_IsObject(rpc)) return false;
@@ -194,7 +194,7 @@ bool pgf_policy_rpc_allows(const char *fn, const char *role) {
     return role_in_array(cJSON_GetObjectItemCaseSensitive(entry, "roles"), role);
 }
 
-int pgf_policy_rpc_names(const char **out, int max) {
+int cel_policy_rpc_names(const char **out, int max) {
     if (!g_config || !out || max <= 0) return 0;
     const cJSON *rpc = cJSON_GetObjectItemCaseSensitive(g_config, "_rpc");
     if (!cJSON_IsObject(rpc)) return 0;
@@ -207,7 +207,7 @@ int pgf_policy_rpc_names(const char **out, int max) {
     return n;
 }
 
-bool pgf_role_can_self_register(const char *role) {
+bool cel_role_can_self_register(const char *role) {
     if (!role || !*role) return false;
     if (is_superuser_role(role)) return false;   /* boundary: never via signup */
     const cJSON *rd = role_def(role);
@@ -215,13 +215,13 @@ bool pgf_role_can_self_register(const char *role) {
     return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(rd, "self_register"));
 }
 
-bool pgf_role_default_signup(char *out, size_t out_len) {
+bool cel_role_default_signup(char *out, size_t out_len) {
     if (!g_config) return false;
     const cJSON *roles = cJSON_GetObjectItemCaseSensitive(g_config, "_roles");
     if (!cJSON_IsObject(roles)) return false;
     const cJSON *e;
     cJSON_ArrayForEach(e, roles) {
-        if (e->string && pgf_role_can_self_register(e->string)) {
+        if (e->string && cel_role_can_self_register(e->string)) {
             snprintf(out, out_len, "%s", e->string);
             return true;
         }
@@ -229,8 +229,8 @@ bool pgf_role_default_signup(char *out, size_t out_len) {
     return false;
 }
 
-bool pgf_policy_owner_scope(const char *table, pgf_action_t action,
-                            const char *role, pgf_owner_spec_t *out) {
+bool cel_policy_owner_scope(const char *table, cel_action_t action,
+                            const char *role, cel_owner_spec_t *out) {
     memset(out, 0, sizeof *out);
     if (!g_config) return false;
     if (is_superuser_role(role)) return false;   /* superuser: never row-scoped */
@@ -243,7 +243,7 @@ bool pgf_policy_owner_scope(const char *table, pgf_action_t action,
     /* EQ — owner_column (back-compat, the common case) */
     const cJSON *oc = cJSON_GetObjectItemCaseSensitive(act, "owner_column");
     if (cJSON_IsString(oc)) {
-        out->kind = PGF_OWNER_EQ; out->column = oc->valuestring;
+        out->kind = CEL_OWNER_EQ; out->column = oc->valuestring;
         return true;
     }
     /* OR — owner_any: [columns] */
@@ -251,10 +251,10 @@ bool pgf_policy_owner_scope(const char *table, pgf_action_t action,
     if (cJSON_IsArray(oa)) {
         const cJSON *e;
         cJSON_ArrayForEach(e, oa) {
-            if (out->ncolumns >= PGF_MAX_OWNER_COLS) break;
+            if (out->ncolumns >= CEL_MAX_OWNER_COLS) break;
             if (cJSON_IsString(e)) out->columns[out->ncolumns++] = e->valuestring;
         }
-        if (out->ncolumns > 0) { out->kind = PGF_OWNER_ANY; return true; }
+        if (out->ncolumns > 0) { out->kind = CEL_OWNER_ANY; return true; }
     }
     /* VIA — owner_via: {table, ref, local, user} */
     const cJSON *ov = cJSON_GetObjectItemCaseSensitive(act, "owner_via");
@@ -264,7 +264,7 @@ bool pgf_policy_owner_scope(const char *table, pgf_action_t action,
         const cJSON *lo = cJSON_GetObjectItemCaseSensitive(ov, "local");
         const cJSON *us = cJSON_GetObjectItemCaseSensitive(ov, "user");
         if (cJSON_IsString(tb) && cJSON_IsString(rf) && cJSON_IsString(lo) && cJSON_IsString(us)) {
-            out->kind = PGF_OWNER_VIA;
+            out->kind = CEL_OWNER_VIA;
             out->via.table = tb->valuestring; out->via.ref   = rf->valuestring;
             out->via.local = lo->valuestring; out->via.user  = us->valuestring;
             return true;
@@ -273,7 +273,7 @@ bool pgf_policy_owner_scope(const char *table, pgf_action_t action,
     return false;
 }
 
-int pgf_policy_init(const char *config_path) {
+int cel_policy_init(const char *config_path) {
     if (!config_path || !*config_path) {
         LOG_INFO("policy: using built-in role defaults (no config file)");
         return 0;
@@ -304,6 +304,6 @@ int pgf_policy_init(const char *config_path) {
     return 0;
 }
 
-void pgf_policy_cleanup(void) {
+void cel_policy_cleanup(void) {
     if (g_config) { cJSON_Delete(g_config); g_config = NULL; }
 }

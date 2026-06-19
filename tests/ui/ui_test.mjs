@@ -1,11 +1,11 @@
-// pgforge admin UI headless test: render the real served SPA in jsdom, drive a
+// cellar admin UI headless test: render the real served SPA in jsdom, drive a
 // login, and assert the schema-driven dashboard renders against a live server.
 import { JSDOM } from "jsdom";
 
 const arg = process.argv[2] || "ws://127.0.0.1:8080/";
 const base = arg.replace(/^ws/, "http").replace(/\/$/, "");
-const EMAIL = process.env.PGF_TEST_EMAIL || "admin@pgforge.dev";
-const PW = process.env.PGF_TEST_PASSWORD || "s3cret-admin";
+const EMAIL = process.env.CEL_TEST_EMAIL || "admin@cellar.dev";
+const PW = process.env.CEL_TEST_PASSWORD || "s3cret-admin";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const text = async (p) => (await fetch(base + p)).text();
@@ -16,7 +16,7 @@ const check = (name, cond, d = "") => {
   if (!cond) fails++;
 };
 
-console.log(`== pgforge admin UI (jsdom) -> ${base} ==`);
+console.log(`== cellar admin UI (jsdom) -> ${base} ==`);
 
 // Pull the actual served assets and run them in a jsdom window.
 const html = (await text("/")).replace(/<script[^>]*><\/script>/g, "");
@@ -47,7 +47,7 @@ const grid = doc.querySelector(".main table");
 check("logged in (topbar shown)", !!doc.querySelector(".topbar"));
 check("sidebar lists products", !!sidebar && /products/.test(sidebar.textContent));
 check("sidebar lists notes", !!sidebar && /notes/.test(sidebar.textContent));
-check("sidebar hides internal pgf_ tables", !!sidebar && !/pgf_users/.test(sidebar.textContent));
+check("sidebar hides internal cel_ tables", !!sidebar && !/cel_users/.test(sidebar.textContent));
 check("data grid rendered", !!grid);
 
 // switch to products and verify columns + rows show

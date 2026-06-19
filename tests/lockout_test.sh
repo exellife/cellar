@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Account lockout end-to-end: boot with PGF_AUTH_LOCKOUT=3/2 (lock after 3 fails,
+# Account lockout end-to-end: boot with CEL_AUTH_LOCKOUT=3/2 (lock after 3 fails,
 # 2s window/lock) and the per-IP limiter off, then drive lock -> locked-even-with-
 # correct-pw -> auto-unlock after the window -> admin `unlock` CLI. lockout_test.sh <bin>
 set -euo pipefail
 
-BIN="${1:?usage: lockout_test.sh <pgforge-binary>}"
-H="${PGF_DB_HOST:-localhost}"; U="${PGF_DB_USER:-postgres}"; DB="${PGF_DB_NAME:-pgforge}"
+BIN="${1:?usage: lockout_test.sh <cellar-binary>}"
+H="${CEL_DB_HOST:-localhost}"; U="${CEL_DB_USER:-postgres}"; DB="${CEL_DB_NAME:-cellar}"
 PORT=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
 USER="lockme@test.local"; PW="correct-pw-1"
 
-clean_db() { psql -h "$H" -U "$U" -d "$DB" -c "DELETE FROM pgf_users WHERE email='$USER'" >/dev/null 2>&1 || true; }
+clean_db() { psql -h "$H" -U "$U" -d "$DB" -c "DELETE FROM cel_users WHERE email='$USER'" >/dev/null 2>&1 || true; }
 clean_db
 
-PGF_PORT=$PORT PGF_DB_HOST=$H PGF_DB_USER=$U PGF_DB_NAME=$DB PGF_LOG_LEVEL=warn \
-  PGF_AUTH_RATELIMIT=0 PGF_AUTH_LOCKOUT=3/2 PGF_SEED_USERS="$USER:$PW:editor" \
+CEL_PORT=$PORT CEL_DB_HOST=$H CEL_DB_USER=$U CEL_DB_NAME=$DB CEL_LOG_LEVEL=warn \
+  CEL_AUTH_RATELIMIT=0 CEL_AUTH_LOCKOUT=3/2 CEL_SEED_USERS="$USER:$PW:editor" \
   "$BIN" >/tmp/lk_$$.log 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null || true; rm -f /tmp/lk_$$.log; clean_db' EXIT
@@ -45,7 +45,7 @@ chk "one fail post-reset -> 401" "$(bad)" "401"
 # lock again, then clear it with the admin CLI
 bad >/dev/null; bad >/dev/null
 chk "re-locked: correct pw -> 401" "$(good)" "401"
-PGF_DB_HOST=$H PGF_DB_USER=$U PGF_DB_NAME=$DB PGF_LOG_LEVEL=error "$BIN" unlock "$USER" >/dev/null 2>&1
+CEL_DB_HOST=$H CEL_DB_USER=$U CEL_DB_NAME=$DB CEL_LOG_LEVEL=error "$BIN" unlock "$USER" >/dev/null 2>&1
 chk "correct pw after admin unlock -> 200" "$(good)" "200"
 
 [ "$fail" = 0 ] && echo "LOCKOUT PASS" || { echo "LOCKOUT FAIL"; exit 1; }

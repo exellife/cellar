@@ -9,51 +9,51 @@
 
 /* ---- type normalization ---------------------------------------------------- */
 
-static pgf_coltype_t normalize_type(const char *udt) {
-    if (!strcmp(udt, "int2") || !strcmp(udt, "int4"))         return PGF_T_INT;
-    if (!strcmp(udt, "int8"))                                  return PGF_T_BIGINT;
-    if (!strcmp(udt, "float4") || !strcmp(udt, "float8"))      return PGF_T_FLOAT;
-    if (!strcmp(udt, "numeric"))                               return PGF_T_NUMERIC;
-    if (!strcmp(udt, "bool"))                                  return PGF_T_BOOL;
+static cel_coltype_t normalize_type(const char *udt) {
+    if (!strcmp(udt, "int2") || !strcmp(udt, "int4"))         return CEL_T_INT;
+    if (!strcmp(udt, "int8"))                                  return CEL_T_BIGINT;
+    if (!strcmp(udt, "float4") || !strcmp(udt, "float8"))      return CEL_T_FLOAT;
+    if (!strcmp(udt, "numeric"))                               return CEL_T_NUMERIC;
+    if (!strcmp(udt, "bool"))                                  return CEL_T_BOOL;
     if (!strcmp(udt, "text") || !strcmp(udt, "varchar") ||
-        !strcmp(udt, "bpchar") || !strcmp(udt, "name"))        return PGF_T_TEXT;
-    if (!strcmp(udt, "uuid"))                                  return PGF_T_UUID;
-    if (!strcmp(udt, "timestamptz") || !strcmp(udt, "timestamp")) return PGF_T_TIMESTAMPTZ;
-    if (!strcmp(udt, "date"))                                  return PGF_T_DATE;
-    if (!strcmp(udt, "json") || !strcmp(udt, "jsonb"))         return PGF_T_JSON;
-    return PGF_T_OTHER;
+        !strcmp(udt, "bpchar") || !strcmp(udt, "name"))        return CEL_T_TEXT;
+    if (!strcmp(udt, "uuid"))                                  return CEL_T_UUID;
+    if (!strcmp(udt, "timestamptz") || !strcmp(udt, "timestamp")) return CEL_T_TIMESTAMPTZ;
+    if (!strcmp(udt, "date"))                                  return CEL_T_DATE;
+    if (!strcmp(udt, "json") || !strcmp(udt, "jsonb"))         return CEL_T_JSON;
+    return CEL_T_OTHER;
 }
 
-const char *pgf_coltype_name(pgf_coltype_t t) {
+const char *cel_coltype_name(cel_coltype_t t) {
     switch (t) {
-        case PGF_T_INT:         return "int";
-        case PGF_T_BIGINT:      return "bigint";
-        case PGF_T_FLOAT:       return "float";
-        case PGF_T_NUMERIC:     return "numeric";
-        case PGF_T_BOOL:        return "bool";
-        case PGF_T_TEXT:        return "text";
-        case PGF_T_UUID:        return "uuid";
-        case PGF_T_TIMESTAMPTZ: return "timestamptz";
-        case PGF_T_DATE:        return "date";
-        case PGF_T_JSON:        return "json";
+        case CEL_T_INT:         return "int";
+        case CEL_T_BIGINT:      return "bigint";
+        case CEL_T_FLOAT:       return "float";
+        case CEL_T_NUMERIC:     return "numeric";
+        case CEL_T_BOOL:        return "bool";
+        case CEL_T_TEXT:        return "text";
+        case CEL_T_UUID:        return "uuid";
+        case CEL_T_TIMESTAMPTZ: return "timestamptz";
+        case CEL_T_DATE:        return "date";
+        case CEL_T_JSON:        return "json";
         default:                return "other";
     }
 }
 
 /* ---- builders -------------------------------------------------------------- */
 
-static pgf_table_t *find_table(pgf_catalog_t *cat, const char *name) {
+static cel_table_t *find_table(cel_catalog_t *cat, const char *name) {
     for (int i = 0; i < cat->ntables; i++)
         if (!strcmp(cat->tables[i].name, name)) return &cat->tables[i];
     return NULL;
 }
 
-static pgf_table_t *find_or_add_table(pgf_catalog_t *cat, const char *name) {
-    pgf_table_t *t = find_table(cat, name);
+static cel_table_t *find_or_add_table(cel_catalog_t *cat, const char *name) {
+    cel_table_t *t = find_table(cat, name);
     if (t) return t;
     /* L-9: grow via a temp so a realloc failure neither leaks the old block nor
      * dereferences NULL / bumps the count. (Boot-time OOM only.) */
-    pgf_table_t *grown = realloc(cat->tables, (cat->ntables + 1) * sizeof *cat->tables);
+    cel_table_t *grown = realloc(cat->tables, (cat->ntables + 1) * sizeof *cat->tables);
     if (!grown) return NULL;
     cat->tables = grown;
     t = &cat->tables[cat->ntables++];
@@ -63,17 +63,17 @@ static pgf_table_t *find_or_add_table(pgf_catalog_t *cat, const char *name) {
     return t;
 }
 
-static pgf_column_t *find_column(pgf_table_t *t, const char *name) {
+static cel_column_t *find_column(cel_table_t *t, const char *name) {
     for (int i = 0; i < t->ncols; i++)
         if (!strcmp(t->cols[i].name, name)) return &t->cols[i];
     return NULL;
 }
 
-static pgf_column_t *add_column(pgf_table_t *t, const char *name) {
-    pgf_column_t *grown = realloc(t->cols, (t->ncols + 1) * sizeof *t->cols);   /* L-9: see above */
+static cel_column_t *add_column(cel_table_t *t, const char *name) {
+    cel_column_t *grown = realloc(t->cols, (t->ncols + 1) * sizeof *t->cols);   /* L-9: see above */
     if (!grown) return NULL;
     t->cols = grown;
-    pgf_column_t *c = &t->cols[t->ncols++];
+    cel_column_t *c = &t->cols[t->ncols++];
     memset(c, 0, sizeof *c);
     snprintf(c->name, sizeof c->name, "%s", name);
     return c;
@@ -81,11 +81,11 @@ static pgf_column_t *add_column(pgf_table_t *t, const char *name) {
 
 /* ---- introspection --------------------------------------------------------- */
 
-pgf_catalog_t *pgf_catalog_build(void) {
+cel_catalog_t *cel_catalog_build(void) {
     PGconn *c = db_connection_acquire();
     if (!c) { LOG_ERROR("catalog: no db connection"); return NULL; }
 
-    pgf_catalog_t *cat = calloc(1, sizeof *cat);
+    cel_catalog_t *cat = calloc(1, sizeof *cat);
     if (!cat) { db_connection_release(c); return NULL; }
 
     /* 1) columns (ordered so each table's columns are contiguous) */
@@ -100,14 +100,14 @@ pgf_catalog_t *pgf_catalog_build(void) {
         "ORDER BY c.table_name, c.ordinal_position");
     if (PQresultStatus(r) != PGRES_TUPLES_OK) {
         LOG_ERROR("catalog: columns query failed: %s", PQerrorMessage(c));
-        PQclear(r); pgf_catalog_free(cat); db_connection_release(c); return NULL;
+        PQclear(r); cel_catalog_free(cat); db_connection_release(c); return NULL;
     }
     for (int i = 0; i < PQntuples(r); i++) {
-        pgf_table_t  *t = find_or_add_table(cat, PQgetvalue(r, i, 0));
-        pgf_column_t *col = t ? add_column(t, PQgetvalue(r, i, 1)) : NULL;
+        cel_table_t  *t = find_or_add_table(cat, PQgetvalue(r, i, 0));
+        cel_column_t *col = t ? add_column(t, PQgetvalue(r, i, 1)) : NULL;
         if (!col) {   /* L-9: boot-time OOM growing the catalog — fail the build */
             LOG_ERROR("catalog: out of memory building schema");
-            PQclear(r); pgf_catalog_free(cat); db_connection_release(c); return NULL;
+            PQclear(r); cel_catalog_free(cat); db_connection_release(c); return NULL;
         }
         snprintf(col->pg_type, sizeof col->pg_type, "%s", PQgetvalue(r, i, 2));
         col->type        = normalize_type(col->pg_type);
@@ -127,9 +127,9 @@ pgf_catalog_t *pgf_catalog_build(void) {
         "  AND tc.table_name NOT LIKE 'pgf\\_%'");
     if (PQresultStatus(r) == PGRES_TUPLES_OK) {
         for (int i = 0; i < PQntuples(r); i++) {
-            pgf_table_t *t = find_table(cat, PQgetvalue(r, i, 0));
+            cel_table_t *t = find_table(cat, PQgetvalue(r, i, 0));
             if (!t) continue;
-            pgf_column_t *col = find_column(t, PQgetvalue(r, i, 1));
+            cel_column_t *col = find_column(t, PQgetvalue(r, i, 1));
             if (!col) continue;
             col->is_pk = true;
             if (t->pk_index < 0) t->pk_index = (int)(col - t->cols);
@@ -152,9 +152,9 @@ pgf_catalog_t *pgf_catalog_build(void) {
         "  AND tc.table_name NOT LIKE 'pgf\\_%'");
     if (PQresultStatus(r) == PGRES_TUPLES_OK) {
         for (int i = 0; i < PQntuples(r); i++) {
-            pgf_table_t *t = find_table(cat, PQgetvalue(r, i, 0));
+            cel_table_t *t = find_table(cat, PQgetvalue(r, i, 0));
             if (!t) continue;
-            pgf_column_t *col = find_column(t, PQgetvalue(r, i, 1));
+            cel_column_t *col = find_column(t, PQgetvalue(r, i, 1));
             if (!col) continue;
             col->is_fk = true;
             snprintf(col->fk_table,  sizeof col->fk_table,  "%s", PQgetvalue(r, i, 2));
@@ -168,21 +168,21 @@ pgf_catalog_t *pgf_catalog_build(void) {
     return cat;
 }
 
-void pgf_catalog_free(pgf_catalog_t *cat) {
+void cel_catalog_free(cel_catalog_t *cat) {
     if (!cat) return;
     for (int i = 0; i < cat->ntables; i++) free(cat->tables[i].cols);
     free(cat->tables);
     free(cat);
 }
 
-const pgf_table_t *pgf_catalog_find(const pgf_catalog_t *cat, const char *table) {
+const cel_table_t *cel_catalog_find(const cel_catalog_t *cat, const char *table) {
     if (!cat || !table) return NULL;
     for (int i = 0; i < cat->ntables; i++)
         if (!strcmp(cat->tables[i].name, table)) return &cat->tables[i];
     return NULL;
 }
 
-const pgf_column_t *pgf_table_column(const pgf_table_t *t, const char *column) {
+const cel_column_t *cel_table_column(const cel_table_t *t, const char *column) {
     if (!t || !column) return NULL;
     for (int i = 0; i < t->ncols; i++)
         if (!strcmp(t->cols[i].name, column)) return &t->cols[i];
@@ -191,12 +191,12 @@ const pgf_column_t *pgf_table_column(const pgf_table_t *t, const char *column) {
 
 /* ---- JSON ------------------------------------------------------------------ */
 
-cJSON *pgf_catalog_to_cjson(const pgf_catalog_t *cat) {
+cJSON *cel_catalog_to_cjson(const cel_catalog_t *cat) {
     cJSON *root   = cJSON_CreateObject();
     cJSON *tables = cJSON_AddArrayToObject(root, "tables");
 
     for (int i = 0; cat && i < cat->ntables; i++) {
-        const pgf_table_t *t = &cat->tables[i];
+        const cel_table_t *t = &cat->tables[i];
         cJSON *jt = cJSON_CreateObject();
         cJSON_AddStringToObject(jt, "name", t->name);
         if (t->pk_index >= 0)
@@ -206,10 +206,10 @@ cJSON *pgf_catalog_to_cjson(const pgf_catalog_t *cat) {
 
         cJSON *cols = cJSON_AddArrayToObject(jt, "columns");
         for (int j = 0; j < t->ncols; j++) {
-            const pgf_column_t *col = &t->cols[j];
+            const cel_column_t *col = &t->cols[j];
             cJSON *jc = cJSON_CreateObject();
             cJSON_AddStringToObject(jc, "name", col->name);
-            cJSON_AddStringToObject(jc, "type", pgf_coltype_name(col->type));
+            cJSON_AddStringToObject(jc, "type", cel_coltype_name(col->type));
             cJSON_AddStringToObject(jc, "pg_type", col->pg_type);
             cJSON_AddBoolToObject(jc, "nullable", col->nullable);
             cJSON_AddBoolToObject(jc, "primary_key", col->is_pk);
@@ -228,8 +228,8 @@ cJSON *pgf_catalog_to_cjson(const pgf_catalog_t *cat) {
     return root;
 }
 
-char *pgf_catalog_to_json(const pgf_catalog_t *cat) {
-    cJSON *root = pgf_catalog_to_cjson(cat);
+char *cel_catalog_to_json(const cel_catalog_t *cat) {
+    cJSON *root = cel_catalog_to_cjson(cat);
     char *s = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     return s;
@@ -237,6 +237,6 @@ char *pgf_catalog_to_json(const pgf_catalog_t *cat) {
 
 /* ---- active catalog -------------------------------------------------------- */
 
-static pgf_catalog_t *g_active = NULL;
-void                 pgf_catalog_set_active(pgf_catalog_t *cat) { g_active = cat; }
-const pgf_catalog_t *pgf_catalog_active(void)                   { return g_active; }
+static cel_catalog_t *g_active = NULL;
+void                 cel_catalog_set_active(cel_catalog_t *cat) { g_active = cat; }
+const cel_catalog_t *cel_catalog_active(void)                   { return g_active; }

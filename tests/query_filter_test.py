@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""pgforge boolean filter tree end-to-end (#52). Exercises and/or/not/between via
+"""cellar boolean filter tree end-to-end (#52). Exercises and/or/not/between via
 the REST `where=<url-encoded JSON>` param against live Postgres, on an isolated
 fixture (one category, 7 products priced 1..7). Self-cleaning. Booted by harness.
 """
 import http.client, json, sys
 from urllib.parse import urlparse, quote
 
-ADMIN = ("admin@pgforge.dev", "s3cret-admin")
+ADMIN = ("admin@cellar.dev", "s3cret-admin")
 HOST = PORT = None
 
 

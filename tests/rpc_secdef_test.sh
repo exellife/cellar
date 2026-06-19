@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # H-4: a whitelisted RPC function defined SECURITY DEFINER bypasses row-level
-# security (a tenant-isolation risk in pooled mode). pgforge must warn loudly
+# security (a tenant-isolation risk in pooled mode). cellar must warn loudly
 # about it at startup, and must NOT warn about a normal SECURITY INVOKER function.
-# rpc_secdef_test.sh <pgforge-binary>
+# rpc_secdef_test.sh <cellar-binary>
 set -euo pipefail
 
-BIN="${1:?usage: rpc_secdef_test.sh <pgforge-binary>}"
-H="${PGF_DB_HOST:-localhost}"
-U="${PGF_DB_USER:-postgres}"
-DB=pgf_rpc_secdef_test
+BIN="${1:?usage: rpc_secdef_test.sh <cellar-binary>}"
+H="${CEL_DB_HOST:-localhost}"
+U="${CEL_DB_USER:-postgres}"
+DB=cel_rpc_secdef_test
 PSQL="psql -h $H -U $U"
-POL=/tmp/pgf_rpc_secdef_pol.json
-LOG="/tmp/pgf_rpc_secdef_$$.log"
+POL=/tmp/cel_rpc_secdef_pol.json
+LOG="/tmp/cel_rpc_secdef_$$.log"
 SRV=""
 
 cleanup() {
@@ -37,8 +37,8 @@ cat > "$POL" <<'JSON'
 JSON
 
 PORT=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
-env PGF_PORT="$PORT" PGF_DB_HOST="$H" PGF_DB_USER="$U" PGF_DB_NAME="$DB" PGF_LOG_LEVEL=warn \
-    PGF_TENANT_COLUMN=tenant_id PGF_POLICY_FILE="$POL" \
+env CEL_PORT="$PORT" CEL_DB_HOST="$H" CEL_DB_USER="$U" CEL_DB_NAME="$DB" CEL_LOG_LEVEL=warn \
+    CEL_TENANT_COLUMN=tenant_id CEL_POLICY_FILE="$POL" \
     "$BIN" >"$LOG" 2>&1 &
 SRV=$!
 for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/health" && break; sleep 0.1; done

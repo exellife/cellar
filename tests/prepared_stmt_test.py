@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""pgforge prepared-statement cache (perf lever): the data-API path
+"""cellar prepared-statement cache (perf lever): the data-API path
 (run_rows → db_connection_exec_cached) PQprepares each distinct SQL once per
 pooled connection and PQexecPrepares thereafter, so repeated query shapes stop
-re-planning. Proven observably via the pgf_db_prepared_statements_total counter:
+re-planning. Proven observably via the cel_db_prepared_statements_total counter:
 hammer one identical query shape and assert "reuse" dominates "prepare".
 
-Negative control: boot the server with PGF_PREPARED_STATEMENTS=0 and re-run —
+Negative control: boot the server with CEL_PREPARED_STATEMENTS=0 and re-run —
 exec_cached falls back to PQexecParams, both counters stay flat, and the
 "reuse advanced" assertion below fails (proving the test exercises the feature).
 
@@ -15,8 +15,8 @@ import http.client, json, os, sys
 from urllib.parse import urlparse
 
 HOST = PORT = None
-TOKEN = os.environ.get("PGF_METRICS_TOKEN", "")   # /metrics is bearer-gated (L-3)
-ADMIN = ("admin@pgforge.dev", "s3cret-admin")
+TOKEN = os.environ.get("CEL_METRICS_TOKEN", "")   # /metrics is bearer-gated (L-3)
+ADMIN = ("admin@cellar.dev", "s3cret-admin")
 N = 120
 
 
@@ -52,8 +52,8 @@ def metric(doc, line_prefix):
 
 def counters(token):
     _, doc = get("/metrics", token=TOKEN)
-    return (metric(doc, 'pgf_db_prepared_statements_total{result="prepare"}') or 0,
-            metric(doc, 'pgf_db_prepared_statements_total{result="reuse"}') or 0)
+    return (metric(doc, 'cel_db_prepared_statements_total{result="prepare"}') or 0,
+            metric(doc, 'cel_db_prepared_statements_total{result="reuse"}') or 0)
 
 
 def main():
@@ -63,13 +63,13 @@ def main():
         print(f"  {'ok' if cond else 'FAIL':<5} {name:<42} {detail}")
         ok += bool(cond); fail += (not cond)
 
-    print(f"== pgforge prepared-statement cache -> {HOST}:{PORT} ==")
+    print(f"== cellar prepared-statement cache -> {HOST}:{PORT} ==")
 
     token = login()
     chk("admin login", bool(token))
 
     chk("counter series exposed",
-        "pgf_db_prepared_statements_total" in get("/metrics", token=TOKEN)[1])
+        "cel_db_prepared_statements_total" in get("/metrics", token=TOKEN)[1])
 
     prep0, reuse0 = counters(token)
 

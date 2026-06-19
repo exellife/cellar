@@ -5,17 +5,17 @@
 /* Convert one text cell to a typed JSON value. NUMERIC/BIGINT are emitted as
  * JSON numbers (note: very large int8/high-precision numeric may lose exactness
  * through double — acceptable for dashboard display; revisit if needed). */
-static cJSON *cell_to_json(const char *txt, pgf_coltype_t type) {
+static cJSON *cell_to_json(const char *txt, cel_coltype_t type) {
     switch (type) {
-        case PGF_T_INT:
-        case PGF_T_BIGINT:
+        case CEL_T_INT:
+        case CEL_T_BIGINT:
             return cJSON_CreateNumber((double)strtoll(txt, NULL, 10));
-        case PGF_T_FLOAT:
-        case PGF_T_NUMERIC:
+        case CEL_T_FLOAT:
+        case CEL_T_NUMERIC:
             return cJSON_CreateNumber(strtod(txt, NULL));
-        case PGF_T_BOOL:
+        case CEL_T_BOOL:
             return cJSON_CreateBool(txt[0] == 't');
-        case PGF_T_JSON: {
+        case CEL_T_JSON: {
             cJSON *j = cJSON_Parse(txt);
             return j ? j : cJSON_CreateString(txt);
         }
@@ -26,18 +26,18 @@ static cJSON *cell_to_json(const char *txt, pgf_coltype_t type) {
 
 /* Map a Postgres type OID to our normalized type (for table-less results). The
  * OIDs are stable built-ins; anything unrecognized serializes as a string. */
-static pgf_coltype_t oid_to_type(Oid oid) {
+static cel_coltype_t oid_to_type(Oid oid) {
     switch (oid) {
-        case 16:                   return PGF_T_BOOL;     /* bool */
-        case 20: case 21: case 23: return PGF_T_BIGINT;   /* int8 / int2 / int4 */
-        case 700: case 701:        return PGF_T_FLOAT;    /* float4 / float8 */
-        case 1700:                 return PGF_T_NUMERIC;  /* numeric */
-        case 114: case 3802:       return PGF_T_JSON;     /* json / jsonb */
-        default:                   return PGF_T_TEXT;
+        case 16:                   return CEL_T_BOOL;     /* bool */
+        case 20: case 21: case 23: return CEL_T_BIGINT;   /* int8 / int2 / int4 */
+        case 700: case 701:        return CEL_T_FLOAT;    /* float4 / float8 */
+        case 1700:                 return CEL_T_NUMERIC;  /* numeric */
+        case 114: case 3802:       return CEL_T_JSON;     /* json / jsonb */
+        default:                   return CEL_T_TEXT;
     }
 }
 
-cJSON *pgf_result_to_json(PGresult *res) {
+cJSON *cel_result_to_json(PGresult *res) {
     cJSON *arr = cJSON_CreateArray();
     if (!arr) return NULL;
     int nrows = PQntuples(res), nfields = PQnfields(res);
@@ -57,7 +57,7 @@ cJSON *pgf_result_to_json(PGresult *res) {
     return arr;
 }
 
-cJSON *pgf_rows_to_json(PGresult *res, const pgf_table_t *t) {
+cJSON *cel_rows_to_json(PGresult *res, const cel_table_t *t) {
     cJSON *arr = cJSON_CreateArray();
     if (!arr) return NULL;
 
@@ -74,8 +74,8 @@ cJSON *pgf_rows_to_json(PGresult *res, const pgf_table_t *t) {
                 continue;
             }
             const char *val = PQgetvalue(res, r, f);
-            const pgf_column_t *col = pgf_table_column(t, name);
-            pgf_coltype_t type = col ? col->type : PGF_T_TEXT;
+            const cel_column_t *col = cel_table_column(t, name);
+            cel_coltype_t type = col ? col->type : CEL_T_TEXT;
             cJSON_AddItemToObject(obj, name, cell_to_json(val, type));
         }
         cJSON_AddItemToArray(arr, obj);

@@ -76,7 +76,7 @@ static int hotp(const uint8_t *key, size_t keylen, uint64_t counter,
     return 0;
 }
 
-int pgf_totp_code_at(const char *secret_b32, uint64_t unix_time,
+int cel_totp_code_at(const char *secret_b32, uint64_t unix_time,
                      char *out, size_t out_size) {
     if (!secret_b32) return -1;
     uint8_t key[64];
@@ -87,7 +87,7 @@ int pgf_totp_code_at(const char *secret_b32, uint64_t unix_time,
     return rc;
 }
 
-bool pgf_totp_verify(const char *secret_b32, const char *code, int window) {
+bool cel_totp_verify(const char *secret_b32, const char *code, int window) {
     if (!secret_b32 || !code || window < 0) return false;
 
     char norm[16];                                           /* strip spaces */
@@ -102,7 +102,7 @@ bool pgf_totp_verify(const char *secret_b32, const char *code, int window) {
     for (int w = -window; w <= window; w++) {                /* full sweep: constant work */
         uint64_t t = (uint64_t)((int64_t)now + (int64_t)w * TOTP_STEP);
         char expect[8];
-        if (pgf_totp_code_at(secret_b32, t, expect, sizeof expect) == 0 &&
+        if (cel_totp_code_at(secret_b32, t, expect, sizeof expect) == 0 &&
             sodium_memcmp(expect, norm, TOTP_DIGITS) == 0)
             ok = true;
         sodium_memzero(expect, sizeof expect);
@@ -110,7 +110,7 @@ bool pgf_totp_verify(const char *secret_b32, const char *code, int window) {
     return ok;
 }
 
-int pgf_totp_generate_secret(char *out, size_t out_size) {
+int cel_totp_generate_secret(char *out, size_t out_size) {
     uint8_t raw[20];                                         /* 160-bit, the RFC default */
     randombytes_buf(raw, sizeof raw);
     int rc = b32_encode(raw, sizeof raw, out, out_size);
@@ -118,7 +118,7 @@ int pgf_totp_generate_secret(char *out, size_t out_size) {
     return rc;
 }
 
-int pgf_totp_uri(const char *secret_b32, const char *issuer, const char *account,
+int cel_totp_uri(const char *secret_b32, const char *issuer, const char *account,
                  char *out, size_t out_size) {
     if (!secret_b32 || !issuer || !account) return -1;
     int n = snprintf(out, out_size,

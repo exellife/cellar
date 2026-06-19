@@ -5,19 +5,19 @@
 #include <string.h>
 
 /* Map a normalized column type to an OpenAPI (JSON Schema) type + optional format. */
-static void oa_type(cJSON *prop, pgf_coltype_t t) {
+static void oa_type(cJSON *prop, cel_coltype_t t) {
     const char *type = "string", *format = NULL;
     switch (t) {
-        case PGF_T_INT:         type = "integer"; format = "int32"; break;
-        case PGF_T_BIGINT:      type = "integer"; format = "int64"; break;
-        case PGF_T_FLOAT:       type = "number";  format = "double"; break;
-        case PGF_T_NUMERIC:     type = "number";  break;
-        case PGF_T_BOOL:        type = "boolean"; break;
-        case PGF_T_UUID:        type = "string";  format = "uuid"; break;
-        case PGF_T_TIMESTAMPTZ: type = "string";  format = "date-time"; break;
-        case PGF_T_DATE:        type = "string";  format = "date"; break;
-        case PGF_T_JSON:        type = "object";  break;
-        case PGF_T_TEXT:
+        case CEL_T_INT:         type = "integer"; format = "int32"; break;
+        case CEL_T_BIGINT:      type = "integer"; format = "int64"; break;
+        case CEL_T_FLOAT:       type = "number";  format = "double"; break;
+        case CEL_T_NUMERIC:     type = "number";  break;
+        case CEL_T_BOOL:        type = "boolean"; break;
+        case CEL_T_UUID:        type = "string";  format = "uuid"; break;
+        case CEL_T_TIMESTAMPTZ: type = "string";  format = "date-time"; break;
+        case CEL_T_DATE:        type = "string";  format = "date"; break;
+        case CEL_T_JSON:        type = "object";  break;
+        case CEL_T_TEXT:
         default:                type = "string";  break;
     }
     cJSON_AddStringToObject(prop, "type", type);
@@ -27,13 +27,13 @@ static void oa_type(cJSON *prop, pgf_coltype_t t) {
 /* One JSON-Schema object per table: every column as a typed property. PK and
  * defaulted columns are readOnly (server-set); a NOT NULL column with no default
  * and not the PK is required on create. */
-static cJSON *table_schema(const pgf_table_t *t) {
+static cJSON *table_schema(const cel_table_t *t) {
     cJSON *sc = cJSON_CreateObject();
     cJSON_AddStringToObject(sc, "type", "object");
     cJSON *props = cJSON_AddObjectToObject(sc, "properties");
     cJSON *required = cJSON_CreateArray();
     for (int i = 0; i < t->ncols; i++) {
-        const pgf_column_t *c = &t->cols[i];
+        const cel_column_t *c = &t->cols[i];
         cJSON *p = cJSON_AddObjectToObject(props, c->name);
         oa_type(p, c->type);
         if (c->nullable) cJSON_AddBoolToObject(p, "nullable", true);
@@ -108,12 +108,12 @@ static cJSON *list_wrapper(const char *table) {
     return sc;
 }
 
-struct cJSON *pgf_openapi_build(const pgf_catalog_t *cat, const char *version) {
+struct cJSON *cel_openapi_build(const cel_catalog_t *cat, const char *version) {
     cJSON *doc = cJSON_CreateObject();
     cJSON_AddStringToObject(doc, "openapi", "3.0.3");
 
     cJSON *info = cJSON_AddObjectToObject(doc, "info");
-    cJSON_AddStringToObject(info, "title", "pgforge API");
+    cJSON_AddStringToObject(info, "title", "cellar API");
     cJSON_AddStringToObject(info, "version", version && *version ? version : "0");
     cJSON_AddStringToObject(info, "description",
         "Auto-generated from the live schema catalog. Bearer token from POST /auth/login.");
@@ -151,7 +151,7 @@ struct cJSON *pgf_openapi_build(const pgf_catalog_t *cat, const char *version) {
     }
 
     for (int i = 0; cat && i < cat->ntables; i++) {
-        const pgf_table_t *t = &cat->tables[i];
+        const cel_table_t *t = &cat->tables[i];
         cJSON_AddItemToObject(schemas, t->name, table_schema(t));
 
         /* /api/<table> : GET list, POST create */

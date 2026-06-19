@@ -33,19 +33,19 @@ static int run_sql(PGconn *c, const char *sql) {
 static int ensure_table(PGconn *c) {
     run_sql(c, "SET client_min_messages = warning");   /* quiet IF-NOT-EXISTS notices */
     if (run_sql(c,
-        "CREATE TABLE IF NOT EXISTS pgf_migrations ("
+        "CREATE TABLE IF NOT EXISTS cel_migrations ("
         "  name text PRIMARY KEY,"
         "  checksum text NOT NULL DEFAULT '',"
         "  applied_at timestamptz NOT NULL DEFAULT now())") != 0) return -1;
     /* upgrade path for installs created before the checksum column existed */
-    return run_sql(c, "ALTER TABLE pgf_migrations ADD COLUMN IF NOT EXISTS "
+    return run_sql(c, "ALTER TABLE cel_migrations ADD COLUMN IF NOT EXISTS "
                       "checksum text NOT NULL DEFAULT ''");
 }
 
 /* Apply each pending migration in `list`. Already-applied ones are skipped, but
  * their checksum is verified (and backfilled for pre-checksum installs); an
  * edited-after-apply migration is a hard error. Returns 0/-1. */
-static int apply_list(PGconn *c, const pgf_migration_t *list, int count,
+static int apply_list(PGconn *c, const cel_migration_t *list, int count,
                       const char *prefix, int *applied) {
     for (int i = 0; i < count; i++) {
         char name[256];
@@ -54,14 +54,14 @@ static int apply_list(PGconn *c, const pgf_migration_t *list, int count,
         checksum_hex(list[i].sql, sum);
 
         const char *p1[1] = { name };
-        PGresult *r = PQexecParams(c, "SELECT checksum FROM pgf_migrations WHERE name=$1",
+        PGresult *r = PQexecParams(c, "SELECT checksum FROM cel_migrations WHERE name=$1",
                                    1, NULL, p1, NULL, NULL, 0);
         if (PQresultStatus(r) != PGRES_TUPLES_OK) { PQclear(r); return -1; }
         if (PQntuples(r) == 1) {
             const char *stored = PQgetvalue(r, 0, 0);
             if (stored[0] == '\0') {
                 const char *up[2] = { sum, name };   /* backfill */
-                PQclear(PQexecParams(c, "UPDATE pgf_migrations SET checksum=$1 WHERE name=$2",
+                PQclear(PQexecParams(c, "UPDATE cel_migrations SET checksum=$1 WHERE name=$2",
                                      2, NULL, up, NULL, NULL, 0));
             } else if (strcmp(stored, sum) != 0) {
                 LOG_ERROR("migrate: '%s' was modified after being applied "
@@ -78,7 +78,7 @@ static int apply_list(PGconn *c, const pgf_migration_t *list, int count,
         if (run_sql(c, "BEGIN") != 0) return -1;
         if (run_sql(c, list[i].sql) != 0) { run_sql(c, "ROLLBACK"); return -1; }
         const char *ins[2] = { name, sum };
-        PGresult *r2 = PQexecParams(c, "INSERT INTO pgf_migrations(name, checksum) VALUES($1, $2)",
+        PGresult *r2 = PQexecParams(c, "INSERT INTO cel_migrations(name, checksum) VALUES($1, $2)",
                                     2, NULL, ins, NULL, NULL, 0);
         int ok = PQresultStatus(r2) == PGRES_COMMAND_OK;
         PQclear(r2);
@@ -89,7 +89,7 @@ static int apply_list(PGconn *c, const pgf_migration_t *list, int count,
     return 0;
 }
 
-int pgf_migrate_run(int with_demo, int with_tenancy, int *applied_out) {
+int cel_migrate_run(int with_demo, int with_tenancy, int *applied_out) {
     if (applied_out) *applied_out = 0;
     PGconn *c = db_connection_acquire();
     if (!c) { LOG_ERROR("migrate: no database connection"); return -1; }
@@ -97,12 +97,12 @@ int pgf_migrate_run(int with_demo, int with_tenancy, int *applied_out) {
     int rc = -1;
     if (run_sql(c, "SELECT pg_advisory_lock(" MIGRATE_LOCK_KEY ")") != 0) goto out;
     if (ensure_table(c) != 0) goto unlock;
-    if (apply_list(c, PGF_MIGRATIONS, PGF_MIGRATIONS_COUNT, "", applied_out) != 0) goto unlock;
+    if (apply_list(c, CEL_MIGRATIONS, CEL_MIGRATIONS_COUNT, "", applied_out) != 0) goto unlock;
     if (with_tenancy &&
-        apply_list(c, PGF_TENANCY_MIGRATIONS, PGF_TENANCY_MIGRATIONS_COUNT, "tenancy:", applied_out) != 0)
+        apply_list(c, CEL_TENANCY_MIGRATIONS, CEL_TENANCY_MIGRATIONS_COUNT, "tenancy:", applied_out) != 0)
         goto unlock;
     if (with_demo &&
-        apply_list(c, PGF_DEMO_MIGRATIONS, PGF_DEMO_MIGRATIONS_COUNT, "demo:", applied_out) != 0)
+        apply_list(c, CEL_DEMO_MIGRATIONS, CEL_DEMO_MIGRATIONS_COUNT, "demo:", applied_out) != 0)
         goto unlock;
     rc = 0;
 unlock:
@@ -112,13 +112,13 @@ out:
     return rc;
 }
 
-static int status_list(PGconn *c, const pgf_migration_t *list, int count,
+static int status_list(PGconn *c, const cel_migration_t *list, int count,
                        const char *prefix, int *done, int *pending) {
     for (int i = 0; i < count; i++) {
         char name[256];
         snprintf(name, sizeof name, "%s%s", prefix, list[i].name);
         const char *p[1] = { name };
-        PGresult *r = PQexecParams(c, "SELECT 1 FROM pgf_migrations WHERE name=$1",
+        PGresult *r = PQexecParams(c, "SELECT 1 FROM cel_migrations WHERE name=$1",
                                    1, NULL, p, NULL, NULL, 0);
         if (PQresultStatus(r) != PGRES_TUPLES_OK) { PQclear(r); return -1; }
         int applied = PQntuples(r) > 0;
@@ -142,7 +142,7 @@ static int is_safe_ident(const char *s) {
     return 1;
 }
 
-int pgf_tenancy_protect(const char *tenant_column) {
+int cel_tenancy_protect(const char *tenant_column) {
     if (!is_safe_ident(tenant_column)) {
         LOG_ERROR("tenancy-protect: invalid tenant column '%s'", tenant_column ? tenant_column : "(null)");
         return -1;
@@ -151,7 +151,7 @@ int pgf_tenancy_protect(const char *tenant_column) {
     if (!c) { LOG_ERROR("tenancy-protect: no database connection"); return -1; }
 
     /* Enable RLS + FORCE + the isolation policy on every public BASE TABLE that
-     * carries the tenant column (excluding pgforge's own pgf_* tables). The
+     * carries the tenant column (excluding cellar's own cel_* tables). The
      * policy is fail-closed: an unset app.tenant_id (current_setting -> NULL)
      * matches no rows; the platform admin binds the '*' sentinel to see all.
      * FORCE makes the policy apply even to the table owner. (The serving role
@@ -166,14 +166,14 @@ int pgf_tenancy_protect(const char *tenant_column) {
         "  FOR r IN SELECT c.table_name AS t FROM information_schema.columns c\n"
         "           JOIN information_schema.tables tb USING (table_schema, table_name)\n"
         "           WHERE c.table_schema='public' AND c.column_name=col\n"
-        "             AND tb.table_type='BASE TABLE' AND left(c.table_name,4) <> 'pgf_' LOOP\n"
+        "             AND tb.table_type='BASE TABLE' AND left(c.table_name,4) <> 'cel_' LOOP\n"
         "    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', r.t);\n"
         "    EXECUTE format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY', r.t);\n"
-        "    EXECUTE format('DROP POLICY IF EXISTS pgf_tenant_isolation ON public.%I', r.t);\n"
-        "    EXECUTE format('CREATE POLICY pgf_tenant_isolation ON public.%I USING ("
+        "    EXECUTE format('DROP POLICY IF EXISTS cel_tenant_isolation ON public.%I', r.t);\n"
+        "    EXECUTE format('CREATE POLICY cel_tenant_isolation ON public.%I USING ("
                   "current_setting(''app.tenant_id'',true) = ''*'' OR "
                   "%I::text = current_setting(''app.tenant_id'',true))', r.t, col);\n"
-        "    RAISE NOTICE 'pgforge: RLS protecting public.%', r.t;\n"
+        "    RAISE NOTICE 'cellar: RLS protecting public.%', r.t;\n"
         "  END LOOP;\nEND\n$pgf$;";
     size_t n = strlen(PRE) + strlen(tenant_column) + strlen(SUF) + 1;
     char *sql = malloc(n);
@@ -190,11 +190,11 @@ int pgf_tenancy_protect(const char *tenant_column) {
 
 /* ---- tenant lifecycle (pooled mode) --------------------------------------- */
 
-int pgf_tenant_create(const char *name, char *out_id, size_t out_sz) {
+int cel_tenant_create(const char *name, char *out_id, size_t out_sz) {
     PGconn *c = db_connection_acquire();
     if (!c) return -1;
     const char *p[1] = { name };
-    PGresult *r = PQexecParams(c, "INSERT INTO pgf_tenants(name) VALUES($1) RETURNING id::text",
+    PGresult *r = PQexecParams(c, "INSERT INTO cel_tenants(name) VALUES($1) RETURNING id::text",
                                1, NULL, p, NULL, NULL, 0);
     int rc = -1;
     if (PQresultStatus(r) == PGRES_TUPLES_OK && PQntuples(r) == 1) {
@@ -208,11 +208,11 @@ int pgf_tenant_create(const char *name, char *out_id, size_t out_sz) {
     return rc;
 }
 
-int pgf_tenant_assign_user(const char *email, const char *tenant_id) {
+int cel_tenant_assign_user(const char *email, const char *tenant_id) {
     PGconn *c = db_connection_acquire();
     if (!c) return -1;
     const char *p[2] = { tenant_id, email };
-    PGresult *r = PQexecParams(c, "UPDATE pgf_users SET tenant_id=$1 WHERE email=$2",
+    PGresult *r = PQexecParams(c, "UPDATE cel_users SET tenant_id=$1 WHERE email=$2",
                                2, NULL, p, NULL, NULL, 0);
     int rc = (PQresultStatus(r) == PGRES_COMMAND_OK && atoi(PQcmdTuples(r)) == 1) ? 0 : -1;
     if (rc != 0) LOG_ERROR("assign-user: no such user '%s' (or db error)", email);
@@ -221,7 +221,7 @@ int pgf_tenant_assign_user(const char *email, const char *tenant_id) {
     return rc;
 }
 
-int pgf_tenant_set_active(const char *name_or_id, int active, int *user_count) {
+int cel_tenant_set_active(const char *name_or_id, int active, int *user_count) {
     if (user_count) *user_count = 0;
     PGconn *c = db_connection_acquire();
     if (!c) return -1;
@@ -231,7 +231,7 @@ int pgf_tenant_set_active(const char *name_or_id, int active, int *user_count) {
     /* Flip the tenant flag (by name or id). RETURNING confirms it existed. */
     const char *p1[2] = { name_or_id, act };
     PGresult *r = PQexecParams(c,
-        "UPDATE pgf_tenants SET is_active=$2 WHERE name=$1 OR id::text=$1 RETURNING id::text",
+        "UPDATE cel_tenants SET is_active=$2 WHERE name=$1 OR id::text=$1 RETURNING id::text",
         2, NULL, p1, NULL, NULL, 0);
     if (PQresultStatus(r) != PGRES_TUPLES_OK || PQntuples(r) != 1) {
         LOG_ERROR("tenant '%s' not found", name_or_id);
@@ -243,7 +243,7 @@ int pgf_tenant_set_active(const char *name_or_id, int active, int *user_count) {
     /* Cascade to the tenant's users so the existing is_active auth check enforces
      * the suspension (a suspended tenant's users simply can't authenticate). */
     const char *p2[2] = { tid, act };
-    r = PQexecParams(c, "UPDATE pgf_users SET is_active=$2 WHERE tenant_id=$1",
+    r = PQexecParams(c, "UPDATE cel_users SET is_active=$2 WHERE tenant_id=$1",
                      2, NULL, p2, NULL, NULL, 0);
     if (PQresultStatus(r) == PGRES_COMMAND_OK) {
         if (user_count) *user_count = atoi(PQcmdTuples(r));
@@ -307,14 +307,14 @@ static int copy_out_table(PGconn *c, const char *qtable, const char *cols, const
     return ok ? 0 : -1;
 }
 
-int pgf_tenant_export(const char *name_or_id, const char *tenant_column) {
+int cel_tenant_export(const char *name_or_id, const char *tenant_column) {
     if (!is_safe_ident(tenant_column)) return -1;
     PGconn *c = db_connection_acquire();
     if (!c) return -1;
 
     const char *p[1] = { name_or_id };
     PGresult *r = PQexecParams(c,
-        "SELECT id::text, name FROM pgf_tenants WHERE name=$1 OR id::text=$1",
+        "SELECT id::text, name FROM cel_tenants WHERE name=$1 OR id::text=$1",
         1, NULL, p, NULL, NULL, 0);
     if (PQresultStatus(r) != PGRES_TUPLES_OK || PQntuples(r) != 1) {
         LOG_ERROR("export-tenant: tenant '%s' not found", name_or_id);
@@ -326,24 +326,24 @@ int pgf_tenant_export(const char *name_or_id, const char *tenant_column) {
     snprintf(where, sizeof where, "WHERE \"%s\"='%s'", tenant_column, tid);
 
     /* Header + a clean Model-A-friendly load (FK checks off, tenant column dropped). */
-    printf("-- pgforge tenant export (graduate to a standalone Model A deployment).\n");
-    printf("-- Load into a fresh DB after `pgforge migrate` + recreating the business\n");
+    printf("-- cellar tenant export (graduate to a standalone Model A deployment).\n");
+    printf("-- Load into a fresh DB after `cellar migrate` + recreating the business\n");
     printf("-- tables WITHOUT the '%s' column:   psql -d <newdb> -f thisfile.sql\n", tenant_column);
     printf("BEGIN;\nSET session_replication_role = replica;\n\n");
 
     int rc = 0;
     /* the tenant's users first (without the tenant column) */
-    char *ucols = quoted_cols_except(c, "pgf_users", tenant_column);
-    if (ucols) { rc |= copy_out_table(c, "\"pgf_users\"", ucols, where); free(ucols); }
+    char *ucols = quoted_cols_except(c, "cel_users", tenant_column);
+    if (ucols) { rc |= copy_out_table(c, "\"cel_users\"", ucols, where); free(ucols); }
 
-    /* their login credentials (pgf_identities has no tenant column — scope it via
+    /* their login credentials (cel_identities has no tenant column — scope it via
      * user_id so graduated users can still authenticate). */
     char iwhere[160];
     snprintf(iwhere, sizeof iwhere,
-             "WHERE user_id IN (SELECT id FROM \"pgf_users\" WHERE \"%s\"='%s')",
+             "WHERE user_id IN (SELECT id FROM \"cel_users\" WHERE \"%s\"='%s')",
              tenant_column, tid);
-    char *icols = quoted_cols_except(c, "pgf_identities", tenant_column);
-    if (icols) { rc |= copy_out_table(c, "\"pgf_identities\"", icols, iwhere); free(icols); }
+    char *icols = quoted_cols_except(c, "cel_identities", tenant_column);
+    if (icols) { rc |= copy_out_table(c, "\"cel_identities\"", icols, iwhere); free(icols); }
 
     /* then each tenant-scoped business table */
     const char *p2[1] = { tenant_column };
@@ -351,7 +351,7 @@ int pgf_tenant_export(const char *name_or_id, const char *tenant_column) {
         "SELECT c.table_name FROM information_schema.columns c "
         "JOIN information_schema.tables tb USING (table_schema, table_name) "
         "WHERE c.table_schema='public' AND c.column_name=$1 AND tb.table_type='BASE TABLE' "
-        "AND left(c.table_name,4)<>'pgf_' ORDER BY c.table_name",
+        "AND left(c.table_name,4)<>'cel_' ORDER BY c.table_name",
         1, NULL, p2, NULL, NULL, 0);
     if (PQresultStatus(r) == PGRES_TUPLES_OK) {
         for (int i = 0; i < PQntuples(r); i++) {
@@ -371,15 +371,15 @@ int pgf_tenant_export(const char *name_or_id, const char *tenant_column) {
     return rc == 0 ? 0 : -1;
 }
 
-int pgf_migrate_status(int with_demo, int with_tenancy) {
+int cel_migrate_status(int with_demo, int with_tenancy) {
     PGconn *c = db_connection_acquire();
     if (!c) { LOG_ERROR("migrate: no database connection"); return -1; }
     int rc = -1, done = 0, pending = 0;
     if (ensure_table(c) != 0) goto out;
-    if (status_list(c, PGF_MIGRATIONS, PGF_MIGRATIONS_COUNT, "", &done, &pending) != 0) goto out;
-    if (with_tenancy && status_list(c, PGF_TENANCY_MIGRATIONS, PGF_TENANCY_MIGRATIONS_COUNT, "tenancy:",
+    if (status_list(c, CEL_MIGRATIONS, CEL_MIGRATIONS_COUNT, "", &done, &pending) != 0) goto out;
+    if (with_tenancy && status_list(c, CEL_TENANCY_MIGRATIONS, CEL_TENANCY_MIGRATIONS_COUNT, "tenancy:",
                                     &done, &pending) != 0) goto out;
-    if (with_demo && status_list(c, PGF_DEMO_MIGRATIONS, PGF_DEMO_MIGRATIONS_COUNT, "demo:",
+    if (with_demo && status_list(c, CEL_DEMO_MIGRATIONS, CEL_DEMO_MIGRATIONS_COUNT, "demo:",
                                  &done, &pending) != 0) goto out;
     LOG_INFO("migrate: %d applied, %d pending", done, pending);
     rc = 0;
