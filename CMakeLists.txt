@@ -212,6 +212,16 @@ if(CELLAR_BUILD_TESTS)
     target_link_libraries(app_db_test SQLite::SQLite3 logger Threads::Threads)
     add_test(NAME app_db COMMAND app_db_test)
 
+    # DB-free unit test for the SQLite result -> typed JSON serializer (Phase 1):
+    # catalog-typed cells (int/real/bool/json/null/text) and the runtime-typed
+    # table-less path. Links result_json.c against an in-memory SQLite db; the
+    # test supplies its own cel_table_column, so it pulls in neither
+    # schema_catalog.c nor Postgres.
+    add_executable(result_json_test tests/result_json_test.c src/engine/result_json.c)
+    target_include_directories(result_json_test PRIVATE src/engine)
+    target_link_libraries(result_json_test SQLite::SQLite3 cjson)
+    add_test(NAME result_json COMMAND result_json_test)
+
     # DB-free unit test for the declarative-roles authorization engine (#50):
     # built-in defaults stay byte-for-byte, and a "_roles" config bundle defines
     # a custom role vocabulary. Links policy.c (auth stubbed in the test).

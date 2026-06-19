@@ -56,6 +56,13 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       _SQLite sourcing:_ built against system libsqlite3 (3.45.1; dev files staged from the
       Ubuntu `.deb` into gitignored `build-deps/sqlite`, since sqlite.org is unreachable
       here and there's no sudo). CMake discovers it via `-DSQLITE3_ROOT` / `libsqlite3-dev`.
+- [~] **Result serializer → SQLite (`row_json.c` → `result_json.c`).** New libpq-free
+      module `src/engine/result_json.{c,h}`: serialize a stepped `sqlite3_stmt` → typed
+      JSON, preserving the existing API contract (catalog-typed cells: int/real → number,
+      declared bool → true/false, json column parsed, NULL → null; runtime-typed table-less
+      path for RPC; BLOB → hex). Unit-tested (`tests/result_json_test.c`, ctest
+      `result_json`: 17 checks, in-memory SQLite, no Postgres). **Still to do:** delete the
+      libpq `row_json.c` once `api.c` switches to it (Step 5).
 - [ ] **`schema_catalog.c` → PRAGMA introspection.** `sqlite_master` +
       `PRAGMA table_info / foreign_key_list / index_list` instead of `information_schema`;
       the catalog becomes **per-app** (replaces today's single global `g_active`).
