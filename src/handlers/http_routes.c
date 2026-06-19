@@ -14,6 +14,7 @@
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include <sodium.h>
 
 /* Max accepted request body (bytes); 0 = no cap. Set from CEL_MAX_BODY at startup. */
 static size_t g_max_body = 0;
@@ -202,7 +203,9 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         const char *bearer = (auth && alen > 7 && strncasecmp(auth, "Bearer ", 7) == 0) ? auth + 7 : NULL;
         size_t blen = bearer ? alen - 7 : 0;
         size_t tlen = strlen(mtok);
-        if (!bearer || blen != tlen || memcmp(bearer, mtok, tlen) != 0)
+        /* Constant-time compare: a short-circuiting memcmp leaks per-byte match
+         * progress via timing, letting an attacker recover the token (L-2). */
+        if (!bearer || blen != tlen || sodium_memcmp(bearer, mtok, tlen) != 0)
             return send_error(res, 401, "unauthorized");
         char *body = cel_metrics_render();
         if (!body) return send_error(res, 500, "metrics unavailable");
