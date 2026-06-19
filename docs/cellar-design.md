@@ -32,8 +32,8 @@ Decision rule for any capability: *"could any HTTP/WS app need this?"* → porti
 | Data model | **one SQLite file per app**; isolation is the file | per-app schema for free; trivial provision/delete/move; no shared-catalog limits |
 | Catalog | **per-app**, introspected from `sqlite_master` + `PRAGMA` | replaces pgforge's single global `g_active` |
 | Extensibility | **3 layers**: SQLite-native → **Lua hooks** (a fixed contract) → compiled-C escape hatch | push logic down; script the rest; native only on the hot path |
-| Hook runtime (v1) | **Lua** (`liblua`, embedded) | tiny, proven, first-party apps are trusted → no heavy sandbox needed |
-| Trust model (v1) | **first-party apps** (you write them) | relaxes sandboxing; WASM is the third-party upgrade path, not v1 |
+| Hook runtime (v1) | **LuaJIT** (embedded, FFI on) | C-API compatible embed; **FFI** calls cellar's C hook API with no binding glue + near-zero overhead; fast interpreter/JIT |
+| Trust model (v1) | **first-party apps** (you write them) | relaxes sandboxing — LuaJIT FFI is unsandboxable, which is fine (a convenience) here; WASM is the third-party upgrade path, not v1 |
 | Primary deployment | **home origin behind portico-tunnel** | data lives on your box; relay only moves ciphertext → data sovereignty |
 | App unit | a **bundle**: `data.db` + `hooks.lua` + `policies.json` | schema, data, *and behavior* are portable as one directory |
 | Concurrency | SQLite calls + hooks run on **DB worker threads**, never the event loop | SQLite is blocking + single-writer; the loop must never stall |
@@ -109,15 +109,19 @@ Cheapest first; reach up only when the layer below can't express it.
 SQL functions/queries as RPC. cellar's CRUD respects all of it automatically. A large
 fraction of "business logic" lives here, declaratively, inside the file.
 
-**Layer 2 — Lua hooks (the contract, §9).** For logic SQL can't express: cross-cutting
-validation, side-effects, custom endpoints, custom authz. First-party → trusted → we
-expose *useful* APIs rather than a jail.
+**Layer 2 — Lua hooks (the contract, §9), on LuaJIT.** For logic SQL can't express:
+cross-cutting validation, side-effects, custom endpoints, custom authz. First-party →
+trusted → we expose *useful* APIs rather than a jail. **LuaJIT** is the runtime: its
+**FFI** lets hooks call cellar's C hook API (db query/exec, request context, logging)
+directly — no per-API `lua_push*/lua_to*` binding glue and near-zero call overhead —
+and its interpreter/JIT keeps compute-heavy hooks cheap.
 
 **Layer 3 — compiled-C handlers (escape hatch).** For first-party hot-path logic that
 must be native. Registered by name; no per-request scripting cost. Rare by design.
 
 *(WASM is the future Layer-2 runtime for third-party/untrusted apps — same contract,
-sandboxed engine. Out of scope for v1.)*
+sandboxed engine. Note LuaJIT's FFI is intentionally unsandboxable, so the third-party
+path is WASM, **not** a locked-down LuaJIT — consistent with §2's trust decision.)*
 
 ## 8. The hook contract
 
@@ -135,15 +139,19 @@ on_realtime(change, subscriber)  -> include? filter   # who sees which change ev
 …). A `before` that rejects aborts the op with an error; `after` runs inside or just
 after the txn (TBD per op). Hooks for an app receive a handle to **that app's DB only**.
 
-## 9. Lua VM model
+## 9. Lua VM model (LuaJIT)
 
+- **Runtime: LuaJIT** (Lua 5.1 C-API compatible). Build GC64 mode on so 64-bit hosts
+  aren't capped at the old ~1–2 GB VM limit (irrelevant for hook-sized working sets, but
+  free insurance). Targets x86_64 (srvlab/VM) and ARM64 — both supported.
 - **One `lua_State` per (worker thread × app)**, created on first use by loading the
   app's `hooks.lua`, cached alongside the `sqlite3*` handle. Reused across requests →
-  no per-request VM spin-up.
-- **Exposed to hooks (first-party, so generous):** the app's DB (parameterized
+  no per-request VM spin-up. (LuaJIT states are not thread-safe to share — same rule.)
+- **Exposed to hooks via FFI (first-party, so generous):** the app's DB (parameterized
   query/exec), the request context (`who`, `input`, headers), structured logging, and a
-  guarded outbound client (HTTP/queue) for side-effects. Tighten this surface when/if
-  third-party apps arrive.
+  guarded outbound client (HTTP/queue) for side-effects. FFI means these are direct C
+  calls, not hand-written bindings. Tighten/replace this surface when third-party apps
+  arrive (→ WASM).
 - **Hot-reload:** editing `hooks.lua` drops the cached `lua_State` (next request reloads)
   — change an app's behavior with no cellar restart, mirroring portico's config reload.
 - Runs on the DB worker thread (blocking is fine there); never on the event loop.
@@ -193,8 +201,8 @@ bundle tooling (provision/export/hot-reload).
 1. **Rebrand** `pgforge → cellar` (still Postgres) — compiles under its own name.
 2. **SQLite per-app core** — handle cache + write-serialization, PRAGMA per-app catalog,
    dialect, drop tenant/RLS, routing + control-plane. (The bulk.)
-3. **Lua hook layer** — vendor `liblua`; the contract; per-app `lua_State` cache;
-   exposed APIs; hot-reload.
+3. **Lua hook layer** — link **LuaJIT** (GC64); the contract; per-app `lua_State` cache;
+   FFI-exposed C API; hot-reload.
 4. **Realtime + bundle tooling** — change events with the `on_realtime` filter;
    provision/export; backup guidance (Litestream/rsync of bundle dirs).
 5. **Deploy** behind portico-tunnel on the home box (origin), per §3.

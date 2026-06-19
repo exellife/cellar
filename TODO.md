@@ -58,11 +58,12 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
 - [ ] **Layer 1 first:** make CRUD respect SQLite-native logic — triggers, `CHECK`,
       `STRICT`, generated columns, views, SQL-function RPC (a lot of business logic lives
       here, in the `.db`, for free).
-- [ ] **Lua hook layer.** Vendor `liblua`; implement the fixed hook contract
-      (`authorize / before / after / rpc / on_realtime`); a per-app `lua_State` cache
-      paired 1:1 with the per-app `sqlite3*` handle on each worker thread (one state per
-      thread×app, no locking); expose a generous first-party API (app DB, request ctx,
-      logging, guarded outbound); `hooks.lua` edit → drop cached state = hot-reload.
+- [ ] **Lua hook layer (LuaJIT).** Link **LuaJIT** (GC64); implement the fixed hook
+      contract (`authorize / before / after / rpc / on_realtime`); a per-app `lua_State`
+      cache paired 1:1 with the per-app `sqlite3*` handle on each worker thread (one state
+      per thread×app, no locking); expose a generous first-party API **via FFI** (app DB,
+      request ctx, logging, guarded outbound — no hand-written bindings); `hooks.lua`
+      edit → drop cached state = hot-reload.
 - [ ] **Compiled-C escape hatch** for first-party hot-path handlers (registered by name).
 - [ ] *(later)* **WASM runtime** — same contract, sandboxed — once apps can be third-party.
 
