@@ -20,8 +20,11 @@ typedef struct {
     bool email_verified;  /* email_verified_at IS NOT NULL */
 } cel_user_t;
 
-/* Precompute the decoy password hash (call once at startup, after cel_crypto_init). */
-void cel_auth_init(void);
+/* Precompute the login decoy hash (timing equalization for unknown users; call
+ * once at startup, after cel_crypto_init). MUST succeed: returns 0 on success, -1
+ * if the Argon2id precompute failed — the caller should refuse to start, since
+ * without it login latency reveals which emails exist (L-1). */
+int cel_auth_init(void);
 
 /* Configure per-account login lockout: after `limit` failed password attempts
  * within `window_seconds`, the account is locked for `window_seconds`. limit <= 0

@@ -20,10 +20,13 @@
  * Computed once at startup via cel_auth_init(). */
 static char g_decoy_hash[256];
 
-void cel_auth_init(void) {
+int cel_auth_init(void) {
     if (cel_password_hash("cellar-decoy-password-never-matches", g_decoy_hash,
-                          sizeof g_decoy_hash) != 0)
+                          sizeof g_decoy_hash) != 0) {
         g_decoy_hash[0] = '\0';
+        return -1;   /* without the decoy, login timing distinguishes unknown users (L-1) */
+    }
+    return 0;
 }
 
 /* ---- SQLite helpers -------------------------------------------------------- */

@@ -395,7 +395,12 @@ int main(int argc, char **argv) {
         logger_shutdown();
         return 1;
     }
-    cel_auth_init();   /* precompute the login decoy hash */
+    if (cel_auth_init() != 0) {   /* precompute the login decoy hash — must succeed (L-1) */
+        LOG_ERROR("failed to precompute the login decoy hash — refusing to start "
+                  "(without it, login latency would reveal which emails exist)");
+        logger_shutdown();
+        return 1;
+    }
     cel_metrics_init(CEL_VERSION);            /* /metrics registry: start time + version */
     cel_metrics_set_gauges(metrics_gauges);   /* live gauges sampled at scrape time */
     /* Opt-in session cache: CEL_SESSION_CACHE_TTL>0 skips the per-request auth DB
