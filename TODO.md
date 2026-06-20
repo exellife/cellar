@@ -203,6 +203,20 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       `export`/`import` reduce to copying the `.db`. _Touches:_ `cel_hook_state.{c,h}`,
       provision, export/import.
 
+- [ ] **MFA: per-app mode + expose `required`.** TOTP 2FA is fully live (enroll/confirm/
+      disable/recovery-codes/verify routes, per-user lockout, `mfa-reset` CLI, `mfa_sqlite`
+      test) but two gaps: (1) **mode is process-wide.** `CEL_MFA` is read once at boot →
+      `cel_mfa_set_mode` (`src/main.c` ~773), so the on/off toggle is per-process while the
+      enrollment *data* is per-app (`cel_mfa` in each `data.db`). To make MFA a per-app
+      decision like `policies.json`, move the mode into the per-app policy/config and resolve
+      it per request (thread-local, mirroring `cel_policy` `active()`). (2) **`required` isn't
+      wired.** `CEL_MFA_MODE_REQUIRED` exists in the enum and `mfa.c` has a `required_for`
+      notion, but the env parser only maps `"optional"` (else `off`) — there's no way to force
+      enrollment fleet- or app-wide. Decide the surface (env `CEL_MFA=required` for the global
+      case; a `policies.json` key for the per-app case) and the UX for a user who must enroll
+      before they can do anything. _Touches:_ `src/core/mfa.{c,h}`, `src/main.c`, `policy.{c,h}`,
+      and the login/`/auth/mfa/*` flow in `api.c`.
+
 ## Performance — findings & future work  [from the srvlab bench/profile pass]
 
 Measured on **srvlab** (32-core x86_64, NVMe SN850X, plain HTTP over LAN), `bench.sh`
