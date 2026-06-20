@@ -257,9 +257,11 @@ sequence/cursor/resolve protocol.
 1. **Sequence + tombstones.** Per-app `rev` counter + the `before`/`after` hook (or trigger)
    that stamps `rev`/`deleted` on syncable tables. Decide the opt-in surface (`policies.json`
    `"sync": true` vs. explicit columns). *Touches:* `schema_catalog`, a hook/trigger, `app_db`.
-2. **`sync_pull`.** A built-in RPC (or `GET /api/<table>?since=&include_deleted=1`) returning
-   owner-scoped changes since a cursor, paged. *Touches:* `api.c`, query builder (a `rev >` +
-   `include_deleted` mode).
+2. **`sync_pull`.** ✅ DONE — built-in `POST /sync/pull` (engine route, not a hook): body
+   `{since, tables?, limit?}` → `{changes:{table:[rows]}, cursor, more}`. Per syncable table the
+   caller may list, `make_scope(LIST)` with the tombstone rule stripped (tombstones returned) +
+   `cel_build_pull` (`rev > since … ORDER BY rev LIMIT n`). Cursor is multi-table-page-safe (min
+   returned-max among truncated tables). e2e `sync_pull`.
 3. **`sync_push`.** Batch apply with the rev compare + conflict path, through the existing
    `authorize`/`before` hooks; optional `resolve(...)` hook. *Touches:* `api.c run_write`
    (batch variant in one txn), `cel_hooks`.
