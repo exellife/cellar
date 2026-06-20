@@ -257,6 +257,13 @@ static const char *PRELUDE =
 "  local res, errm = rpc(name, box(args_ptr, false), box(who_ptr, false))\n"
 "  if res == nil then return nil, errm and tostring(errm) or 'rpc returned nil' end\n"
 "  return res\n"   /* a Lua value; the C side marshals it back to JSON */
+"end\n"
+"function __cel_resolve(tbl, incoming_ptr, current_ptr, who_ptr)\n"
+"  if type(resolve) ~= 'function' then return 'incoming' end\n"   /* default LWW */
+"  local incoming = incoming_ptr ~= nil and box(incoming_ptr, false) or nil\n"
+"  local r = resolve(tbl, incoming, box(current_ptr, false), box(who_ptr, false))\n"
+"  if r == false or r == 'current' or r == 'server' then return 'current' end\n"
+"  return 'incoming'\n"   /* true / 'incoming' / anything else -> incoming wins */
 "end\n";
 
 int cel_hooks_install(cel_lua_t *L, char *errbuf, size_t errlen) {
@@ -424,4 +431,25 @@ int cel_hooks_on_realtime(cel_lua_t *Lh, const cel_val_t *change, const cel_val_
     int deliver = lua_toboolean(L, -1);
     lua_pop(L, 1);
     return deliver ? 1 : 0;
+}
+
+int cel_hooks_resolve(cel_lua_t *Lh, const char *table, const cel_val_t *incoming,
+                      const cel_val_t *current, const cel_val_t *who) {
+    lua_State *L = (lua_State *)cel_lua_state(Lh);
+    if (!L) return 1;   /* no VM → LWW (incoming wins) — the default policy */
+    lua_getglobal(L, "__cel_resolve");
+    lua_pushstring(L, table ? table : "");
+    if (incoming) lua_pushlightuserdata(L, (void *)incoming);
+    else          lua_pushnil(L);                 /* del has no incoming row */
+    lua_pushlightuserdata(L, (void *)current);
+    lua_pushlightuserdata(L, (void *)who);
+    if (lua_pcall(L, 4, 1, 0) != 0) {
+        LOG_ERROR("[hook] resolve fault (keeping current): %s", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return 0;       /* fault → fail closed: keep current, don't apply a faulted merge */
+    }
+    const char *r = lua_tostring(L, -1);
+    int incoming_wins = (r && strcmp(r, "incoming") == 0) ? 1 : 0;
+    lua_pop(L, 1);
+    return incoming_wins;
 }

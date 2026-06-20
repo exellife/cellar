@@ -902,33 +902,27 @@ static long long sync_row_rev(const cJSON *row) {
     return cJSON_IsNumber(r) ? (long long)r->valuedouble : 0;
 }
 
-/* Read a row's current rev+deleted by id, owner-scoped but INCLUDING tombstones
- * (a deleted row still exists for conflict purposes). Runs on the batch conn `c`.
- * Returns true if the row exists (and is visible to `who`). */
-static bool sync_current(sqlite3 *c, const cel_table_t *t, const cel_identity_t *who,
-                         const cJSON *id, long long *rev, int *deleted) {
+/* Fetch a row by id, owner-scoped but INCLUDING tombstones (a deleted row still
+ * exists for conflict purposes). Runs on the batch conn `c`. Returns the row (caller
+ * frees) or NULL if absent / not visible to `who`. */
+static cJSON *sync_current_row(sqlite3 *c, const cel_table_t *t, const cel_identity_t *who,
+                               const cJSON *id) {
     cel_scope_t scope;
-    if (make_scope(t, CEL_ACT_GET, who, &scope) != 0) return false;
+    if (make_scope(t, CEL_ACT_GET, who, &scope) != 0) return NULL;
     sync_scope_keep_owner(&scope);                 /* drop deleted=0 → see tombstones */
     cJSON *gr = cJSON_CreateObject();
     cJSON_AddItemReferenceToObject(gr, "id", (cJSON *)id);
     cel_query_t q; char e[128] = {0};
     int brc = cel_build_get(t, gr, &scope, &q, e, sizeof e);
     cJSON_Delete(gr);
-    if (brc != 0) return false;
+    if (brc != 0) return NULL;
     int http = 200; char em[128] = {0};
     cJSON *rows = run_rows_on(c, &q, t, &http, em, sizeof em);
     cel_query_free(&q);
-    if (!rows) return false;
-    bool found = cJSON_GetArraySize(rows) > 0;
-    if (found) {
-        cJSON *row = cJSON_GetArrayItem(rows, 0);
-        *rev = sync_row_rev(row);
-        const cJSON *d = cJSON_GetObjectItemCaseSensitive(row, "deleted");
-        *deleted = cJSON_IsNumber(d) ? (int)d->valuedouble : 0;
-    }
+    if (!rows) return NULL;
+    cJSON *row = cJSON_GetArraySize(rows) > 0 ? cJSON_DetachItemFromArray(rows, 0) : NULL;
     cJSON_Delete(rows);
-    return found;
+    return row;
 }
 
 cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) {
@@ -968,12 +962,18 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
         if (!t || !t->syncable) { err_code = 400; snprintf(err, sizeof err, "unknown or non-syncable table '%s'", jtab->valuestring); break; }
 
         long long base_rev = cJSON_IsNumber(jbr) ? (long long)jbr->valuedouble : -1;
-        long long cur_rev = 0; int cur_del = 0;
-        bool exists = sync_current(c, t, who, jid, &cur_rev, &cur_del);
+        cJSON *current = sync_current_row(c, t, who, jid);
+        bool exists = current != NULL;
+        long long cur_rev = exists ? sync_row_rev(current) : 0;
 
-        /* classify: clean apply, conflict (resolve → LWW default), or no-op */
+        /* classify: clean apply, conflict, or no-op. On a conflict the winner is LWW
+         * (incoming) by default, overridable by the resolve() hook. */
         bool conflict = exists && (base_rev < 0 || base_rev != cur_rev);
-        bool incoming_wins = true;   /* LWW default; resolve() hook overrides in S2-T4 */
+        bool incoming_wins = true;
+        if (conflict && hooks)
+            incoming_wins = cel_hooks_resolve(hooks, t->name, is_del ? NULL : (const cel_val_t *)jval,
+                                              (const cel_val_t *)current, (const cel_val_t *)who_v) != 0;
+        cJSON_Delete(current);   /* consulted by resolve; the apply doesn't need it */
 
         cJSON *outrow = NULL; int rc = 0; const char *status = "applied"; long long out_rev = cur_rev;
 

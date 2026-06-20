@@ -67,4 +67,12 @@ cel_val_t *cel_hooks_rpc(cel_lua_t *L, const char *name, const cel_val_t *args,
  * deliver; a fault → drop (fail closed). A pure filter — no db is bound. */
 int cel_hooks_on_realtime(cel_lua_t *L, const cel_val_t *change, const cel_val_t *subscriber);
 
+/* resolve(table, incoming, current, who): conflict resolution for sync_push. Returns
+ * 1 if the incoming write wins (apply it), 0 if the current row wins (keep it).
+ * Absent hook / no VM → 1 (last-write-wins, the default). A fault → 0 (fail closed:
+ * keep current rather than apply a write whose merge logic errored). `incoming` is
+ * the client's row (nil for a delete); `current` is the server's stored row. */
+int cel_hooks_resolve(cel_lua_t *L, const char *table, const cel_val_t *incoming,
+                      const cel_val_t *current, const cel_val_t *who);
+
 #endif /* CEL_HOOKS_H */
