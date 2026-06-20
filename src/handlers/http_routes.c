@@ -88,7 +88,7 @@ static void add_csv_array(cJSON *parent, const char *key, char *val) {
 }
 
 static int is_operator(const char *op) {
-    static const char *ops[] = {"eq","neq","lt","lte","gt","gte","like","ilike","in",0};
+    static const char *ops[] = {"eq","neq","lt","lte","gt","gte","like","ilike","in","is",0};
     for (int i = 0; ops[i]; i++) if (!strcmp(op, ops[i])) return 1;
     return 0;
 }
@@ -108,11 +108,21 @@ static void add_filter(cJSON *where, const char *key, char *value) {
     if (!cond) cond = cJSON_AddObjectToObject(where, key);
 
     if (!strcmp(op, "in")) {
+        /* accept both cellar's `in.a,b` and PostgREST's `in.(a,b)` paren form */
+        size_t pl = strlen(payload);
+        if (pl >= 2 && payload[0] == '(' && payload[pl - 1] == ')') { payload[pl - 1] = '\0'; payload++; }
         cJSON *arr = cJSON_CreateArray();
         char *save = NULL;
         for (char *tok = strtok_r(payload, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
             cJSON_AddItemToArray(arr, cJSON_CreateString(tok));
-        cJSON_AddItemToObject(cond, op, arr);
+        cJSON_AddItemToObject(cond, "in", arr);
+    } else if (!strcmp(op, "is")) {
+        /* PostgREST-style null tests: is.null / is.not.null (the builder maps a JSON
+         * null on eq/neq to SQL IS [NOT] NULL). */
+        if (!strcmp(payload, "null"))           cJSON_AddNullToObject(cond, "eq");
+        else if (!strcmp(payload, "not.null") ||
+                 !strcmp(payload, "notnull"))   cJSON_AddNullToObject(cond, "neq");
+        /* unknown is.* payload → ignored (no condition added) */
     } else {
         cJSON_AddStringToObject(cond, op, payload);
     }

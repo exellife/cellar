@@ -73,7 +73,7 @@ Returns `{ rows: [...], count }`. Query params:
 
 | Param | Example | Effect |
 |---|---|---|
-| filter | `?in_stock=gt.200` | `col=op.value` (`col=value` is `eq` shorthand); ops: `eq, neq, gt, gte, lt, lte, like, ilike, in` |
+| filter | `?in_stock=gt.200` | `col=op.value` (`col=value` is `eq` shorthand). ops: `eq, neq, gt, gte, lt, lte, like, ilike`; **in**: `?status=in.a,b,c` (PostgREST's `in.(a,b,c)` parens also accepted); **null**: `?ref=is.null` / `?ref=is.not.null` |
 | `where` | `?where=<urlencoded JSON>` | boolean trees: `{"or":[{"price":{"lt":5}},{"price":{"gt":50}}]}`, `and`, `not`, `between` |
 | `select` | `?select=name,price` | project columns |
 | `order` | `?order=-price` | sort (`-` = desc) |
