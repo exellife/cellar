@@ -43,6 +43,8 @@
 #define CEL_VERSION "0.1.0"
 #include <unistd.h>
 #include <stdint.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <stdbool.h>
 #include <arpa/inet.h>   /* htons/htonl/ntohs/ntohl */
 
@@ -364,6 +366,92 @@ static int run_send_test_mail(int argc, char **argv) {
     return rc;
 }
 
+/* Write `content` to `path` only if it doesn't already exist (so re-provisioning
+ * never clobbers a hand-edited bundle file). Returns 1 if written, 0 if it existed. */
+static int write_if_absent(const char *path, const char *content) {
+    struct stat st;
+    if (stat(path, &st) == 0) return 0;   /* keep existing */
+    FILE *f = fopen(path, "wb");
+    if (!f) { LOG_WARN("provision: could not write %s: %s", path, strerror(errno)); return 0; }
+    fwrite(content, 1, strlen(content), f);
+    fclose(f);
+    return 1;
+}
+
+static const char *STARTER_HOOKS =
+    "-- hooks.lua — this app's behavior (the cellar hook contract, design §8).\n"
+    "-- Every hook is optional; an absent hook is a no-op. The `cellar` table gives\n"
+    "-- you cellar.query/exec (parameterized SQL on this app's db) and cellar.log.\n"
+    "--\n"
+    "-- function authorize(op, table, row, who)   return true end   -- extra allow gate\n"
+    "-- function before(op, table, input, who)    return true end   -- validate / transform input\n"
+    "-- function after(op, table, row, who)        end               -- post-commit side effects\n"
+    "-- function rpc(name, args, who)             return { ok = true } end  -- POST /rpc/<name>\n"
+    "-- function on_realtime(change, subscriber)  return true end   -- realtime delivery filter\n";
+
+/* `cellar provision <host> [<admin-email> <admin-password>]` — scaffold a new app
+ * bundle under CEL_APPS_DIR: create <dir>/<host>/, initialize data.db with the
+ * identity schema, seed an admin (from args or CEL_SEED_ADMIN), and drop a starter
+ * hooks.lua. Idempotent: re-running keeps existing data.db rows and bundle files. */
+static int run_provision(int argc, char **argv) {
+    if (argc < 3) {
+        fprintf(stderr, "usage: cellar provision <host> [<admin-email> <admin-password>]\n");
+        return 2;
+    }
+    const char *lvl = getenv("CEL_LOG_LEVEL");
+    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
+
+    const char *apps_dir = env_str("CEL_APPS_DIR", "");
+    if (!*apps_dir) {
+        LOG_ERROR("provision needs CEL_APPS_DIR (the multi-app bundles directory)");
+        logger_shutdown(); return 1;
+    }
+    char host[256];
+    if (cel_apps_norm_host(argv[2], host, sizeof host) != 0) {
+        LOG_ERROR("invalid host '%s' (use lowercase letters, digits, '.' and '-')", argv[2]);
+        logger_shutdown(); return 1;
+    }
+
+    char dir[1300];
+    snprintf(dir, sizeof dir, "%s/%s", apps_dir, host);
+    mkdir(apps_dir, 0755);   /* ensure the parent exists (ignore EEXIST) */
+    if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+        LOG_ERROR("provision: mkdir %s: %s", dir, strerror(errno));
+        logger_shutdown(); return 1;
+    }
+
+    if (cel_crypto_init() != 0) { LOG_ERROR("provision: crypto init failed"); logger_shutdown(); return 1; }
+    app_db_global_init();
+    char db[1400];
+    snprintf(db, sizeof db, "%s/data.db", dir);
+    app_db_t *app = app_db_get(db);
+    if (!app) { LOG_ERROR("provision: could not open %s", db); app_db_global_shutdown(); logger_shutdown(); return 1; }
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (c) { cel_auth_schema_apply(c); app_db_conn_release(app, c); }
+    app_db_set_current(app);   /* so cel_auth_seed_admin writes into this bundle */
+
+    /* Seed an admin: explicit args win, else CEL_SEED_ADMIN ("email:password"). */
+    if (argc >= 5) {
+        if (cel_auth_seed_admin(argv[3], argv[4]) == 0) LOG_INFO("seeded admin '%s'", argv[3]);
+        else { LOG_ERROR("provision: failed to seed admin '%s'", argv[3]);
+               app_db_global_shutdown(); logger_shutdown(); return 1; }
+    } else if (getenv("CEL_SEED_ADMIN")) {
+        maybe_seed_admin();
+    } else {
+        LOG_WARN("no admin seeded (pass <admin-email> <admin-password> or set CEL_SEED_ADMIN); "
+                 "the app has no way to log in yet");
+    }
+
+    char hooks_path[1400];
+    snprintf(hooks_path, sizeof hooks_path, "%s/hooks.lua", dir);
+    if (write_if_absent(hooks_path, STARTER_HOOKS)) LOG_INFO("wrote starter %s", hooks_path);
+
+    LOG_INFO("provisioned app '%s' at %s", host, dir);
+    app_db_global_shutdown();
+    logger_shutdown();
+    return 0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   /* line-buffer logs even when redirected */
 
@@ -375,6 +463,8 @@ int main(int argc, char **argv) {
         return run_unlock(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "send-test-mail") == 0)
         return run_send_test_mail(argc, argv);
+    if (argc >= 2 && strcmp(argv[1], "provision") == 0)
+        return run_provision(argc, argv);
 
     int port = env_int("CEL_PORT", 8080);
     const char *lvl = getenv("CEL_LOG_LEVEL");

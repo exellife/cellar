@@ -32,6 +32,12 @@ typedef struct {
  * (defaults to "cellar.db" if single_db is NULL/empty). */
 void cel_apps_init(const char *apps_dir, const char *single_db);
 
+/* Validate + normalize a Host into a safe bundle directory name (lowercase,
+ * [a-z0-9.-], no leading dot/dash, no ".."; a trailing ":port" is stripped).
+ * Returns 0 and writes `out` on success, non-zero if the host is unusable. Used
+ * by routing and by the provisioning CLI. */
+int cel_apps_norm_host(const char *in, char *out, size_t n);
+
 /* Resolve a Host header value (":port" tolerated; case-insensitive) to its app,
  * opening + caching it on first use. Returns NULL if the host is invalid or no
  * such bundle exists (→ the caller should 404). */

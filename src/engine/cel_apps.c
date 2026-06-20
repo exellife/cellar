@@ -24,7 +24,7 @@ static struct {
 
 /* The host doubles as a directory name, so validate it tightly: lowercase, only
  * [a-z0-9.-], no leading dot/dash, no "..". Strips a trailing ":port". 0 on ok. */
-static int norm_host(const char *in, char *out, size_t n) {
+int cel_apps_norm_host(const char *in, char *out, size_t n) {
     if (!in || !*in) return -1;
     size_t j = 0;
     for (const char *p = in; *p && *p != ':' && j < n - 1; p++) {
@@ -102,7 +102,7 @@ cel_app_t *cel_apps_resolve(const char *host) {
     }
 
     char h[256];
-    if (norm_host(host, h, sizeof h) != 0) return NULL;
+    if (cel_apps_norm_host(host, h, sizeof h) != 0) return NULL;
 
     pthread_mutex_lock(&g.mtx);
     cel_app_t *app = find_cached(h);
