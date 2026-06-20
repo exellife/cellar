@@ -6,8 +6,18 @@ import { db } from "/db.js";
 const route = () => (location.hash.replace(/^#\/?/, "") || "venues").split("/")[0];
 const byOrder = (a, b) =>
   (a.sort_order ?? 0) - (b.sort_order ?? 0) || String(a.name || "").localeCompare(b.name || "");
-const field = (key, label, required, val, type) =>
-  ({ key, label, required: !!required, val: val ?? "", type: type || "text" });
+const field = (key, label, required, val, type, options) =>
+  ({ key, label, required: !!required, val: val ?? "", type: type || "text", options });
+
+const opt = (value, label) => ({ value, label });
+const SESSIONS = [opt("morning", "Morning"), opt("afternoon", "Afternoon"), opt("evening", "Evening")];
+const STATUSES = [opt("tentative", "Tentative"), opt("confirmed", "Confirmed"), opt("completed", "Completed"), opt("cancelled", "Cancelled")];
+const EVENT_TYPES = [
+  "wedding:Wedding", "bride_farewell:Bride farewell", "anniversary:Anniversary", "birthday:Birthday",
+  "beshik_toi:Beshik toi", "zhentek_toi:Zhentek toi", "tushoo_toi:Tushoo toi", "quran_reading:Quran reading",
+  "memorial:Memorial", "graduation:Graduation", "corporate:Corporate", "conference:Conference", "other:Other",
+].map(s => { const [v, l] = s.split(":"); return opt(v, l); });
+const labelOf = (list, v) => (list.find(o => o.value === v) || {}).label || v || "";
 
 PetiteVue.createApp({
   db,
@@ -77,6 +87,65 @@ PetiteVue.createApp({
   },
   delHall(x) { if (confirm(`Delete hall "${x.name}"?`)) db.remove("halls", x.id); },
 
+  // ---- bookings ----
+  SESSIONS, STATUSES, EVENT_TYPES,
+  bookings() {
+    return [...this.s.bookings].sort((a, b) =>
+      String(a.start_date).localeCompare(b.start_date) || String(a.session).localeCompare(b.session));
+  },
+  hallOptions() {
+    const vname = (id) => (this.s.venues.find(v => v.id === id) || {}).name || "?";
+    return [...this.s.halls].sort(byOrder).map(h => opt(h.id, `${vname(h.venue_id)} · ${h.name}`));
+  },
+  hallLabel(id) { return labelOf(this.hallOptions(), id); },
+  sessionLabel(v) { return labelOf(SESSIONS, v); },
+  eventLabel(v) { return labelOf(EVENT_TYPES, v); },
+  guests(b) { return b.guest_count_max > b.guest_count_min ? `${b.guest_count_min}–${b.guest_count_max}` : `${b.guest_count_max || b.guest_count_min || 0}`; },
+
+  conflicts(hallId, session, startDate, endDate, excludeId) {
+    return this.s.bookings.filter(b =>
+      b.id !== excludeId && b.hall_id === hallId && b.session === session &&
+      b.status !== "cancelled" && b.status !== "completed" &&
+      String(b.end_date) >= startDate && String(b.start_date) <= endDate);
+  },
+
+  bookingFields(b) {
+    return [
+      field("hall_id", "Hall", true, b?.hall_id, "select", this.hallOptions()),
+      field("event_type", "Event type", true, b?.event_type || "wedding", "select", EVENT_TYPES),
+      field("session", "Session", true, b?.session || "evening", "select", SESSIONS),
+      field("start_date", "Date", true, b?.start_date, "date"),
+      field("end_date", "End date (multi-day)", false, b?.end_date, "date"),
+      field("customer_name", "Customer", true, b?.customer_name),
+      field("customer_phone", "Phone", false, b?.customer_phone),
+      field("guest_count_min", "Guests (min)", false, b?.guest_count_min, "number"),
+      field("guest_count_max", "Guests (max)", false, b?.guest_count_max, "number"),
+      field("price_per_person", "Price / guest (som)", false, b?.price_per_person, "number"),
+      field("status", "Status", false, b?.status || "tentative", "select", STATUSES),
+      field("notes", "Notes", false, b?.notes, "textarea"),
+    ];
+  },
+  newBooking() { this.open("New booking", this.bookingFields(), this._saveBooking(null)); },
+  editBooking(b) { this.open("Edit booking", this.bookingFields(b), this._saveBooking(b)); },
+  delBooking(b) { if (confirm(`Delete booking for ${b.customer_name}?`)) db.remove("bookings", b.id); },
+  _saveBooking(existing) {
+    return (v) => {
+      const end = v.end_date || v.start_date;
+      const c = this.conflicts(v.hall_id, v.session, v.start_date, end, existing?.id);
+      if (c.length && !confirm(
+        `"${this.hallLabel(v.hall_id)}" is already booked for ${this.sessionLabel(v.session)} on ${v.start_date} (${c[0].customer_name}). Book anyway?`))
+        return false;
+      db.save("bookings", {
+        id: existing?.id, hall_id: v.hall_id, session: v.session, event_type: v.event_type,
+        start_date: v.start_date, end_date: end,
+        customer_name: v.customer_name, customer_phone: v.customer_phone || null,
+        guest_count_min: +v.guest_count_min || 0, guest_count_max: +v.guest_count_max || 0,
+        price_per_person: +v.price_per_person || 0, status: v.status || "tentative",
+        notes: v.notes || null,
+      });
+    };
+  },
+
   // ---- generic modal editor ----
   open(title, fields, save) {
     this.modal = { title, fields, save, model: Object.fromEntries(fields.map(f => [f.key, f.val])) };
@@ -84,7 +153,7 @@ PetiteVue.createApp({
   saveModal() {
     const m = this.modal;
     if (m.fields.some(f => f.required && !String(m.model[f.key] ?? "").trim())) return;
-    m.save({ ...m.model });
+    if (m.save({ ...m.model }) === false) return;   // save aborted (e.g. conflict declined) — keep open
     this.modal = null;
   },
 }).mount("#app");

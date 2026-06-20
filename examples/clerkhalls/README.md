@@ -44,7 +44,8 @@ Toggle **online → off** in the sidebar to queue edits offline; flip back on to
 
 - [x] Foundation: bundle, multi-table sync engine, shell, auth, live/offline sync
 - [x] **Venues & Halls** — full CRUD (org → venue → hall), cascade delete
-- [ ] Bookings (calendar + list, conflict detection, create/edit)
+- [x] **Bookings** — list + create/edit form (hall · session · date · event · guests · price ·
+      status), with **offline conflict detection** (one live booking per hall+session+date)
 - [ ] Booking detail (itemized lines + payments + grand total)
 - [ ] Menu catalog
 - [ ] Reports (revenue, outstanding balances)

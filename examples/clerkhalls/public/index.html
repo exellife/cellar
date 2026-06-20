@@ -74,8 +74,29 @@
         </section>
       </div>
 
+      <!-- ---- Bookings ---- -->
+      <div v-if="route==='bookings'">
+        <div class="page-head"><h1>Bookings</h1><button class="primary" @click="newBooking()" :disabled="!hallOptions().length">+ Booking</button></div>
+        <p class="muted" v-if="!hallOptions().length">Add a venue with at least one hall first.</p>
+        <p class="empty" v-else-if="!bookings().length">No bookings yet — add one.</p>
+        <table class="grid" v-else>
+          <thead><tr><th>Date</th><th>Session</th><th>Hall</th><th>Event</th><th>Customer</th><th>Guests</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="b in bookings()" :key="b.id" class="brow" @click="editBooking(b)">
+              <td class="nowrap">{{ b.start_date }}<template v-if="b.end_date && b.end_date !== b.start_date"> → {{ b.end_date }}</template></td>
+              <td>{{ sessionLabel(b.session) }}</td>
+              <td>{{ hallLabel(b.hall_id) }}</td>
+              <td>{{ eventLabel(b.event_type) }}</td>
+              <td>{{ b.customer_name }}<div class="muted small" v-if="b.customer_phone">{{ b.customer_phone }}</div></td>
+              <td>{{ guests(b) }}</td>
+              <td><span class="pill" :class="'st-'+b.status">{{ b.status }}</span></td>
+              <td class="nowrap" @click.stop><button class="mini danger" @click="delBooking(b)">✕</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <!-- ---- stubs ---- -->
-      <div v-if="route==='bookings'"><div class="page-head"><h1>Bookings</h1></div><p class="empty">Coming in the next iteration.</p></div>
       <div v-if="route==='menu'"><div class="page-head"><h1>Menu catalog</h1></div><p class="empty">Coming in the next iteration.</p></div>
       <div v-if="route==='settings'"><div class="page-head"><h1>Settings</h1></div><p class="empty">Coming in the next iteration.</p></div>
     </main>
@@ -87,7 +108,12 @@
       <h3>{{ modal.title }}</h3>
       <label class="field" v-for="f in modal.fields" :key="f.key">
         <span>{{ f.label }}<template v-if="f.required"> *</template></span>
-        <input :type="f.type" v-model="modal.model[f.key]" :placeholder="f.label" @keyup.enter="saveModal()">
+        <select v-if="f.type==='select'" v-model="modal.model[f.key]">
+          <option value="" disabled>Choose…</option>
+          <option v-for="o in f.options" :value="o.value">{{ o.label }}</option>
+        </select>
+        <textarea v-else-if="f.type==='textarea'" v-model="modal.model[f.key]" rows="3" :placeholder="f.label"></textarea>
+        <input v-else :type="f.type" v-model="modal.model[f.key]" :placeholder="f.label" @keyup.enter="saveModal()">
       </label>
       <div class="modal-actions">
         <button class="ghost" @click="modal=null">Cancel</button>

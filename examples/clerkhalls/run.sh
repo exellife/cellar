@@ -40,9 +40,9 @@ cat <<EOF
   ClerkHalls is live →  http://localhost:$PORT/
   staff (prefilled)  →  $STAFF_EMAIL / $STAFF_PW
 
-  Iteration 1: Venues & Rooms (full CRUD, offline-first, live sync). Bookings / Menu /
-  Settings are stubs we'll fill next. Open a 2nd browser as another device to watch
-  sync; toggle "online" off to queue edits offline. Ctrl-C to stop.
+  Venues & Halls + Bookings are live (full CRUD, offline-first, live sync, conflict
+  detection). Menu / Settings are stubs we'll fill next. Open a 2nd browser as another
+  device to watch sync; toggle "online" off to queue edits offline. Ctrl-C to stop.
 
 EOF
 wait "$SRV"
