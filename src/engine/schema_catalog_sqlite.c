@@ -4,7 +4,7 @@
  * The SQLite-era replacement for schema_catalog.c's information_schema queries.
  * Builds the same cel_catalog_t (so the rest of the engine and cel_catalog_free
  * are unchanged) from:
- *   - sqlite_master           → the user table list (sqlite_* / cel_* excluded);
+ *   - sqlite_master           → the user table list (sqlite_* / cel_* / _% excluded);
  *   - pragma_table_info(t)     → columns: declared type, NOT NULL, default, PK;
  *   - pragma_foreign_key_list  → FK target table/column.
  *
@@ -137,13 +137,16 @@ cel_catalog_t *cel_catalog_build_sqlite(sqlite3 *db) {
     cel_catalog_t *cat = calloc(1, sizeof *cat);
     if (!cat) return NULL;
 
-    /* user tables only: drop SQLite internals and cellar's own cel_* tables */
+    /* user tables only: drop SQLite internals, cellar's own cel_* tables, and any
+     * _%-prefixed table — a leading underscore is reserved for engine-internal
+     * tables (e.g. _sync_seq for sync, future _hooks), never REST-exposed. */
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT name FROM sqlite_master "
             "WHERE type='table' "
             "  AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' "
             "  AND name NOT LIKE 'cel\\_%' ESCAPE '\\' "
+            "  AND name NOT LIKE '\\_%' ESCAPE '\\' "
             "ORDER BY name", -1, &st, NULL) != SQLITE_OK) {
         LOG_ERROR("catalog(sqlite): table list query failed: %s", sqlite3_errmsg(db));
         free_catalog(cat);
@@ -166,6 +169,9 @@ cel_catalog_t *cel_catalog_build_sqlite(sqlite3 *db) {
             free_catalog(cat);
             return NULL;
         }
+        /* sync opt-in is detect-by-columns: a table carrying both `rev` and
+         * `deleted` columns is syncable (the engine stamps rev + tombstones it). */
+        t->syncable = find_column(t, "rev") != NULL && find_column(t, "deleted") != NULL;
     }
     for (int i = 0; i < cat->ntables; i++)
         load_foreign_keys(db, &cat->tables[i]);

@@ -53,6 +53,13 @@ int main(void) {
         "  author_id INTEGER REFERENCES users(id),"
         "  title TEXT NOT NULL);"
         "CREATE TABLE cel_secret(id INTEGER PRIMARY KEY, token TEXT);"  /* must be excluded */
+        /* a syncable table: carries both rev + deleted -> flagged syncable */
+        "CREATE TABLE items("
+        "  id INTEGER PRIMARY KEY,"
+        "  name TEXT,"
+        "  rev INTEGER NOT NULL DEFAULT 0,"
+        "  deleted INTEGER NOT NULL DEFAULT 0);"
+        "CREATE TABLE _sync_seq(id INTEGER PRIMARY KEY CHECK(id=1), seq INTEGER NOT NULL);" /* _%: excluded */
         "CREATE INDEX ix_posts_author ON posts(author_id);",
         NULL, NULL, &err);
     CHECK(rc == SQLITE_OK, "seed schema");
@@ -61,13 +68,19 @@ int main(void) {
     cel_catalog_t *cat = cel_catalog_build_sqlite(db);
     CHECK(cat != NULL, "build catalog");
 
-    /* exclusions: sqlite_* and cel_* (and indexes) not present; only 2 user tables */
-    CHECK(cat->ntables == 2, "two user tables (cel_* + sqlite_* excluded)");
+    /* exclusions: sqlite_*, cel_*, _% (and indexes) not present; 3 user tables */
+    CHECK(cat->ntables == 3, "three user tables (cel_* + sqlite_* + _% excluded)");
     CHECK(find(cat, "cel_secret") == NULL, "internal cel_ table excluded");
+    CHECK(find(cat, "_sync_seq") == NULL, "internal _%-prefixed table excluded");
+
+    /* sync opt-in: detect-by-columns (rev + deleted both present) */
+    const cel_table_t *items = find(cat, "items");
+    CHECK(items != NULL && items->syncable, "items flagged syncable (has rev + deleted)");
 
     const cel_table_t *users = find(cat, "users");
     CHECK(users != NULL, "users table found");
     CHECK(users->ncols == 6, "users has 6 columns");
+    CHECK(users != NULL && !users->syncable, "users not syncable (no rev/deleted)");
 
     /* primary key */
     CHECK(users->pk_index >= 0 && !strcmp(users->cols[users->pk_index].name, "id"),

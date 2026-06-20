@@ -6,8 +6,9 @@
  * which tables are exposed, drives type-correct SQL binding and JSON typing, and
  * feeds the auto-generated admin UI.
  *
- * Internal cellar tables (cel_*) are excluded — they are infrastructure, not
- * user data, and must never be reachable through the generic data layer.
+ * Internal tables (cel_*, sqlite_*, and any _%-prefixed table) are excluded —
+ * they are infrastructure, not user data, and must never be reachable through
+ * the generic data layer.
  * ============================================================================ */
 #ifndef CEL_SCHEMA_CATALOG_H
 #define CEL_SCHEMA_CATALOG_H
@@ -47,6 +48,9 @@ typedef struct {
     cel_column_t *cols;
     int           ncols;
     int           pk_index;      /* index of single-column PK, or -1 */
+    bool          syncable;      /* opted into offline-first sync: has both a `rev`
+                                  * and a `deleted` column (design: sync Appendix A).
+                                  * The engine stamps `rev` + tombstones such tables. */
 } cel_table_t;
 
 typedef struct {
@@ -56,8 +60,9 @@ typedef struct {
 
 /* Introspect an open SQLite database into a fresh catalog (per-app; design §5):
  * user tables from sqlite_master + PRAGMA table_info / foreign_key_list, column
- * types mapped from SQLite declared-type affinity. Internal cel_* and sqlite_*
- * tables are excluded. Returns NULL on failure. Caller owns the result
+ * types mapped from SQLite declared-type affinity. Internal cel_*, sqlite_*, and
+ * _%-prefixed tables are excluded. A table with both `rev` and `deleted` columns
+ * is flagged `syncable`. Returns NULL on failure. Caller owns the result
  * (cel_catalog_free). `sqlite3` is forward-declared so PG-only translation units
  * including this header don't need <sqlite3.h>. */
 struct sqlite3;
