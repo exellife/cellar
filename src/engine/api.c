@@ -6,6 +6,7 @@
 #include "cel_hooks.h"
 #include "cel_hook_state.h"
 #include "cel_val.h"
+#include "cel_sync.h"
 #include "core/app_db.h"
 #include "core/auth.h"
 #include "core/mfa.h"
@@ -291,6 +292,23 @@ static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *re
         cel_hooks_set_db(NULL);
         if (rejected) { snprintf(msg, msglen, "%s", herr[0] ? herr : "rejected by hook"); return 400; }
         if (denied)   { snprintf(msg, msglen, "forbidden"); return 403; }
+    }
+
+    /* Sync substrate (design: cellar-sync-design.md): on a syncable table the engine
+     * OWNS `rev` (and `deleted` on create). Strip any client-supplied values and
+     * stamp the next monotonic rev — AFTER the hooks, so before() never sees engine
+     * fields and a client can't spoof a tombstone or a revision. The bump runs on
+     * the txn conn, so it rolls back with a failed/denied write (no rev gaps). */
+    if (t->syncable && (action == CEL_ACT_CREATE || action == CEL_ACT_UPDATE)) {
+        cJSON *vals = cJSON_GetObjectItemCaseSensitive(req, "values");
+        if (vals) {
+            cJSON_DeleteItemFromObjectCaseSensitive(vals, "rev");
+            cJSON_DeleteItemFromObjectCaseSensitive(vals, "deleted");
+            long long rev = cel_sync_next_rev(c);
+            if (rev < 0) { snprintf(msg, msglen, "rev allocation failed"); return 500; }
+            cJSON_AddNumberToObject(vals, "rev", (double)rev);
+            if (action == CEL_ACT_CREATE) cJSON_AddNumberToObject(vals, "deleted", 0);
+        }
     }
 
     cel_scope_t scope;
