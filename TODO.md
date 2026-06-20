@@ -203,6 +203,59 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       `export`/`import` reduce to copying the `.db`. _Touches:_ `cel_hook_state.{c,h}`,
       provision, export/import.
 
+## Performance — findings & future work  [from the srvlab bench/profile pass]
+
+Measured on **srvlab** (32-core x86_64, NVMe SN850X, plain HTTP over LAN), `bench.sh`
++ `multiapp_write.sh`, `perf` on the write path. WAL + `synchronous=NORMAL` (fsync at
+checkpoint, not per commit).
+
+- [x] **Prepared-statement cache** (commit `bdaf084`). Re-parsing+re-planning identical
+      SQL every request was a top write-path CPU cost (profile: `sqlite3_prepare_v2`/
+      `sqlite3RunParser` ≈ `sqlite3_step`, ~6.7%+17.6% inside `cel_api_create`). Added a
+      per-connection cache (`app_db_stmt_cached`, FIFO, 64 stmts, `SQLITE_PREPARE_PERSISTENT`);
+      `run_rows_on` now `reset`s instead of `prepare`/`finalize`. **Result: single-app write
+      4.6k→5.9k req/s (+29%), p50 6.05→4.43 ms; authed reads +3–4%; cached read +8%.**
+      _Note:_ `prepare_v3` auto-reprepares on `SQLITE_SCHEMA`, so a cached stmt survives a
+      DDL change safely — no manual cache invalidation needed on `ALTER`/`CREATE`.
+
+The remaining ceilings, in rough priority for a future perf pass:
+
+- [ ] **Single-app write is lock-bound, not CPU-bound.** One `write_mtx` per app file
+      serializes writers; with the cache, prepare is gone but `BEGIN IMMEDIATE`/`COMMIT`
+      round-trips per request dominate. **Group commit** (coalesce N pending writes from
+      the per-app queue into one transaction + one checkpoint-eligible commit) is the next
+      big lever — amortizes the txn/WAL overhead across concurrent writers to the same app.
+- [ ] **Multi-app write aggregate plateaus (~39k/s at 8 apps) because the co-located Python
+      generator saturates the same 32 cores** — that's a *measurement* artifact, not a
+      server ceiling. To find the true ceiling: drive from a second machine, or replace
+      `loadtest.py` with a native tool (`wrk`/`hey`). The harness already documents the
+      cross-machine recipe; wire it into a repeatable script.
+- [ ] **Reader concurrency caps at `CEL_APP_CONNS_PER_APP` (4).** Read-heavy apps could use
+      more handles; make it tunable per app (bundle config) or adaptive, balanced against
+      the open-FD ceiling (`CEL_APP_MAX_OPEN`).
+- [ ] **Extend the statement cache to the still-uncached per-request SQL.** The AFTER
+      profile (write path) shows execution now dominates parse (`sqlite3VdbeExec` 2.2% >
+      `sqlite3RunParser` 1.2%), but parser symbols (`yy_reduce`, `sqlite3GetToken`,
+      `sqlite3PExpr`) are still ~3–4% combined — because two hot paths bypass the cache:
+        1. **Auth/token resolution** (`cel_sessions ⋈ cel_users`, every authed request) goes
+           through `cel_db_prep` in `src/core/db_sqlite.c` → `sqlite3_prepare_v2`+finalize
+           each call. Route it through `app_db_stmt_cached` (or give `db_sqlite` its own
+           cache). Biggest single remaining parse win — it's on *every* request, read & write.
+        2. **Transaction control** — `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` use
+           `sqlite3_exec` (api.c ~343–362), which re-parses each tiny statement per write.
+           Hold three persistent prepared stmts per connection and `step`+`reset` them.
+        3. `cel_identity_from_token`'s direct `sqlite3_prepare_v2` (api.c ~1175).
+- [ ] **Read path (~40–60k/s) — profile it next** (only the write path was profiled). Likely
+      split across the token resolution above, cJSON serialization, and per-request routing
+      (`cel_apps_enter`/`leave`). Candidate wins: a faster/streaming JSON writer; caching the
+      built `cel_query_t` per (route, shape).
+- [ ] **Login (Argon2id) ≈ 33/s on srvlab — CPU-bound by design.** Already rate-limited +
+      lockout-guarded. Make the Argon2 cost params deployment-tunable so operators trade
+      hardening vs. throughput per box.
+- [ ] **Bench reproducibility.** `bench.sh`/`multiapp_write.sh` are manual (numbers, not
+      pass/fail). Consider a checked-in baseline + a `make bench` that records to a file so
+      regressions are visible across commits.
+
 ## Phase 3 — deploy as a home origin behind portico-tunnel
 
 - [ ] Run cellar on the home box (`srvlab`) as the origin; portico-tunnel SNI-routes each
