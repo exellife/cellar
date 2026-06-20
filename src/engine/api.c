@@ -111,34 +111,22 @@ static const char *sqlite_err_message(int rc) {
     }
 }
 
-/* Run a built query against the app's SQLite database, returning its rows as JSON
- * (SELECT / RETURNING). `is_write` takes the per-app write lock so a single app's
- * writers serialize (SQLite is single-writer per file). On error, sets *http from
- * the SQLite result code and copies a client-safe message into errmsg.
+/* Execute a built query on an ALREADY-HELD connection `c` — no pool acquire, no
+ * write lock. This is the inner executor: the read paths wrap it with run_rows
+ * (acquire a connection), while the write path runs it inside an explicit
+ * transaction (run_write) so before()'s hook writes, the main write, and the
+ * RETURNING read are one atomic unit. On error sets *http + a client-safe errmsg.
  *
- * The serializer steps the statement to completion; sqlite3_finalize then surfaces
- * any step error (constraint / type mismatch / I/O) — checked here so a failed
- * write is reported, not silently treated as an empty result. */
-static cJSON *run_rows(const cel_query_t *q, const cel_table_t *t, int is_write,
-                       int *http, char *errmsg, size_t errlen) {
-    app_db_t *app = app_db_current();
-    if (!app) { *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable"); return NULL; }
-
-    if (is_write) app_db_write_lock(app);
-    sqlite3 *c = app_db_conn_acquire(app);
-    if (!c) {
-        if (is_write) app_db_write_unlock(app);
-        *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable");
-        return NULL;
-    }
-
+ * The serializer steps to completion; sqlite3_finalize then surfaces any step
+ * error (constraint / type mismatch / I/O) — checked so a failed write is
+ * reported, not silently treated as an empty result. */
+static cJSON *run_rows_on(sqlite3 *c, const cel_query_t *q, const cel_table_t *t,
+                          int *http, char *errmsg, size_t errlen) {
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(c, q->sql, -1, &st, NULL);
     if (rc != SQLITE_OK) {
         LOG_ERROR("query prepare failed [%d]: %s | sql=%s", rc, sqlite3_errmsg(c), q->sql);
         *http = 500; if (errmsg) snprintf(errmsg, errlen, "query failed");
-        app_db_conn_release(app, c);
-        if (is_write) app_db_write_unlock(app);
         return NULL;
     }
     /* params are pushed in order with no reuse → bind params[i] to ?(i+1) */
@@ -157,7 +145,25 @@ static cJSON *run_rows(const cel_query_t *q, const cel_table_t *t, int is_write,
         LOG_ERROR("query failed [%d]: %s | sql=%s", rc, sqlite3_errmsg(c), q->sql);
         if (rows) { cJSON_Delete(rows); rows = NULL; }
     }
+    return rows;
+}
 
+/* Run a built query, acquiring a connection (and, for a write, the per-app write
+ * lock) for its duration. Used by the READ paths (list/get/embed/aggregate); the
+ * write path runs inside an explicit transaction via run_rows_on. */
+static cJSON *run_rows(const cel_query_t *q, const cel_table_t *t, int is_write,
+                       int *http, char *errmsg, size_t errlen) {
+    app_db_t *app = app_db_current();
+    if (!app) { *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable"); return NULL; }
+
+    if (is_write) app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) {
+        if (is_write) app_db_write_unlock(app);
+        *http = 500; if (errmsg) snprintf(errmsg, errlen, "database unavailable");
+        return NULL;
+    }
+    cJSON *rows = run_rows_on(c, q, t, http, errmsg, errlen);
     app_db_conn_release(app, c);
     if (is_write) app_db_write_unlock(app);
     return rows;
@@ -247,6 +253,52 @@ static void rt_emit(const char *table, cel_action_t action, const cJSON *row) {
 typedef int (*build_fn)(const cel_table_t *, const cJSON *, const cel_scope_t *,
                         cel_query_t *, char *, size_t);
 
+/* The body of a write, run INSIDE an open transaction on connection `c`: before()
+ * + authorize() (their hook db bound to `c`, so cellar.exec writes enroll in this
+ * txn), then build + execute, taking the RETURNING row. Returns 0 on success (and
+ * sets *out_row, possibly NULL when require_row is 0), or an HTTP error code with
+ * a client-safe message in `msg`. The caller commits on 0, rolls back otherwise. */
+static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *req,
+                          const cel_table_t *t, build_fn build, cel_action_t action,
+                          int require_row, cel_lua_t *hooks, const cJSON *who_v,
+                          const char *opn, cJSON **out_row, char *msg, size_t msglen) {
+    *out_row = NULL;
+
+    if (hooks) {
+        cel_hooks_set_db(c);   /* before()'s cellar.query/exec run on the txn conn */
+        cJSON *vals = cJSON_GetObjectItemCaseSensitive(req, "values");   /* mutable; NULL for delete */
+        char herr[256] = {0};
+        int rejected = cel_hooks_before(hooks, opn, t->name, (cel_val_t *)vals,
+                                        (const cel_val_t *)who_v, herr, sizeof herr) != 0;
+        int denied = !rejected && cel_hooks_authorize(hooks, opn, t->name,
+                                                      (const cel_val_t *)vals, (const cel_val_t *)who_v) == 0;
+        cel_hooks_set_db(NULL);
+        if (rejected) { snprintf(msg, msglen, "%s", herr[0] ? herr : "rejected by hook"); return 400; }
+        if (denied)   { snprintf(msg, msglen, "forbidden"); return 403; }
+    }
+
+    cel_scope_t scope;
+    if (make_scope(t, action, who, &scope) != 0) { snprintf(msg, msglen, "policy misconfiguration"); return 500; }
+
+    char err[256] = {0};
+    cel_query_t q;
+    if (build(t, req, &scope, &q, err, sizeof err) != 0) {
+        snprintf(msg, msglen, "%s", err[0] ? err : "bad request"); return 400;
+    }
+
+    int http = 200;
+    char emsg[256] = {0};
+    cJSON *rows = run_rows_on(c, &q, t, &http, emsg, sizeof emsg);   /* on the txn conn */
+    cel_query_free(&q);
+    if (!rows) { snprintf(msg, msglen, "%s", emsg[0] ? emsg : "query failed"); return http; }
+
+    int found = cJSON_GetArraySize(rows) > 0;
+    *out_row = found ? cJSON_DetachItemFromArray(rows, 0) : NULL;
+    cJSON_Delete(rows);
+    if (require_row && !found) { snprintf(msg, msglen, "not found"); return 404; }
+    return 0;
+}
+
 static cel_api_result_t run_write(const cel_identity_t *who, const cJSON *req,
                                   build_fn build, cel_action_t action,
                                   int ok_status, int require_row) {
@@ -255,60 +307,57 @@ static cel_api_result_t run_write(const cel_identity_t *who, const cJSON *req,
     if (!t) return result_error(404, "unknown table");
     if (!cel_policy_allows(t->name, action, who->role)) return result_error(403, "forbidden");
 
-    /* Lua hooks (design §8): before() may validate/transform the input and
-     * authorize() may further deny — both BEFORE the SQL builds. The hook db
-     * (cellar.query/exec) runs on a pooled connection per phase (autocommit; not
-     * yet enrolled in the write's transaction — atomicity is a later step), held
-     * only for the phase so we never deadlock against the write regardless of pool
-     * size. No hooks.lua → cel_hook_app_state is NULL and this is all skipped. */
+    app_db_t *adb = app_db_current();
+    if (!adb) return result_error(500, "database unavailable");
+
     cel_lua_t *hooks = cel_hook_app_state(cel_apps_current_hooks());
     cJSON *who_v = hooks ? identity_to_json(who) : NULL;
     const char *opn = action_name(action);
-    if (hooks) {
-        cJSON *vals = cJSON_GetObjectItemCaseSensitive(req, "values");   /* mutable; NULL for delete */
-        app_db_t *adb = app_db_current();
-        sqlite3 *hc = adb ? app_db_conn_acquire(adb) : NULL;
-        cel_hooks_set_db(hc);
-        char herr[256] = {0};
-        int rejected = cel_hooks_before(hooks, opn, t->name, (cel_val_t *)vals,
-                                        (const cel_val_t *)who_v, herr, sizeof herr) != 0;
-        int denied = !rejected && cel_hooks_authorize(hooks, opn, t->name,
-                                                      (const cel_val_t *)vals, (const cel_val_t *)who_v) == 0;
+
+    /* One pinned connection + the per-app write lock for the whole request
+     * transaction (design §8/§14): before()'s hook writes, the main write, and the
+     * RETURNING read are atomic, and a hook's cellar.query/exec run on this same
+     * connection — so they see, and roll back with, the in-flight changes. before()
+     * and authorize() therefore run under the write lock (writers for this app
+     * serialize on the slowest before()); after() stays post-commit. */
+    app_db_write_lock(adb);
+    sqlite3 *c = app_db_conn_acquire(adb);
+    if (!c) { app_db_write_unlock(adb); cJSON_Delete(who_v); return result_error(500, "database unavailable"); }
+
+    if (sqlite3_exec(c, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+        app_db_conn_release(adb, c); app_db_write_unlock(adb); cJSON_Delete(who_v);
+        return result_error(500, "could not begin transaction");
+    }
+
+    cJSON *row = NULL;
+    char msg[256] = {0};
+    int rc = write_txn_body(c, who, req, t, build, action, require_row, hooks, who_v, opn,
+                            &row, msg, sizeof msg);
+
+    if (rc != 0) {                                  /* reject / deny / build / query error → roll back */
+        sqlite3_exec(c, "ROLLBACK", NULL, NULL, NULL);
         cel_hooks_set_db(NULL);
-        if (hc) app_db_conn_release(adb, hc);
-        if (rejected) { cJSON_Delete(who_v); return result_error(400, herr[0] ? herr : "rejected by hook"); }
-        if (denied)   { cJSON_Delete(who_v); return result_error(403, "forbidden"); }
+        app_db_conn_release(adb, c); app_db_write_unlock(adb);
+        cJSON_Delete(row); cJSON_Delete(who_v);
+        return result_error(rc, msg[0] ? msg : "request failed");
     }
-
-    cel_scope_t scope;
-    if (make_scope(t, action, who, &scope) != 0) {
-        cJSON_Delete(who_v); return result_error(500, "policy misconfiguration");
+    if (sqlite3_exec(c, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+        LOG_ERROR("commit failed: %s", sqlite3_errmsg(c));
+        sqlite3_exec(c, "ROLLBACK", NULL, NULL, NULL);
+        app_db_conn_release(adb, c); app_db_write_unlock(adb);
+        cJSON_Delete(row); cJSON_Delete(who_v);
+        return result_error(500, "commit failed");
     }
+    app_db_conn_release(adb, c);
+    app_db_write_unlock(adb);
 
-    char err[256] = {0};
-    cel_query_t q;
-    if (build(t, req, &scope, &q, err, sizeof err) != 0) {
-        cJSON_Delete(who_v); return result_error(400, err);
-    }
+    if (row) rt_emit(t->name, action, row);   /* realtime fan-out, post-commit */
 
-    int http = 200;
-    char emsg[256] = {0};
-    cJSON *rows = run_rows(&q, t, 1 /* write: take the per-app write lock */, &http, emsg, sizeof emsg);
-    cel_query_free(&q);
-    if (!rows) { cJSON_Delete(who_v); return result_error(http, emsg[0] ? emsg : "query failed"); }
-
-    int found = cJSON_GetArraySize(rows) > 0;
-    cJSON *row = found ? cJSON_DetachItemFromArray(rows, 0) : NULL;
-    cJSON_Delete(rows);
-    if (require_row && !found) { cJSON_Delete(who_v); return result_error(404, "not found"); }
-
-    if (row) rt_emit(t->name, action, row);   /* realtime change event (in-process) */
-
-    /* after(): post-commit side effects on the committed row (fault is logged, not
-     * fatal — the write already happened). */
+    /* after(): post-commit side effects on the committed row, on a separate pooled
+     * connection (its writes are NOT part of the committed txn — §14). A fault is
+     * logged, not fatal — the write already happened. */
     if (hooks && row) {
-        app_db_t *adb = app_db_current();
-        sqlite3 *hc = adb ? app_db_conn_acquire(adb) : NULL;
+        sqlite3 *hc = app_db_conn_acquire(adb);
         cel_hooks_set_db(hc);
         cel_hooks_after(hooks, opn, t->name, (const cel_val_t *)row, (const cel_val_t *)who_v);
         cel_hooks_set_db(NULL);

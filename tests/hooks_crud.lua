@@ -7,8 +7,13 @@ function before(op, table, input, who)
   if table ~= 'products' then return true end
   if op == 'create' then
     if not input.name or #input.name == 0 then
-      return false, 'name required by hook'        -- -> 400
+      return false, 'name required by hook'        -- -> 400 (before any side write)
     end
+    -- In-txn side write: a trace note. Because before() now runs inside the
+    -- request transaction, this rolls back with the main write if it fails (or
+    -- with an authorize() deny that follows).
+    cellar.exec('INSERT INTO notes(owner_id, title) VALUES (?, ?)',
+                { who.user_id, 'btrace:' .. tostring(input.sku) })
     input.name = 'HOOKED:' .. input.name           -- transform, in place
   end
   return true

@@ -72,6 +72,22 @@ def main():
     s, b = req("GET", "/api/products?select=id&limit=1", token=admin)
     chk("list products -> 200 (list authorize allows)", s == 200, f"status={s}")
 
+    # ---- ATOMICITY: a before() hook write rolls back with a failed main write ----
+    # First create commits (its btrace note persists); a duplicate-sku retry makes
+    # the MAIN insert fail, so the retry's before() btrace write must roll back too.
+    s, _ = req("POST", "/api/products", {"name": "Atom", "sku": "ATOM-DUP", "price": 1}, token=admin)
+    chk("atomicity: first create -> 201", s == 201, f"status={s}")
+    s, _ = req("POST", "/api/products", {"name": "Atom2", "sku": "ATOM-DUP", "price": 1}, token=admin)
+    chk("atomicity: duplicate sku -> 409", s == 409, f"status={s}")
+    s, b = req("GET", "/api/notes?select=title", token=admin)
+    titles_all = [r.get("title") for r in (b or {}).get("rows", [])]
+    n_btrace = sum(1 for t in titles_all if t == "btrace:ATOM-DUP")
+    chk("before() write rolled back with failed insert (exactly 1 btrace)", n_btrace == 1,
+        f"count={n_btrace}")
+    # and an authorize() deny also rolls back the before() write that preceded it
+    chk("no btrace note for the authorize-denied BLOCKED create",
+        not any(t == "btrace:BLOCKED-9" for t in titles_all), str([t for t in titles_all if "BLOCKED" in t]))
+
     # ---- after(): post-commit side effect wrote audit notes ----
     s, b = req("GET", "/api/notes?select=title&order=title", token=admin)
     titles = [r.get("title") for r in (b or {}).get("rows", [])]
