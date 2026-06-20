@@ -242,6 +242,18 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       before they can do anything. _Touches:_ `src/core/mfa.{c,h}`, `src/main.c`, `policy.{c,h}`,
       and the login/`/auth/mfa/*` flow in `api.c`.
 
+- [ ] **Per-app email (SMTP) config.** Outbound email (`src/core/mailer.{c,h}`, libcurl SMTP;
+      used by email-verification + password-reset in `api.c`, plus the `send-test-mail` CLI) is
+      fully live but **process-wide**: `cel_mailer_init` reads `CEL_SMTP_URL`/`CEL_MAIL_FROM`/…
+      from env once at boot (`src/main.c` ~841), so every app in a process shares one sender and
+      one `From`. Same shape as the MFA-mode gap. To make it per-app (different `From`/SMTP per
+      bundle): move the SMTP config into the per-app config (a bundle `mail.json`, or keys in
+      `policies.json`/a new per-app settings file) and resolve it per request (thread-local,
+      mirroring `cel_policy` `active()`); `cel_mail_send` picks the active app's sender, falling
+      back to the process default. Decide the config surface + secret handling (SMTP password in
+      a bundle file = secret-at-rest concern; consider env-ref indirection). _Touches:_
+      `src/core/mailer.{c,h}`, `src/engine/cel_apps.{c,h}`, `src/main.c`, the `api.c` mail callers.
+
 ## Performance — findings & future work  [from the srvlab bench/profile pass]
 
 Measured on **srvlab** (32-core x86_64, NVMe SN850X, plain HTTP over LAN), `bench.sh`
