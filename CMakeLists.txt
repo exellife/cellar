@@ -211,6 +211,14 @@ if(CELLAR_BUILD_TESTS)
     add_dependencies(cel_lua_test luajit_build)
     add_test(NAME cel_lua COMMAND cel_lua_test)
 
+    # Phase-2 hook value ABI (design §8): the opaque-handle accessors/mutators the
+    # Lua/FFI hook surface is built on — total reads, navigation, in-place object
+    # mutation. cJSON builds fixtures; the code under test sees only cel_val_t*.
+    add_executable(cel_val_test tests/cel_val_test.c src/engine/cel_val.c)
+    target_include_directories(cel_val_test PRIVATE src/engine)
+    target_link_libraries(cel_val_test cjson)
+    add_test(NAME cel_val COMMAND cel_val_test)
+
     # DB-free unit test for the per-app SQLite handle layer (Phase 1 foundation):
     # open-by-file, the connection pool, per-app write serialization, concurrent
     # readers, the get-by-path cache, and isolation between app files. Creates
