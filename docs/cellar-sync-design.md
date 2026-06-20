@@ -267,7 +267,7 @@ sequence/cursor/resolve protocol.
 ## Open decisions
 
 - **Opt-in surface:** `policies.json` flag vs. explicit `rev`/`deleted` columns vs. a `STRICT`
-  per-table convention.
+  per-table convention. **(Slice 0: resolved → detect-by-columns; see Appendix A.)**
 - **Transport:** dedicated `sync_pull`/`sync_push` RPCs (clean, versionable) vs. extending the
   CRUD query params (less new surface). Leaning RPC.
 - **`rev` allocation:** a single per-app counter (simple, global order) vs. per-table counters
@@ -276,3 +276,64 @@ sequence/cursor/resolve protocol.
   tables (safer, more friction).
 - **Where the merge runs for batch push:** one transaction per push (atomic, simpler rollback)
   vs. per-mutation (partial success). Leaning one txn, all-or-nothing, with per-row results.
+
+---
+
+## Appendix A — Slice 0 implementation plan (the `rev` + tombstone substrate)
+
+The first buildable slice of §10.1. It lands the load-bearing invariant — **a correct
+per-app total order over writes, plus tombstones for deletes** — entirely server-side, with
+**no new HTTP surface**. Everything is provable through the existing `/api/<table>` CRUD.
+`sync_pull`/`sync_push`, device cursors, GC, and any client are explicitly *later* slices.
+
+### Decisions locked for Slice 0
+- **Opt-in = detect-by-columns.** A table is *syncable* iff its schema has both
+  `rev INTEGER NOT NULL DEFAULT 0` and `deleted INTEGER NOT NULL DEFAULT 0`. Adding the columns
+  *is* the opt-in; the schema is the single source of truth (no policy/schema skew). A
+  `policies.json` gate can layer on later if sync ever needs decoupling from schema.
+- **`rev` source = a `_sync_seq` row**, bumped in-transaction: `_sync_seq(id INTEGER PRIMARY
+  KEY CHECK(id=1), seq INTEGER NOT NULL)`, allocate via `UPDATE _sync_seq SET seq=seq+1
+  RETURNING seq`. Persistent, no scan-to-seed, rolls back with a failed txn (no rev gaps from
+  failures), and rides the prepared-statement cache.
+- **Single per-app counter** (one global order across the app's syncable tables).
+- **`_%` tables are engine-internal** — excluded from the catalog and the REST API (also
+  reserves `_hooks`). User tables must not start with `_`.
+- **Reads hide tombstones**, and **delete = soft-delete** (see T4/T5).
+
+### Tasks
+- **T1 — Catalog: detect syncable + hide internals.** `cel_table_t` gains `bool syncable`
+  (true when introspected columns include both `rev` and `deleted`); catalog exclusion widens
+  from `cel_*`/`sqlite_*` to also drop `_%`. *Accept:* a two-column table is `syncable`;
+  `GET /api/_sync_seq` → 404. *Touches:* `schema_catalog*.{c,h}`, `schema_catalog_sqlite.c`.
+- **T2 — `_sync_seq` + `next_rev`.** On app open (`cel_apps` `open_into_cache`, post catalog
+  build), if any table is syncable ensure `_sync_seq` exists + seeded to 0. Helper
+  `next_rev(conn)` = `UPDATE _sync_seq SET seq=seq+1 RETURNING seq` on the pinned txn conn.
+  *Accept:* fresh bundle seeds at 0; `next_rev` yields 1,2,3…; rolls back on a failed txn.
+  *Touches:* `cel_apps.c`, `api.c`.
+- **T3 — Write path stamps `rev`, force-owns `rev`/`deleted`.** In `api.c write_txn_body`, for a
+  syncable table only: compute `next_rev` once; **create** → strip client `rev`/`deleted`,
+  inject `rev=next, deleted=0`; **update** → strip client `rev`/`deleted` (no soft-delete via
+  update — that'd dodge `authorize('delete')`), inject `rev=next`. Hooks unchanged. *Accept:*
+  create→`rev=1,deleted=0`; client-sent `rev`/`deleted` ignored; update bumps `rev`.
+- **T4 — Delete → soft-delete.** For a syncable table, route `CEL_ACT_DELETE` through the
+  **update** builder with `{deleted:1, rev:next}` scoped to the path id (reuse
+  `cel_build_update`, no new builder), `RETURNING` the row; non-syncable tables keep the real
+  `DELETE`. *Accept:* delete sets `deleted=1`+new `rev`, row leaves normal reads, second
+  delete → 404. *Touches:* `api.c`.
+- **T5 — Reads hide tombstones.** For syncable tables, `make_scope` appends a `deleted=0` rule
+  (AND-ed with the owner rule) → covers list/get *and* the update/delete WHERE, so a tombstone
+  is untouchable. *Accept:* after delete the row is absent from list + get(404) though it
+  physically remains. *Touches:* `api.c make_scope`.
+- **T6 — e2e test `tests/sync_rev`.** A syncable `items(id,name,rev,deleted)` table driven over
+  REST asserts: create `rev=1`→2 monotonic; update bumps `rev`; client `rev`/`deleted`
+  ignored; delete → 404 from reads but tombstone present (direct sqlite peek); non-syncable
+  `products` unaffected (real delete, no `rev`); `_sync_seq` not an API table. Wire into
+  `CMakeLists.txt` + ctest.
+- **T7 — Dogfood on `tasks_app`** (optional, post-green): add `rev`/`deleted` to `tasks`, watch
+  `rev` climb on the live board. Validation only, no engine change.
+
+### Sequencing & risk
+T1→T2→T3→T4→T5 strictly ordered; T6 lands with T3–T5. Riskiest is **T4/T5** (the tombstone
+invariant must hold everywhere a normal read or scoped write looks) — which is the whole reason
+this slice exists before any sync protocol depends on it. No client, no new endpoints, no policy
+code touched.
