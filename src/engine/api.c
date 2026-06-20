@@ -991,10 +991,11 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
          * whose response the client lost), return the stored result and DON'T re-apply
          * — no second rev bump, no realtime re-emit, no lost-update. */
         const cJSON *jmid = cJSON_GetObjectItemCaseSensitive(m, "mutation_id");
-        const char *mut_id = cJSON_IsString(jmid) ? jmid->valuestring : NULL;
+        const char *mut_id = (cJSON_IsString(jmid) && jmid->valuestring[0]) ? jmid->valuestring : NULL;
         if (mut_id) {
             char dstatus[24] = {0}; long long drev = 0;
-            if (cel_sync_applied_get(c, mut_id, dstatus, sizeof dstatus, &drev) == 1) {
+            if (cel_sync_applied_get(c, mut_id, jtab->valuestring, jid->valuestring,
+                                     dstatus, sizeof dstatus, &drev) == 1) {
                 cJSON *r = cJSON_CreateObject();
                 cJSON_AddItemReferenceToObject(r, "id", (cJSON *)jid);
                 cJSON_AddStringToObject(r, "status", dstatus[0] ? dstatus : "applied");
@@ -1077,7 +1078,7 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
 
         /* record the idempotency key in this txn so a retry of this mutation_id is a
          * no-op (rolls back with the batch on a later hard error, so it's re-tried). */
-        if (mut_id) cel_sync_applied_put(c, mut_id, status, out_rev);
+        if (mut_id) cel_sync_applied_put(c, mut_id, t->name, jid->valuestring, status, out_rev);
 
         cJSON *r = cJSON_CreateObject();
         cJSON_AddItemReferenceToObject(r, "id", (cJSON *)jid);

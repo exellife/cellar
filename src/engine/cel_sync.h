@@ -31,10 +31,10 @@ long long cel_sync_current_seq(struct sqlite3 *c);
 /* Idempotent-retry dedup. cel_sync_applied_get: 1 (+ fills status_out/rev_out) if a
  * mutation_id was already applied, 0 if not, -1 on error. cel_sync_applied_put:
  * record a mutation's result (idempotency key) in the current txn; 0 on success. */
-int cel_sync_applied_get(struct sqlite3 *c, const char *mutation_id,
-                         char *status_out, size_t status_len, long long *rev_out);
-int cel_sync_applied_put(struct sqlite3 *c, const char *mutation_id,
-                         const char *status, long long rev);
+int cel_sync_applied_get(struct sqlite3 *c, const char *mutation_id, const char *tbl,
+                         const char *row_id, char *status_out, size_t status_len, long long *rev_out);
+int cel_sync_applied_put(struct sqlite3 *c, const char *mutation_id, const char *tbl,
+                         const char *row_id, const char *status, long long rev);
 
 /* Record a device's durable PULL cursor (for tombstone GC): upsert _sync_devices,
  * advancing `cursor` monotonically. Recorded from sync_pull as the device's `since`
@@ -47,7 +47,7 @@ int cel_sync_device_seen(struct sqlite3 *c, const char *device_id, const char *u
  * delete tombstones (deleted=1) with rev <= min_cursor from `table` (a catalog-
  * validated name); returns rows removed, or 0 when min_cursor<0, or -1 on error.
  * cel_sync_prune_applied: drop _sync_applied rows older than before_epoch. */
-long long cel_sync_min_device_cursor(struct sqlite3 *c);
+long long cel_sync_min_device_cursor(struct sqlite3 *c, long long active_since);
 int       cel_sync_gc_table(struct sqlite3 *c, const char *table, long long min_cursor);
 int       cel_sync_prune_applied(struct sqlite3 *c, long long before_epoch);
 

@@ -17,14 +17,19 @@ int cel_sync_ensure_seq(sqlite3 *c) {
         "INSERT OR IGNORE INTO _sync_seq(id, seq) VALUES (1, 0);"
         "CREATE TABLE IF NOT EXISTS _sync_applied("
         "  mutation_id TEXT PRIMARY KEY,"
+        "  tbl         TEXT    NOT NULL,"   /* key also bound to (table,id) so a reused */
+        "  row_id      TEXT    NOT NULL,"   /* mutation_id for a different row isn't deduped */
         "  status      TEXT    NOT NULL,"
         "  rev         INTEGER NOT NULL,"
         "  at          INTEGER NOT NULL);"
+        /* user-scoped: a device belongs to its owner, so one user can never touch (and
+         * force-advance the cursor of) another user's device row. */
         "CREATE TABLE IF NOT EXISTS _sync_devices("
-        "  device_id TEXT PRIMARY KEY,"
         "  user_id   TEXT    NOT NULL,"
+        "  device_id TEXT    NOT NULL,"
         "  cursor    INTEGER NOT NULL,"
-        "  seen_at   INTEGER NOT NULL);",
+        "  seen_at   INTEGER NOT NULL,"
+        "  PRIMARY KEY (user_id, device_id));",
         NULL, NULL, &err);
     if (rc != SQLITE_OK) {
         LOG_ERROR("sync: ensure _sync_* failed: %s", err ? err : sqlite3_errmsg(c));
@@ -34,13 +39,18 @@ int cel_sync_ensure_seq(sqlite3 *c) {
     return 0;
 }
 
-int cel_sync_applied_get(sqlite3 *c, const char *mutation_id,
+int cel_sync_applied_get(sqlite3 *c, const char *mutation_id, const char *tbl, const char *row_id,
                          char *status_out, size_t status_len, long long *rev_out) {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(c, "SELECT status, rev FROM _sync_applied WHERE mutation_id = ?1",
-                           -1, &st, NULL) != SQLITE_OK)
+    /* Bound to (mutation_id, table, id): a mutation_id reused for a DIFFERENT row does
+     * not match here, so it applies normally instead of being silently dropped. */
+    if (sqlite3_prepare_v2(c,
+            "SELECT status, rev FROM _sync_applied "
+            "WHERE mutation_id = ?1 AND tbl = ?2 AND row_id = ?3", -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_text(st, 1, mutation_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, tbl, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 3, row_id, -1, SQLITE_TRANSIENT);
     int found = 0;
     if (sqlite3_step(st) == SQLITE_ROW) {
         found = 1;
@@ -56,29 +66,31 @@ int cel_sync_device_seen(sqlite3 *c, const char *device_id, const char *user_id,
     sqlite3_stmt *st = NULL;
     /* Upsert; cursor only ever advances (MAX) so a stale/parallel pull can't rewind it. */
     if (sqlite3_prepare_v2(c,
-            "INSERT INTO _sync_devices(device_id, user_id, cursor, seen_at) "
+            "INSERT INTO _sync_devices(user_id, device_id, cursor, seen_at) "
             "VALUES (?1, ?2, ?3, unixepoch()) "
-            "ON CONFLICT(device_id) DO UPDATE SET "
-            "  cursor = MAX(cursor, excluded.cursor), "
-            "  user_id = excluded.user_id, seen_at = excluded.seen_at", -1, &st, NULL) != SQLITE_OK)
+            "ON CONFLICT(user_id, device_id) DO UPDATE SET "
+            "  cursor = MAX(cursor, excluded.cursor), seen_at = excluded.seen_at", -1, &st, NULL) != SQLITE_OK)
         return -1;
-    sqlite3_bind_text(st, 1, device_id, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, device_id, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(st, 3, cursor);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return rc == SQLITE_DONE ? 0 : -1;
 }
 
-int cel_sync_applied_put(sqlite3 *c, const char *mutation_id, const char *status, long long rev) {
+int cel_sync_applied_put(sqlite3 *c, const char *mutation_id, const char *tbl, const char *row_id,
+                         const char *status, long long rev) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(c,
-            "INSERT OR IGNORE INTO _sync_applied(mutation_id, status, rev, at) "
-            "VALUES (?1, ?2, ?3, unixepoch())", -1, &st, NULL) != SQLITE_OK)
+            "INSERT OR IGNORE INTO _sync_applied(mutation_id, tbl, row_id, status, rev, at) "
+            "VALUES (?1, ?2, ?3, ?4, ?5, unixepoch())", -1, &st, NULL) != SQLITE_OK)
         return -1;
     sqlite3_bind_text(st, 1, mutation_id, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(st, 2, status, -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(st, 3, rev);
+    sqlite3_bind_text(st, 2, tbl, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 3, row_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 4, status, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 5, rev);
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return rc == SQLITE_DONE ? 0 : -1;
@@ -99,19 +111,36 @@ long long cel_sync_next_rev(sqlite3 *c) {
     return rev;
 }
 
-long long cel_sync_min_device_cursor(sqlite3 *c) {
+long long cel_sync_min_device_cursor(sqlite3 *c, long long active_since) {
     sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(c, "SELECT count(*), MIN(cursor) FROM _sync_devices", -1, &st, NULL) != SQLITE_OK)
+    /* Only ACTIVE devices (seen_at >= active_since) gate GC. A device abandoned past
+     * the staleness horizon stops pinning the min — it'll full-resync when it returns,
+     * so its tombstones needn't be kept forever (and a fake/idle device can't block GC
+     * fleet-wide indefinitely). */
+    if (sqlite3_prepare_v2(c, "SELECT count(*), MIN(cursor) FROM _sync_devices WHERE seen_at >= ?1",
+                           -1, &st, NULL) != SQLITE_OK)
         return -1;
+    sqlite3_bind_int64(st, 1, active_since);
     long long v = -1;
     if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int64(st, 0) > 0)
-        v = sqlite3_column_int64(st, 1);   /* -1 (no devices) → caller purges nothing */
+        v = sqlite3_column_int64(st, 1);   /* -1 (no active devices) → caller purges nothing */
     sqlite3_finalize(st);
     return v;
 }
 
+/* A bare SQLite identifier ([A-Za-z_][A-Za-z0-9_]*) — gc_table interpolates the table
+ * name, so refuse anything that isn't one (defense-in-depth; catalog names are trusted). */
+static int sync_safe_ident(const char *s) {
+    if (!s || !*s) return 0;
+    for (const char *p = s; *p; p++)
+        if (!((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z') ||
+              (*p >= '0' && *p <= '9') || *p == '_')) return 0;
+    return 1;
+}
+
 int cel_sync_gc_table(sqlite3 *c, const char *table, long long min_cursor) {
-    if (min_cursor < 0) return 0;   /* no registered devices → purge nothing (conservative) */
+    if (min_cursor < 0) return 0;   /* no active devices → purge nothing (conservative) */
+    if (!sync_safe_ident(table)) return -1;
     char sql[256];
     snprintf(sql, sizeof sql, "DELETE FROM \"%s\" WHERE deleted = 1 AND rev <= ?1", table);
     sqlite3_stmt *st = NULL;

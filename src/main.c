@@ -684,7 +684,8 @@ static int run_apps(void) {
  * device cursor) from each syncable table, and age-prune the _sync_applied idempotency
  * keys. No host → the CEL_DATA_DB app; a host → CEL_APPS_DIR/<host>/data.db. Safe to
  * run against a live server (SQLite serializes via the file lock + busy_timeout). */
-#define CEL_SYNC_APPLIED_TTL_SECS (7 * 24 * 3600)
+#define CEL_SYNC_APPLIED_TTL_SECS  (7 * 24 * 3600)
+#define CEL_SYNC_DEVICE_STALE_SECS (30 * 24 * 3600)   /* devices idle past this stop gating GC */
 static int run_sync_gc(int argc, char **argv) {
     const char *lvl = getenv("CEL_LOG_LEVEL");
     logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
@@ -708,14 +709,15 @@ static int run_sync_gc(int argc, char **argv) {
     sqlite3_busy_timeout(c, 5000);
 
     cel_catalog_t *cat = cel_catalog_build_sqlite(c);
-    long long mincur = cel_sync_min_device_cursor(c);
+    long long now = (long long)time(NULL);
+    long long mincur = cel_sync_min_device_cursor(c, now - CEL_SYNC_DEVICE_STALE_SECS);
     int tombs = 0, ntables = 0;
     if (cat) for (int i = 0; i < cat->ntables; i++) {
         if (!cat->tables[i].syncable) continue;
         int n = cel_sync_gc_table(c, cat->tables[i].name, mincur);
         if (n > 0) { tombs += n; ntables++; }
     }
-    int pruned = cel_sync_prune_applied(c, (long long)time(NULL) - CEL_SYNC_APPLIED_TTL_SECS);
+    int pruned = cel_sync_prune_applied(c, now - CEL_SYNC_APPLIED_TTL_SECS);
     cel_catalog_free(cat);
     sqlite3_close(c);
 

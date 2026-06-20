@@ -94,6 +94,25 @@ def main():
     req("POST", "/sync/pull", {"since": 1, "device_id": "d1"}, token=tok)
     chk("a lower since can't rewind it (stays 3)", peek("SELECT cursor FROM _sync_devices WHERE device_id='d1'")[0] == 3)
 
+    # ---- audit fixes: empty-string mutation_id is NOT a shared dedup key ----
+    push(tok, [{"op": "put", "table": "items", "id": "e1", "mutation_id": "", "values": {"name": "e1"}}])
+    push(tok, [{"op": "put", "table": "items", "id": "e2", "mutation_id": "", "values": {"name": "e2"}}])
+    chk("empty mutation_id doesn't dedup distinct rows",
+        peek("SELECT count(*) FROM items WHERE id IN ('e1','e2')")[0] == 2)
+
+    # ---- a mutation_id reused for a DIFFERENT row applies (no silent drop) ----
+    push(tok, [{"op": "put", "table": "items", "id": "r1", "mutation_id": "DUP", "values": {"name": "r1"}}])
+    push(tok, [{"op": "put", "table": "items", "id": "r2", "mutation_id": "DUP", "values": {"name": "r2"}}])
+    chk("reused mutation_id on a different id still applies (not silently dropped)",
+        peek("SELECT count(*) FROM items WHERE id IN ('r1','r2')")[0] == 2)
+
+    # ---- _sync_devices is user-scoped: same device_id under two users -> two rows ----
+    ed = login(("editor@cellar.dev", "editor-pw"))
+    req("POST", "/sync/pull", {"since": 0, "device_id": "shared"}, token=tok)
+    req("POST", "/sync/pull", {"since": 0, "device_id": "shared"}, token=ed)
+    chk("same device_id under two users -> two rows (user-scoped, no hijack)",
+        peek("SELECT count(*) FROM _sync_devices WHERE device_id='shared'")[0] == 2)
+
     print(f"\n{'PASS' if fail == 0 else 'FAIL'}  ({ok} ok, {fail} failed)")
     return 1 if fail else 0
 
