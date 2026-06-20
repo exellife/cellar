@@ -80,7 +80,7 @@ async def main(url, email, password):
         r.check("DB_SCHEMA primary_key", prod.get("primary_key") == "id")
         cols = {c["name"]: c for c in prod.get("columns", [])}
         r.check("DB_SCHEMA types", cols.get("price", {}).get("type") == "numeric"
-                and cols.get("in_stock", {}).get("type") == "int"
+                and cols.get("in_stock", {}).get("type") == "bigint"  # SQLite ints are 64-bit
                 and cols.get("is_active", {}).get("type") == "bool")
         fk = cols.get("category_id", {}).get("references")
         r.check("DB_SCHEMA foreign_key", fk == {"table": "categories", "column": "id"}, str(fk))

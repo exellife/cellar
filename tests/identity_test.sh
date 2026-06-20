@@ -2,27 +2,23 @@
 # Identity split (#auth, PLAN §7e): credentials live in cel_identities, not in
 # cel_users. Proves the password_hash column is gone, a seeded user has a
 # 'password' identity, login resolves THROUGH that identity, and an admin-created
-# user gets a working identity it can log in with. Boots its own server (needs the
-# binary + psql). identity_test.sh <cellar-binary>
+# user gets a working identity it can log in with. Boots its own server against a
+# throwaway per-app SQLite database (needs the binary). identity_test.sh <cellar-binary>
 set -euo pipefail
 
 BIN="${1:?usage: identity_test.sh <cellar-binary>}"
-H="${CEL_DB_HOST:-localhost}"; U="${CEL_DB_USER:-postgres}"; DB="${CEL_DB_NAME:-cellar}"
-PSQL="psql -h $H -U $U -d $DB -tAc"
+TMP="$(mktemp -d)"; DB="$TMP/data.db"
+SQ() { sqlite3 "$DB" "$1"; }   # scalar query helper (WAL -> concurrent reads ok)
 PORT=$(python3 -c "import socket;s=socket.socket();s.bind(('127.0.0.1',0));print(s.getsockname()[1]);s.close()")
 
 ADMIN="idtest-admin@cellar.dev"
 NEWUSER="idtest-user@cellar.dev"
 
-# Keep the shared DB pristine (identities cascade when the user is deleted).
-cleanup_db() { $PSQL "DELETE FROM cel_users WHERE email IN ('$ADMIN','$NEWUSER')" >/dev/null 2>&1 || true; }
-cleanup_db
-
-CEL_PORT=$PORT CEL_DB_HOST=$H CEL_DB_USER=$U CEL_DB_NAME=$DB CEL_LOG_LEVEL=warn \
+CEL_PORT=$PORT CEL_DATA_DB="$DB" CEL_LOG_LEVEL=warn \
   CEL_AUTH_RATELIMIT=0 CEL_SEED_USERS="$ADMIN:s3cret-admin:admin" \
   "$BIN" >/tmp/id_$$.log 2>&1 &
 SRV=$!
-trap 'kill $SRV 2>/dev/null; rm -f /tmp/id_$$.log; cleanup_db' EXIT
+trap 'kill $SRV 2>/dev/null; rm -f /tmp/id_$$.log; rm -rf "$TMP"' EXIT
 for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/health" && break; sleep 0.1; done
 
 fail=0
@@ -35,12 +31,12 @@ login_token() {
 
 # ---- schema: the credential moved out of cel_users ----
 chk "password_hash column dropped" \
-    "$($PSQL "SELECT count(*) FROM information_schema.columns WHERE table_name='cel_users' AND column_name='password_hash'")" "0"
+    "$(SQ "SELECT count(*) FROM pragma_table_info('cel_users') WHERE name='password_hash'")" "0"
 chk "seeded admin has a password identity" \
-    "$($PSQL "SELECT count(*) FROM cel_identities WHERE provider='password' AND provider_uid='$ADMIN'")" "1"
+    "$(SQ "SELECT count(*) FROM cel_identities WHERE provider='password' AND provider_uid='$ADMIN'")" "1"
 # the secret is the argon2id hash, parked in the identity (not cel_users)
 chk "identity secret is argon2id" \
-    "$($PSQL "SELECT count(*) FROM cel_identities WHERE provider_uid='$ADMIN' AND secret LIKE '\$argon2id\$%'")" "1"
+    "$(SQ "SELECT count(*) FROM cel_identities WHERE provider_uid='$ADMIN' AND secret LIKE '\$argon2id\$%'")" "1"
 
 # ---- login resolves through the identity ----
 TOKEN=$(login_token "$ADMIN" "s3cret-admin")
@@ -52,7 +48,7 @@ chk "admin creates user -> 201" \
         -d "{\"email\":\"$NEWUSER\",\"password\":\"newuser-pw\",\"role\":\"viewer\"}" \
         "http://127.0.0.1:$PORT/auth/users")" "201"
 chk "created user has a password identity" \
-    "$($PSQL "SELECT count(*) FROM cel_identities WHERE provider='password' AND provider_uid='$NEWUSER'")" "1"
+    "$(SQ "SELECT count(*) FROM cel_identities WHERE provider='password' AND provider_uid='$NEWUSER'")" "1"
 chk "created user can log in" \
     "$(code -X POST -H 'Content-Type: application/json' \
         -d "{\"email\":\"$NEWUSER\",\"password\":\"newuser-pw\"}" "http://127.0.0.1:$PORT/auth/login")" "200"
