@@ -283,6 +283,57 @@ static void rt_emit(const char *table, cel_action_t action, const cJSON *row) {
 typedef int (*build_fn)(const cel_table_t *, const cJSON *, const cel_scope_t *,
                         cel_query_t *, char *, size_t);
 
+/* Sync cascade soft-delete. A soft-delete is an UPDATE, so SQLite's ON DELETE
+ * CASCADE never fires; replicate it here so a parent's deletion propagates to its
+ * children across devices. For each syncable child table with an `ON DELETE CASCADE`
+ * FK to `parent`, soft-delete (deleted=1) + rev-stamp the rows pointing at `parent_id`,
+ * and recurse into THEIR children. Runs on the txn conn `c` (rolls back with the
+ * batch). `AND deleted=0` makes it idempotent and bounds cycles; `depth` is a backstop.
+ * Identifiers come from the catalog (the app's own schema); values are bound. */
+static void cascade_soft_delete(sqlite3 *c, const cel_table_t *parent,
+                                const char *parent_id, int depth) {
+    const cel_catalog_t *cat = cel_catalog_active();
+    if (!cat || depth >= 8 || !parent_id) return;
+
+    for (int i = 0; i < cat->ntables; i++) {
+        const cel_table_t *child = &cat->tables[i];
+        if (!child->syncable) continue;
+        for (int j = 0; j < child->ncols; j++) {
+            const cel_column_t *col = &child->cols[j];
+            if (!col->is_fk || !col->fk_cascade || strcmp(col->fk_table, parent->name) != 0) continue;
+
+            long long rev = cel_sync_next_rev(c);
+            if (rev < 0) continue;
+            const char *pk = child->pk_index >= 0 ? child->cols[child->pk_index].name : "id";
+            char sql[512];
+            snprintf(sql, sizeof sql,
+                     "UPDATE \"%s\" SET deleted = 1, rev = %lld "
+                     "WHERE \"%s\" = ?1 AND deleted = 0 RETURNING \"%s\"",
+                     child->name, rev, col->name, pk);
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(c, sql, -1, &st, NULL) != SQLITE_OK) continue;
+            sqlite3_bind_text(st, 1, parent_id, -1, SQLITE_TRANSIENT);
+
+            /* collect affected child ids (can't recurse while the stmt is live) */
+            char **ids = NULL; int nids = 0, cap = 0;
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                const char *cid = (const char *)sqlite3_column_text(st, 0);
+                if (!cid) continue;
+                if (nids == cap) { cap = cap ? cap * 2 : 8;
+                                   char **g = realloc(ids, (size_t)cap * sizeof *g);
+                                   if (!g) break; ids = g; }
+                ids[nids++] = strdup(cid);
+            }
+            sqlite3_finalize(st);
+            for (int k = 0; k < nids; k++) {
+                if (ids[k]) cascade_soft_delete(c, child, ids[k], depth + 1);
+                free(ids[k]);
+            }
+            free(ids);
+        }
+    }
+}
+
 /* The body of a write, run INSIDE an open transaction on connection `c`: before()
  * + authorize() (their hook db bound to `c`, so cellar.exec writes enroll in this
  * txn), then build + execute, taking the RETURNING row. Returns 0 on success (and
@@ -348,6 +399,14 @@ static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *re
     *out_row = found ? cJSON_DetachItemFromArray(rows, 0) : NULL;
     cJSON_Delete(rows);
     if (require_row && !found) { snprintf(msg, msglen, "not found"); return 404; }
+
+    /* Sync cascade: a soft-delete is an UPDATE, so SQLite's ON DELETE CASCADE never
+     * fires. Replicate it for sync — soft-delete + rev-stamp the children a real
+     * CASCADE would have removed, so the deletion propagates to every device. */
+    if (soft_delete && found) {
+        const cJSON *idj = cJSON_GetObjectItemCaseSensitive(req, "id");
+        if (cJSON_IsString(idj)) cascade_soft_delete(c, t, idj->valuestring, 0);
+    }
     return 0;
 }
 

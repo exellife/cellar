@@ -41,6 +41,7 @@ typedef struct {
     bool          is_fk;
     char          fk_table[64];  /* valid when is_fk */
     char          fk_column[64]; /* valid when is_fk */
+    bool          fk_cascade;    /* FK declared ON DELETE CASCADE (drives sync cascade soft-delete) */
 } cel_column_t;
 
 typedef struct {

@@ -115,7 +115,7 @@ static int load_columns(sqlite3 *db, cel_table_t *t) {
 static void load_foreign_keys(sqlite3 *db, cel_table_t *t) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT \"from\", \"table\", \"to\" "
+            "SELECT \"from\", \"table\", \"to\", \"on_delete\" "
             "FROM pragma_foreign_key_list(?1)", -1, &st, NULL) != SQLITE_OK)
         return;
     sqlite3_bind_text(st, 1, t->name, -1, SQLITE_TRANSIENT);
@@ -123,11 +123,13 @@ static void load_foreign_keys(sqlite3 *db, cel_table_t *t) {
         const char *from  = (const char *)sqlite3_column_text(st, 0);
         const char *ftab  = (const char *)sqlite3_column_text(st, 1);
         const char *fcol  = (const char *)sqlite3_column_text(st, 2);
+        const char *ondel = (const char *)sqlite3_column_text(st, 3);
         cel_column_t *c = from ? find_column(t, from) : NULL;
         if (!c) continue;
         c->is_fk = true;
         snprintf(c->fk_table,  sizeof c->fk_table,  "%s", ftab ? ftab : "");
         snprintf(c->fk_column, sizeof c->fk_column, "%s", fcol ? fcol : "");
+        c->fk_cascade = ondel && strcasecmp(ondel, "CASCADE") == 0;
     }
     sqlite3_finalize(st);
 }

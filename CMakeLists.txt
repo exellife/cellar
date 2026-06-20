@@ -502,6 +502,11 @@ if(CELLAR_BUILD_TESTS)
         # purge what every device pulled past, keep the rest. Boots its own server.
         add_test(NAME sync_gc
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/sync_gc_test.sh $<TARGET_FILE:cellar>)
+        # Sync cascade soft-delete: deleting a parent on a syncable table cascades the
+        # soft-delete (+rev-stamp, so it propagates) to ON DELETE CASCADE children,
+        # recursively, leaving non-CASCADE children alone. Boots its own server.
+        add_test(NAME sync_cascade
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/sync_cascade_test.sh $<TARGET_FILE:cellar>)
         # CRUD hooks (Phase 2 §8): before/authorize/after on the write path, via a
         # before/authorize/after bundle (CEL_HOOKS_FILE=tests/hooks_crud.lua).
         add_test(NAME hooks_crud

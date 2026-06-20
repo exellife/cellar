@@ -228,18 +228,14 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       tombstone-filter) — expose a sync-aware hook helper (`cellar.delete`) or stamp inside
       `cellar.exec` for syncable tables (see design note §6, last bullet).
 
-- [ ] **Cascade soft-delete for syncable relations (found dogfooding ClerkHalls — a real
-      offline-first Flutter booking app).** A syncable schema with `FOREIGN KEY ... ON DELETE
-      CASCADE` (bookings → booking_items/payments) is **broken under sync**: soft-delete is an
-      `UPDATE deleted=1`, so SQLite's CASCADE never fires → deleting a parent orphans its
-      children (they stay `deleted=0`). On other devices the parent vanishes but the children
-      linger → corrupt totals + dangling FKs. A hook cascade via `cellar.exec` doesn't fix it
-      (those writes bypass the rev stamp, so the children's tombstones never sync — the gap
-      above). _Fix:_ when the engine soft-deletes a row on a syncable table, also soft-delete +
-      rev-stamp the rows that a real `ON DELETE CASCADE` would have removed (walk
-      `pragma_foreign_key_list` for inbound CASCADE FKs). _Touches:_ `api.c` (soft-delete path),
-      `schema_catalog` (FK graph), `cel_sync`. Until then: apps must cascade client-side and push
-      child deletes explicitly in the same batch.
+- [x] **Cascade soft-delete for syncable relations (found dogfooding ClerkHalls).** DONE: when
+      the engine soft-deletes a row on a syncable table, `cascade_soft_delete` (api.c) walks the
+      catalog's inbound `ON DELETE CASCADE` FK edges (`schema_catalog` now captures `fk_cascade`)
+      and soft-deletes + rev-stamps the children a real CASCADE would have removed, recursively
+      (depth-bounded, `AND deleted=0` guards cycles), so the deletions propagate to every device.
+      Non-CASCADE FK children are left alone. e2e `sync_cascade`. _Remaining nuance:_ cascaded
+      children sync via pull but are NOT emitted as realtime CHANGE events (only the parent is) —
+      an online peer sees the parent vanish, children on its next pull. Minor; note for later.
 
 - [ ] **MFA: per-app mode + expose `required`.** TOTP 2FA is fully live (enroll/confirm/
       disable/recovery-codes/verify routes, per-user lockout, `mfa-reset` CLI, `mfa_sqlite`
