@@ -1,0 +1,24 @@
+{
+  "_comment": "Tasklets authorization. Fail-closed: unlisted tables are denied. Every table is owner-scoped, so a member only ever sees and edits their own rows; an admin (superuser) sees all. The before() hook sets owner_id on create, so create needs no owner_column here.",
+
+  "_default": "deny",
+
+  "_roles": {
+    "admin":  { "superuser": true },
+    "member": { "self_register": true, "allow": ["list", "get", "create", "update", "delete"] }
+  },
+
+  "tasks": {
+    "realtime": true,
+    "list":   { "roles": ["member"], "owner_column": "owner_id" },
+    "get":    { "roles": ["member"], "owner_column": "owner_id" },
+    "create": { "roles": ["member"] },
+    "update": { "roles": ["member"], "owner_column": "owner_id" },
+    "delete": { "roles": ["member"], "owner_column": "owner_id" }
+  },
+
+  "activity": {
+    "list": { "roles": ["member"], "owner_column": "actor_id" },
+    "get":  { "roles": ["member"], "owner_column": "actor_id" }
+  }
+}

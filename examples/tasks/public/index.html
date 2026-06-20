@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tasklets — a cellar example</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Tasklets</h1>
+    <p class="tag">A realtime task board on <a href="https://github.com/" onclick="return false">cellar</a> —
+       auth, owner-scoped data, server hooks, and live updates, in one small bundle.</p>
+    <div id="who" class="who" hidden>
+      <span id="whoami"></span>
+      <button id="logout">sign out</button>
+    </div>
+  </header>
+
+  <!-- signed-out: login / register -->
+  <section id="auth" class="card">
+    <div class="tabs">
+      <button class="tab active" data-tab="login">Sign in</button>
+      <button class="tab" data-tab="register">Create account</button>
+    </div>
+    <form id="auth-form">
+      <input id="email" type="email" placeholder="email" autocomplete="username" required>
+      <input id="password" type="password" placeholder="password" autocomplete="current-password" required>
+      <button id="auth-submit" type="submit">Sign in</button>
+    </form>
+    <p id="auth-msg" class="msg"></p>
+    <p class="hint">Tip: sign in as the seeded admin to see <em>everyone's</em> tasks, or
+       create a member account for your own private board. Open two windows to watch
+       changes stream live.</p>
+  </section>
+
+  <!-- signed-in: the board -->
+  <main id="app" hidden>
+    <section class="newtask card">
+      <form id="new-form">
+        <input id="new-title" placeholder="New task…" required>
+        <select id="new-priority" title="priority">
+          <option value="1">P1 · low</option>
+          <option value="2">P2</option>
+          <option value="3" selected>P3 · normal</option>
+          <option value="4">P4</option>
+          <option value="5">P5 · urgent</option>
+        </select>
+        <button type="submit">Add</button>
+      </form>
+      <div class="stats" id="stats">
+        <span class="rt-dot" id="rtdot" title="realtime: connecting…"></span>
+        <span data-stat="todo">todo 0</span>
+        <span data-stat="doing">doing 0</span>
+        <span data-stat="done">done 0</span>
+        <button id="clear-done" class="ghost" title="rpc: clear_done">clear done</button>
+      </div>
+    </section>
+
+    <section class="board">
+      <div class="col" data-status="todo"><h2>To do</h2><div class="cards" id="col-todo"></div></div>
+      <div class="col" data-status="doing"><h2>Doing</h2><div class="cards" id="col-doing"></div></div>
+      <div class="col" data-status="done"><h2>Done</h2><div class="cards" id="col-done"></div></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Every action here is a plain HTTP call to the cellar engine — open devtools and
+       watch <code>/auth</code>, <code>/api/tasks</code>, <code>/rpc/*</code>, and the
+       realtime WebSocket. See <code>examples/tasks/README.md</code> for the tour.</p>
+  </footer>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

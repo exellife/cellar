@@ -33,3 +33,6 @@ config/policies.local.json
 *.db
 *.db-wal
 *.db-shm
+
+# example apps: throwaway provisioned bundles
+examples/*/.run/
