@@ -1,5 +1,4 @@
 #include "policy.h"
-#include "core/auth.h"
 #include "logger.h"
 
 #include <cjson/cJSON.h>
@@ -7,22 +6,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Optional per-table override config; NULL => built-in defaults only. */
-static cJSON *g_config = NULL;
+/* The policy config (JSON), bound per request. g_default is the process default
+ * (boot CEL_POLICY_FILE / single-app); t_active is the current request's app
+ * policy (set by cel_apps_enter). active() returns the per-thread binding if set,
+ * else the default; NULL => built-in role defaults. */
+static cJSON          *g_default = NULL;
+static __thread cJSON *t_active  = NULL;
+static cJSON *active(void) { return t_active ? t_active : g_default; }
 
-void cel_identity_from_token(const char *token, cel_identity_t *out) {
-    memset(out, 0, sizeof *out);
-    snprintf(out->role, sizeof out->role, "%s", "anon");
-    if (!token || !*token) return;
-
-    cel_user_t u;
-    if (cel_auth_resolve(token, &u) == CEL_AUTH_OK) {   /* cache-aware (no DB hit on a hit) */
-        out->authenticated = true;
-        snprintf(out->user_id, sizeof out->user_id, "%s", u.id);
-        snprintf(out->role, sizeof out->role, "%s", u.role);
-        snprintf(out->tenant_id, sizeof out->tenant_id, "%s", u.tenant_id);
-    }
-}
+/* cel_identity_from_token lives in api.c (it needs cel_auth_resolve) so this
+ * module stays a pure policy-config evaluator with no auth dependency. */
 
 static const char *action_name(cel_action_t a) {
     switch (a) {
@@ -52,8 +45,8 @@ static const char *action_name(cel_action_t a) {
  * (e.g. editor → { "allow": [] }, or admin → { "superuser": false }).
  * Returns the role's "_roles" object, or NULL if there is none. */
 static const cJSON *role_def(const char *role) {
-    if (!g_config) return NULL;
-    const cJSON *roles = cJSON_GetObjectItemCaseSensitive(g_config, "_roles");
+    if (!active()) return NULL;
+    const cJSON *roles = cJSON_GetObjectItemCaseSensitive(active(), "_roles");
     if (!cJSON_IsObject(roles)) return NULL;
     return cJSON_GetObjectItemCaseSensitive(roles, role);
 }
@@ -116,7 +109,7 @@ static bool role_in_array(const cJSON *roles, const char *role) {
  * loaded policy that locked down some tables left every other table fully
  * accessible, and the documented object form ({"deny":true}) was silently ignored. */
 static bool policy_default_is_allow(void) {
-    const cJSON *def = cJSON_GetObjectItemCaseSensitive(g_config, "_default");
+    const cJSON *def = cJSON_GetObjectItemCaseSensitive(active(), "_default");
     if (cJSON_IsString(def)) return !strcmp(def->valuestring, "allow");
     if (cJSON_IsObject(def)) {
         const cJSON *deny  = cJSON_GetObjectItemCaseSensitive(def, "deny");
@@ -130,8 +123,8 @@ static bool policy_default_is_allow(void) {
 bool cel_policy_allows(const char *table, cel_action_t action, const char *role) {
     if (is_superuser_role(role)) return true;
 
-    if (g_config) {
-        const cJSON *tbl = cJSON_GetObjectItemCaseSensitive(g_config, table);
+    if (active()) {
+        const cJSON *tbl = cJSON_GetObjectItemCaseSensitive(active(), table);
         if (!tbl) {
             /* No explicit entry: fail closed. The permissive built-in/_roles
              * fallback applies only if the operator set "_default":"allow". */
@@ -149,10 +142,10 @@ bool cel_policy_allows(const char *table, cel_action_t action, const char *role)
 }
 
 const char *cel_policy_owner_column(const char *table, cel_action_t action, const char *role) {
-    if (!g_config) return NULL;                 /* built-in defaults: no row scoping */
+    if (!active()) return NULL;                 /* built-in defaults: no row scoping */
     if (is_superuser_role(role)) return NULL;   /* superuser sees/edits all rows */
 
-    const cJSON *tbl = cJSON_GetObjectItemCaseSensitive(g_config, table);
+    const cJSON *tbl = cJSON_GetObjectItemCaseSensitive(active(), table);
     if (!tbl) return NULL;
     const cJSON *act = cJSON_GetObjectItemCaseSensitive(tbl, action_name(action));
     if (!cJSON_IsObject(act)) return NULL;
@@ -165,15 +158,15 @@ bool cel_role_is_superuser(const char *role) {
 }
 
 bool cel_policy_realtime_enabled(const char *table) {
-    if (!g_config) return false;
-    const cJSON *tbl = cJSON_GetObjectItemCaseSensitive(g_config, table);
+    if (!active()) return false;
+    const cJSON *tbl = cJSON_GetObjectItemCaseSensitive(active(), table);
     if (!cJSON_IsObject(tbl)) return false;
     return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(tbl, "realtime"));
 }
 
 bool cel_policy_rpc_allows(const char *fn, const char *role) {
-    if (!g_config) return false;
-    const cJSON *rpc = cJSON_GetObjectItemCaseSensitive(g_config, "_rpc");
+    if (!active()) return false;
+    const cJSON *rpc = cJSON_GetObjectItemCaseSensitive(active(), "_rpc");
     if (!cJSON_IsObject(rpc)) return false;
     const cJSON *entry = cJSON_GetObjectItemCaseSensitive(rpc, fn);
     if (!cJSON_IsObject(entry)) return false;          /* not whitelisted => deny */
@@ -182,8 +175,8 @@ bool cel_policy_rpc_allows(const char *fn, const char *role) {
 }
 
 int cel_policy_rpc_names(const char **out, int max) {
-    if (!g_config || !out || max <= 0) return 0;
-    const cJSON *rpc = cJSON_GetObjectItemCaseSensitive(g_config, "_rpc");
+    if (!active() || !out || max <= 0) return 0;
+    const cJSON *rpc = cJSON_GetObjectItemCaseSensitive(active(), "_rpc");
     if (!cJSON_IsObject(rpc)) return 0;
     int n = 0;
     const cJSON *e;
@@ -203,8 +196,8 @@ bool cel_role_can_self_register(const char *role) {
 }
 
 bool cel_role_default_signup(char *out, size_t out_len) {
-    if (!g_config) return false;
-    const cJSON *roles = cJSON_GetObjectItemCaseSensitive(g_config, "_roles");
+    if (!active()) return false;
+    const cJSON *roles = cJSON_GetObjectItemCaseSensitive(active(), "_roles");
     if (!cJSON_IsObject(roles)) return false;
     const cJSON *e;
     cJSON_ArrayForEach(e, roles) {
@@ -219,10 +212,10 @@ bool cel_role_default_signup(char *out, size_t out_len) {
 bool cel_policy_owner_scope(const char *table, cel_action_t action,
                             const char *role, cel_owner_spec_t *out) {
     memset(out, 0, sizeof *out);
-    if (!g_config) return false;
+    if (!active()) return false;
     if (is_superuser_role(role)) return false;   /* superuser: never row-scoped */
 
-    const cJSON *tbl = cJSON_GetObjectItemCaseSensitive(g_config, table);
+    const cJSON *tbl = cJSON_GetObjectItemCaseSensitive(active(), table);
     if (!tbl) return false;
     const cJSON *act = cJSON_GetObjectItemCaseSensitive(tbl, action_name(action));
     if (!cJSON_IsObject(act)) return false;
@@ -260,37 +253,58 @@ bool cel_policy_owner_scope(const char *table, cel_action_t action,
     return false;
 }
 
+/* Read + parse a policy JSON file. Returns the parsed object, or NULL (no path /
+ * unreadable / empty / parse error); sets *parse_error when a file was present but
+ * failed to parse. Warns when a loaded config omits "_default" (fail-closed). */
+static cJSON *load_policy_json(const char *path, int *parse_error) {
+    if (parse_error) *parse_error = 0;
+    if (!path || !*path) return NULL;
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n <= 0) { fclose(f); return NULL; }
+    char *buf = malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t rd = fread(buf, 1, (size_t)n, f);
+    fclose(f);
+    buf[rd] = '\0';
+    cJSON *c = cJSON_Parse(buf);
+    free(buf);
+    if (!c) { LOG_ERROR("policy: failed to parse '%s'", path); if (parse_error) *parse_error = 1; return NULL; }
+    /* Fail closed: warn if no default is declared, since unlisted tables then DENY
+     * rather than fall through to the built-in grants. */
+    if (!cJSON_HasObjectItem(c, "_default"))
+        LOG_WARN("policy: no \"_default\" in '%s' — tables without an explicit entry are "
+                 "DENIED. Set \"_default\":\"allow\" to keep the permissive built-in/_roles "
+                 "fallback for unlisted tables.", path);
+    return c;
+}
+
 int cel_policy_init(const char *config_path) {
     if (!config_path || !*config_path) {
         LOG_INFO("policy: using built-in role defaults (no config file)");
         return 0;
     }
-    FILE *f = fopen(config_path, "rb");
-    if (!f) { LOG_WARN("policy: config '%s' not found — using defaults", config_path); return 0; }
-
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (n <= 0) { fclose(f); return 0; }
-    char *buf = malloc((size_t)n + 1);
-    if (!buf) { fclose(f); return -1; }
-    size_t rd = fread(buf, 1, (size_t)n, f);
-    fclose(f);
-    buf[rd] = '\0';
-
-    g_config = cJSON_Parse(buf);
-    free(buf);
-    if (!g_config) { LOG_ERROR("policy: failed to parse '%s'", config_path); return -1; }
-    LOG_INFO("policy: loaded overrides from '%s'", config_path);
-    /* Fail closed: warn loudly if the operator didn't declare a default, since
-     * unlisted tables now DENY rather than fall through to the built-in grants. */
-    if (!cJSON_HasObjectItem(g_config, "_default"))
-        LOG_WARN("policy: no \"_default\" in '%s' — tables without an explicit entry are "
-                 "DENIED. Set \"_default\":\"allow\" to keep the permissive built-in/_roles "
-                 "fallback for unlisted tables.", config_path);
-    return 0;
+    int perr = 0;
+    g_default = load_policy_json(config_path, &perr);
+    if (g_default)      LOG_INFO("policy: loaded default overrides from '%s'", config_path);
+    else if (!perr)     LOG_WARN("policy: config '%s' not found/empty — using defaults", config_path);
+    return perr ? -1 : 0;
 }
 
+/* Load a per-app policies.json into its own object (or NULL when absent/empty/
+ * unparseable → the app falls back to the process default / built-ins). */
+cel_policy_t *cel_policy_load(const char *config_path) {
+    cJSON *c = load_policy_json(config_path, NULL);
+    if (c) LOG_INFO("policy: loaded app overrides from '%s'", config_path);
+    return (cel_policy_t *)c;
+}
+void cel_policy_free(cel_policy_t *p)       { cJSON_Delete((cJSON *)p); }
+void cel_policy_set_active(cel_policy_t *p) { t_active = (cJSON *)p; }
+void cel_policy_clear_active(void)          { t_active = NULL; }
+
 void cel_policy_cleanup(void) {
-    if (g_config) { cJSON_Delete(g_config); g_config = NULL; }
+    if (g_default) { cJSON_Delete(g_default); g_default = NULL; }
 }

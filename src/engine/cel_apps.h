@@ -17,15 +17,18 @@
 #include "schema_catalog.h"
 #include "core/app_db.h"
 #include "cel_hook_state.h"
+#include "policy.h"
 
-/* A resolved app: its SQLite handle, its (cached) introspected catalog, and its
- * hook metadata (the bundle's hooks.lua, compiled lazily per worker thread). */
+/* A resolved app: its SQLite handle, its (cached) introspected catalog, its hook
+ * metadata (the bundle's hooks.lua, compiled lazily per worker thread), and its
+ * authorization policy (the bundle's policies.json; NULL = process default). */
 typedef struct {
     char            host[256];
     char            bundle_dir[1024];   /* the bundle directory (data.db's dir); <dir>/public is the front-end */
     app_db_t       *db;
     cel_catalog_t  *catalog;
     cel_hook_app_t *hooks;
+    cel_policy_t   *policy;
 } cel_app_t;
 
 /* Configure routing. If `apps_dir` is non-empty → multi-app (<apps_dir>/<host>/

@@ -72,6 +72,22 @@ static cel_api_result_t result_error(int status, const char *message) {
     return r;
 }
 
+/* Resolve a session token to the caller's identity (cache-aware). Lives here (not
+ * in policy.c) because it needs the auth layer; declared in policy.h. */
+void cel_identity_from_token(const char *token, cel_identity_t *out) {
+    memset(out, 0, sizeof *out);
+    snprintf(out->role, sizeof out->role, "%s", "anon");
+    if (!token || !*token) return;
+
+    cel_user_t u;
+    if (cel_auth_resolve(token, &u) == CEL_AUTH_OK) {   /* no DB hit on a cache hit */
+        out->authenticated = true;
+        snprintf(out->user_id, sizeof out->user_id, "%s", u.id);
+        snprintf(out->role, sizeof out->role, "%s", u.role);
+        snprintf(out->tenant_id, sizeof out->tenant_id, "%s", u.tenant_id);
+    }
+}
+
 static const cel_table_t *resolve_table(const cJSON *req) {
     const cJSON *t = cJSON_GetObjectItemCaseSensitive(req, "table");
     if (!cJSON_IsString(t)) return NULL;

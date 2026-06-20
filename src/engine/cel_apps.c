@@ -90,6 +90,11 @@ static cel_app_t *open_into_cache(const char *host, const char *db_path) {
     snprintf(slot->bundle_dir, sizeof slot->bundle_dir, "%s", dir);
     slot->hooks = cel_hook_app_create(dir);
 
+    /* per-app authorization policy from <dir>/policies.json (NULL → process default) */
+    char pj[1100];
+    snprintf(pj, sizeof pj, "%s/policies.json", dir);
+    slot->policy = cel_policy_load(pj);
+
     return slot;
 }
 
@@ -134,6 +139,7 @@ static __thread cel_hook_app_t  *t_cur_hooks = NULL;
 void cel_apps_enter(const cel_app_t *app) {
     app_db_set_current(app ? app->db : NULL);
     cel_catalog_set_active(app ? app->catalog : NULL);
+    cel_policy_set_active(app ? app->policy : NULL);   /* NULL → process default */
     t_cur_app   = app;
     t_cur_hooks = app ? app->hooks : NULL;
 }
@@ -141,6 +147,7 @@ void cel_apps_enter(const cel_app_t *app) {
 void cel_apps_leave(void) {
     app_db_set_current(NULL);
     cel_catalog_set_active(NULL);
+    cel_policy_clear_active();
     t_cur_app   = NULL;
     t_cur_hooks = NULL;
 }
@@ -153,6 +160,7 @@ void cel_apps_shutdown(void) {
     for (int i = 0; i < g.count; i++) {
         cel_catalog_free(g.apps[i].catalog);
         cel_hook_app_destroy(g.apps[i].hooks);
+        cel_policy_free(g.apps[i].policy);
     }
     g.count = 0;
     pthread_mutex_unlock(&g.mtx);

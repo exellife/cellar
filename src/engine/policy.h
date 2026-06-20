@@ -73,9 +73,28 @@ bool cel_policy_owner_scope(const char *table, cel_action_t action,
                             const char *role, cel_owner_spec_t *out);
 
 /* Load an optional policy config file (JSON). Pass NULL to use built-in defaults.
- * Returns 0 on success (or when no file is configured), -1 on parse error. */
+ * Returns 0 on success (or when no file is configured), -1 on parse error.
+ * This loads the PROCESS DEFAULT — the single-app policy and the fallback for any
+ * app without its own policies.json. */
 int cel_policy_init(const char *config_path);
 void cel_policy_cleanup(void);
+
+/* ---- per-app policy (multi-app) ------------------------------------------- */
+
+/* An opaque, loaded policy config — one per app (its bundle policies.json). */
+typedef struct cel_policy cel_policy_t;
+
+/* Load a bundle's policies.json into its own object, or NULL when the file is
+ * absent/empty/unparseable (the app falls back to the process default / built-ins).
+ * Free with cel_policy_free. */
+cel_policy_t *cel_policy_load(const char *config_path);
+void          cel_policy_free(cel_policy_t *p);
+
+/* Bind / clear this thread's active policy for the duration of a request (set by
+ * cel_apps_enter to the current app's policy). With none bound, the query
+ * functions below use the process default from cel_policy_init. */
+void cel_policy_set_active(cel_policy_t *p);
+void cel_policy_clear_active(void);
 
 /* True if `role` is a policy-layer superuser (per the _roles config / built-ins:
  * admin and platform_admin by default). Superusers bypass role + row checks. */
