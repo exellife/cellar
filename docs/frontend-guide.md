@@ -122,6 +122,10 @@ token) · `403` forbidden (policy) · `404` not found / unknown table / unknown 
 Error messages are intentionally generic (no schema leakage) — don't parse them
 for logic; branch on the status code.
 
+A `403` means the app's **authorization policy** denied this role/action/table — it's
+not retryable as-is. See [`policy-guide.md`](policy-guide.md) for the full model
+(roles, per-table grants, row-ownership, and how to branch your UI on `user.role`).
+
 ---
 
 ## 4. The front-end as a bundle (`public/`)
@@ -235,3 +239,4 @@ changes, not front-end hacks.
       start from the `examples/offline_notes/` client.
 - [ ] Web SPA → build into `public/`; native → hit the API directly.
 - [ ] Generate a client from `GET /openapi.json` if you want types.
+- [ ] Hitting `403`s, or need roles/per-row access? Read [`policy-guide.md`](policy-guide.md).
