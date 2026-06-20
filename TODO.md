@@ -159,19 +159,49 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       invalidation on schema change; the **control-plane DB** (platform admin / global registry /
       app lifecycle).
 
-## Phase 2 — per-app extensibility (the hook layer)  [scoped by the design doc §7-9]
+## Phase 2 — per-app extensibility (the hook layer)  ✅ COMPLETE  [design §7-9]
 
-- [ ] **Layer 1 first:** make CRUD respect SQLite-native logic — triggers, `CHECK`,
-      `STRICT`, generated columns, views, SQL-function RPC (a lot of business logic lives
-      here, in the `.db`, for free).
-- [ ] **Lua hook layer (LuaJIT).** Link **LuaJIT** (GC64); implement the fixed hook
-      contract (`authorize / before / after / rpc / on_realtime`); a per-app `lua_State`
-      cache paired 1:1 with the per-app `sqlite3*` handle on each worker thread (one state
-      per thread×app, no locking); expose a generous first-party API **via FFI** (app DB,
-      request ctx, logging, guarded outbound — no hand-written bindings); `hooks.lua`
-      edit → drop cached state = hot-reload.
+- [x] **Lua hook layer (LuaJIT, vendored from source).** The full contract is live and
+      atomic: `authorize / before / after / rpc / on_realtime`, dispatched per request
+      against the current app. Per-(worker-thread × app) `lua_State` cache, lazy from
+      `hooks.lua`, mtime hot-reload, pcall-isolated (fail-closed). FFI surface (opaque
+      `cel_val` handles + `cellar.query/exec/log`) — no hand-written bindings. `before`+
+      write+`after` run in one request transaction (hook writes roll back with the main
+      write); `after` is post-commit.
+- [x] **Bundle tooling.** `cellar provision` (scaffold data.db + hooks.lua + public/ +
+      seeded admin); per-bundle static serving of `public/` (SPA fallback); `export`/
+      `import` (consistent live `VACUUM INTO` snapshot, rehost); per-app `policies.json`;
+      control-plane registry (`CEL_CONTROL_DB`) with `suspend`/`resume`/`apps` lifecycle.
+- [ ] **Layer 1 (free, declarative):** lean harder on SQLite-native logic — triggers,
+      `CHECK`, `STRICT`, generated columns, views — the engine already respects them; this
+      is guidance/examples, not engine work.
 - [ ] **Compiled-C escape hatch** for first-party hot-path handlers (registered by name).
 - [ ] *(later)* **WASM runtime** — same contract, sandboxed — once apps can be third-party.
+
+## Backlog — deferred features (post-Phase-2, before/alongside Phase 3)
+
+- [ ] **Platform-admins over an API (control-plane management API).** Today the
+      control-plane (design §11) is CLI-only: `provision / export / import / suspend /
+      resume / apps`, run with shell access to the host. The `platform_admin` role exists
+      but is created out-of-band and blocked from in-band creation, and there is **no API**
+      for a global admin to manage the fleet (list / provision / suspend apps, view status)
+      remotely or from a dashboard.
+      _Shape:_ platform admins live in the **control DB** (`cel_control`), not in any app's
+      `data.db`; a set of authenticated endpoints (e.g. under a reserved host or `/_control/…`
+      path) gated to `platform_admin`, wrapping the existing `cel_control_*` ops + provision/
+      export. Decide the routing surface (reserved Host vs path) and how platform-admin auth
+      is bootstrapped. _Touches:_ `cel_control.{c,h}`, a new control handler, routing in
+      `cel_http_router`.
+
+- [ ] **In-DB `_hooks` (single-file bundle).** Option to store the hook source in a
+      `_hooks` table inside `data.db` instead of (or in addition to) the on-disk
+      `hooks.lua`, so an app's schema + data + **behavior** travel as ONE file (design §14).
+      _Shape:_ `cel_hook_state` loads from the `_hooks` table when present (file as the
+      fallback / dev path); a version/generation column replaces the mtime check for
+      hot-reload; decide precedence (file vs table) and the table schema, e.g.
+      `_hooks(name TEXT PK DEFAULT 'main', source TEXT, updated_at INTEGER)`. Makes
+      `export`/`import` reduce to copying the `.db`. _Touches:_ `cel_hook_state.{c,h}`,
+      provision, export/import.
 
 ## Phase 3 — deploy as a home origin behind portico-tunnel
 
@@ -183,8 +213,10 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
 
 ## Open decisions (the rest; see design doc §14)
 
-- [ ] **Hooks: file vs in-db** — `hooks.lua` on disk vs a `_hooks` table in `data.db`.
-- [ ] **`after` transactionality** — in-txn (atomic) vs post-commit (safe side-effects).
+- [~] **Hooks: file vs in-db** — shipped the on-disk `hooks.lua` path; the in-db `_hooks`
+      table is captured in the Backlog above (single-file bundles).
+- [x] **`after` transactionality** — decided: `before` runs in the request txn (its writes
+      roll back with a failed/denied write), `after` runs post-commit.
 - [ ] **Per-app routing** — subdomain-per-app (SNI forward each) vs path prefix.
 - [x] **Vendor SQLite:** the amalgamation (`sqlite3.c`, public domain) is committed
       under `third_party/sqlite` (3.45.1) and compiled into the build — no system
