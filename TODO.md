@@ -215,12 +215,12 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       rev+deleted, DELETE→soft-delete, reads hide tombstones; e2e `sync_rev` + dogfooded on
       `tasks_app`. **Slices 1 & 2 DONE:** `POST /sync/pull` (delta read; tombstones; safe multi-table cursor) and
       `POST /sync/push` (batch all-or-nothing; client-id creates; LWW + `resolve()` hook override;
-      e2e `sync_pull`/`sync_push`). **Next slices:** (3) per-device cursors + tombstone GC **+ idempotent-retry dedup**
-      (audit-flagged HIGH: a retried put that already committed re-applies via LWW and can lose
-      another device's interleaved write — key mutations by a client `mutation_id`/`(id,base_rev)`,
-      record applied ids in the push txn); (4) client reference impl (offline loop in `examples/`);
-      (+) `resolve()` field-level merged-row return (today binary `'incoming'`/`'current'`; a table
-      return errors). **Known gap to close:**
+      e2e `sync_pull`/`sync_push`). **Slice 3 DONE:** idempotent-retry dedup (`mutation_id` + `_sync_applied`; closes the audit
+      HIGH lost-update), per-device pull cursors (`_sync_devices`), tombstone GC (`cellar sync-gc`);
+      e2e `sync_dedup`/`sync_gc`. **Remaining:** (4) client reference impl (offline loop in
+      `examples/`); (+) `resolve()` field-level merged-row return (today binary `'incoming'`/
+      `'current'`; a table return errors); (+) conflict result could return the canonical row inline
+      (today the client pulls). **Known gap to close:**
       hook-issued `cellar.exec` writes bypass the substrate (no rev stamp, no auto soft-delete /
       tombstone-filter) — expose a sync-aware hook helper (`cellar.delete`) or stamp inside
       `cellar.exec` for syncable tables (see design note §6, last bullet).

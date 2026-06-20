@@ -493,6 +493,15 @@ if(CELLAR_BUILD_TESTS)
         # nothing rollback, round-trip. Boots with a resolve() bundle.
         add_test(NAME sync_push
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/sync_push_test.sh $<TARGET_FILE:cellar>)
+        # Sync Slice 3: idempotent-retry dedup (mutation_id) incl the audit lost-update
+        # case, and per-device pull cursors (monotonic, no rewind).
+        add_test(NAME sync_dedup
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
+                    $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/sync_dedup_test.py)
+        # Sync Slice 3: tombstone GC (cellar sync-gc) honors per-device cursors —
+        # purge what every device pulled past, keep the rest. Boots its own server.
+        add_test(NAME sync_gc
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/sync_gc_test.sh $<TARGET_FILE:cellar>)
         # CRUD hooks (Phase 2 §8): before/authorize/after on the write path, via a
         # before/authorize/after bundle (CEL_HOOKS_FILE=tests/hooks_crud.lua).
         add_test(NAME hooks_crud

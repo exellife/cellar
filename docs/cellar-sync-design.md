@@ -292,8 +292,14 @@ sequence/cursor/resolve protocol.
    incoming, current, who)` hook (`'incoming'`/`'current'`; absent → LWW; fault → keep current).
    `put` on an absent row = create with the client id. e2e `sync_push`. _Follow-up: field-level
    merged-row return from `resolve()`._
-4. **Per-device cursors + tombstone GC.** `_sync_devices` table, GC job. *Touches:* `app_db`,
-   a maintenance CLI.
+4. **Per-device cursors + tombstone GC + idempotent retry.** ✅ DONE (Slice 3).
+   - **Idempotent retry** (closes the §6 HIGH): a push mutation may carry a `mutation_id`;
+     `_sync_applied` records applied ids in the push txn → a retry returns the stored result,
+     no re-apply, no lost-update. e2e `sync_dedup`.
+   - **Per-device cursors**: `/sync/pull` takes a `device_id` and records the device's *durable*
+     cursor (its `since`) in `_sync_devices`, monotonically.
+   - **Tombstone GC**: `cellar sync-gc [host]` purges tombstones with `rev ≤ min(device cursor)`
+     per syncable table + age-prunes `_sync_applied`; no devices → purge nothing. e2e `sync_gc`.
 5. **Client guidance.** Extend [`frontend-guide.md`](frontend-guide.md) with the
    offline-first loop (local SQLite mirror, pull-on-reconnect, push queue, apply CHANGE live)
    and ship a reference implementation in `examples/` (a Flutter or web offline client).
