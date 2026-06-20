@@ -10,6 +10,8 @@
 #ifndef CEL_SYNC_H
 #define CEL_SYNC_H
 
+#include <stddef.h>   /* size_t */
+
 struct sqlite3;   /* forward-declared so includers needn't pull in <sqlite3.h> */
 
 /* Ensure the per-app rev source `_sync_seq` exists and is seeded to 0. Idempotent;
@@ -25,5 +27,13 @@ long long cel_sync_next_rev(struct sqlite3 *c);
 /* The app's current high-water rev (the last allocated value), or 0 if `_sync_seq`
  * is absent/empty. Used as the cursor a client should advance to after a push. */
 long long cel_sync_current_seq(struct sqlite3 *c);
+
+/* Idempotent-retry dedup. cel_sync_applied_get: 1 (+ fills status_out/rev_out) if a
+ * mutation_id was already applied, 0 if not, -1 on error. cel_sync_applied_put:
+ * record a mutation's result (idempotency key) in the current txn; 0 on success. */
+int cel_sync_applied_get(struct sqlite3 *c, const char *mutation_id,
+                         char *status_out, size_t status_len, long long *rev_out);
+int cel_sync_applied_put(struct sqlite3 *c, const char *mutation_id,
+                         const char *status, long long rev);
 
 #endif /* CEL_SYNC_H */
