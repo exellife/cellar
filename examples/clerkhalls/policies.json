@@ -8,7 +8,7 @@
   },
 
   "organization":            { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
-  "event_halls":             { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
+  "venues":                  { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
   "halls":                   { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
   "bookings":                { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
   "booking_item_categories": { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },

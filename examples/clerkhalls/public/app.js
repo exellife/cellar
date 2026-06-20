@@ -39,33 +39,33 @@ PetiteVue.createApp({
   signout() { db.logout(); location.reload(); },
   go(r) { location.hash = "#/" + r; },
 
-  // ---- venues & rooms ----
-  venues() { return [...this.s.event_halls].sort(byOrder); },
-  rooms(vid) { return this.s.halls.filter(r => r.event_hall_id === vid).sort(byOrder); },
+  // ---- venues & halls ----
+  venues() { return [...this.s.venues].sort(byOrder); },
+  halls(vid) { return this.s.halls.filter(h => h.venue_id === vid).sort(byOrder); },
 
   newVenue() {
     this.open("New venue", [field("name", "Name", true), field("address", "Address"), field("phone", "Phone")],
-      v => db.save("event_halls", { ...v, sort_order: this.s.event_halls.length }));
+      v => db.save("venues", { ...v, sort_order: this.s.venues.length }));
   },
   editVenue(x) {
     this.open("Edit venue",
       [field("name", "Name", true, x.name), field("address", "Address", false, x.address), field("phone", "Phone", false, x.phone)],
-      v => db.save("event_halls", { id: x.id, ...v }));
+      v => db.save("venues", { id: x.id, ...v }));
   },
   delVenue(x) {
-    const n = this.rooms(x.id).length;
-    if (confirm(`Delete venue "${x.name}"${n ? ` and its ${n} room(s)` : ""}?`)) db.remove("event_halls", x.id);
+    const n = this.halls(x.id).length;
+    if (confirm(`Delete venue "${x.name}"${n ? ` and its ${n} hall(s)` : ""}?`)) db.remove("venues", x.id);
   },
-  newRoom(vid) {
-    this.open("New room", [field("name", "Name", true), field("capacity", "Capacity", false, "", "number")],
-      v => db.save("halls", { event_hall_id: vid, name: v.name, capacity: v.capacity ? +v.capacity : null, sort_order: this.rooms(vid).length }));
+  newHall(vid) {
+    this.open("New hall", [field("name", "Name", true), field("capacity", "Capacity", false, "", "number")],
+      v => db.save("halls", { venue_id: vid, name: v.name, capacity: v.capacity ? +v.capacity : null, sort_order: this.halls(vid).length }));
   },
-  editRoom(vid, x) {
-    this.open("Edit room",
+  editHall(vid, x) {
+    this.open("Edit hall",
       [field("name", "Name", true, x.name), field("capacity", "Capacity", false, x.capacity, "number")],
-      v => db.save("halls", { id: x.id, event_hall_id: vid, name: v.name, capacity: v.capacity ? +v.capacity : null }));
+      v => db.save("halls", { id: x.id, venue_id: vid, name: v.name, capacity: v.capacity ? +v.capacity : null }));
   },
-  delRoom(x) { if (confirm(`Delete room "${x.name}"?`)) db.remove("halls", x.id); },
+  delHall(x) { if (confirm(`Delete hall "${x.name}"?`)) db.remove("halls", x.id); },
 
   // ---- generic modal editor ----
   open(title, fields, save) {

@@ -6,7 +6,7 @@
 // read/write through this and never touch the network directly.
 
 const SYNCABLE = [
-  "organization", "event_halls", "halls", "bookings",
+  "organization", "venues", "halls", "bookings",
   "booking_item_categories", "booking_items", "payments",
   "menu_categories", "menu_items",
 ];

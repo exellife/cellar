@@ -1,7 +1,7 @@
 -- ClerkHalls — event-hall booking management, on cellar.
 -- One bundle = one ORGANIZATION (file-isolated). All tables are SYNCABLE (rev +
 -- deleted) so the whole dataset syncs across the org's staff devices, offline-first.
--- Hierarchy:  organization → event_halls (venues) → halls (rooms) → bookings
+-- Hierarchy:  organization → venues → halls (bookable spaces) → bookings
 --             → {booking_item_categories, booking_items, payments};  menu catalog
 --             (menu_categories → menu_items) feeds booking_items of kind 'menu'.
 -- ON DELETE CASCADE is honored under sync (engine cascades the soft-delete).
@@ -18,8 +18,8 @@ CREATE TABLE organization (
   rev INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0
 );
 
--- a venue / location
-CREATE TABLE event_halls (
+-- a venue / location (a business can run several)
+CREATE TABLE venues (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   address    TEXT, phone TEXT, notes TEXT,
@@ -29,19 +29,19 @@ CREATE TABLE event_halls (
   rev INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0
 );
 
--- a bookable room inside a venue
+-- a bookable hall (event space, ~30–500 capacity) inside a venue
 CREATE TABLE halls (
-  id            TEXT PRIMARY KEY,
-  event_hall_id TEXT NOT NULL,
-  name          TEXT NOT NULL,
-  capacity      INTEGER, notes TEXT,
-  is_active     INTEGER NOT NULL DEFAULT 1,
-  sort_order    INTEGER NOT NULL DEFAULT 0,
-  created_at    TEXT NOT NULL, updated_at TEXT NOT NULL,
+  id         TEXT PRIMARY KEY,
+  venue_id   TEXT NOT NULL,
+  name       TEXT NOT NULL,
+  capacity   INTEGER, notes TEXT,
+  is_active  INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   rev INTEGER NOT NULL DEFAULT 0, deleted INTEGER NOT NULL DEFAULT 0,
-  FOREIGN KEY (event_hall_id) REFERENCES event_halls(id) ON DELETE CASCADE
+  FOREIGN KEY (venue_id) REFERENCES venues(id) ON DELETE CASCADE
 );
-CREATE INDEX idx_halls_venue ON halls (event_hall_id, sort_order);
+CREATE INDEX idx_halls_venue ON halls (venue_id, sort_order);
 
 -- an event in one room, for one session (the conflict unit: hall_id+session+date)
 CREATE TABLE bookings (

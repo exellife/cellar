@@ -28,7 +28,7 @@
   <div class="app" v-else>
     <aside class="nav">
       <div class="brand">ClerkHalls</div>
-      <a class="navlink" :class="{ active: route==='venues' }"   @click="go('venues')">Venues &amp; Rooms</a>
+      <a class="navlink" :class="{ active: route==='venues' }"   @click="go('venues')">Venues &amp; Halls</a>
       <a class="navlink" :class="{ active: route==='bookings' }" @click="go('bookings')">Bookings</a>
       <a class="navlink" :class="{ active: route==='menu' }"     @click="go('menu')">Menu</a>
       <a class="navlink" :class="{ active: route==='settings' }" @click="go('settings')">Settings</a>
@@ -46,8 +46,8 @@
     <main class="content">
       <!-- ---- Venues & Rooms ---- -->
       <div v-if="route==='venues'">
-        <div class="page-head"><h1>Venues &amp; Rooms</h1><button class="primary" @click="newVenue()">+ Venue</button></div>
-        <p class="muted">A venue is a location; each holds bookable rooms. Deleting a venue removes its rooms.</p>
+        <div class="page-head"><h1>Venues &amp; Halls</h1><button class="primary" @click="newVenue()">+ Venue</button></div>
+        <p class="muted">A venue is a location; each holds one or more bookable halls. Deleting a venue removes its halls.</p>
         <p class="empty" v-if="!venues().length">No venues yet — add one to start.</p>
         <section class="card venue" v-for="v in venues()" :key="v.id">
           <div class="venue-head">
@@ -61,15 +61,15 @@
             </div>
           </div>
           <div class="rooms">
-            <div class="room" v-for="r in rooms(v.id)" :key="r.id">
-              <span class="room-name">{{ r.name }}</span>
-              <span class="muted small" v-if="r.capacity">cap {{ r.capacity }}</span>
+            <div class="room" v-for="h in halls(v.id)" :key="h.id">
+              <span class="room-name">{{ h.name }}</span>
+              <span class="muted small" v-if="h.capacity">cap {{ h.capacity }}</span>
               <span class="room-actions">
-                <button class="mini" @click="editRoom(v.id, r)">✎</button>
-                <button class="mini danger" @click="delRoom(r)">✕</button>
+                <button class="mini" @click="editHall(v.id, h)">✎</button>
+                <button class="mini danger" @click="delHall(h)">✕</button>
               </span>
             </div>
-            <button class="add-room" @click="newRoom(v.id)">+ Room</button>
+            <button class="add-room" @click="newHall(v.id)">+ Hall</button>
           </div>
         </section>
       </div>

@@ -8,13 +8,13 @@ we're filling it in iteratively.
 
 ```
 organization
- └─ event_halls (venues)
-     └─ halls (rooms)
-         └─ bookings (per room + session + date)
+ └─ venues                        (a location/building)
+     └─ halls                     (bookable event spaces, ~30–500 cap)
+         └─ bookings              (per hall + session + date)
              ├─ booking_item_categories
-             ├─ booking_items   (menu / extra / wholesale / byo)
+             ├─ booking_items     (menu / extra / wholesale / byo)
              └─ payments
-menu_categories → menu_items     (catalog feeding booking_items of kind 'menu')
+menu_categories → menu_items      (catalog feeding booking_items of kind 'menu')
 ```
 
 Every table is **syncable** (`rev` + `deleted`), so the whole org dataset syncs across
@@ -43,7 +43,7 @@ Toggle **online → off** in the sidebar to queue edits offline; flip back on to
 ## Status (iterative)
 
 - [x] Foundation: bundle, multi-table sync engine, shell, auth, live/offline sync
-- [x] **Venues & Rooms** — full CRUD (org → venue → room), cascade delete
+- [x] **Venues & Halls** — full CRUD (org → venue → hall), cascade delete
 - [ ] Bookings (calendar + list, conflict detection, create/edit)
 - [ ] Booking detail (itemized lines + payments + grand total)
 - [ ] Menu catalog
