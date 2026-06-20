@@ -251,6 +251,19 @@ static int make_scope(const cel_table_t *t, cel_action_t action,
         }
         scope->count++;
     }
+
+    /* Sync (design: cellar-sync-design.md): a tombstone (deleted=1) is invisible to
+     * normal reads and can't be updated. Add `deleted = 0` for syncable tables on
+     * list/get/update — NOT create (nothing to filter) nor delete (cel_build_soft_
+     * delete carries its own deleted=0 so it never re-tombstones). "0" has static
+     * storage; binds as a text param coerced into the INTEGER column. */
+    if (t->syncable && action != CEL_ACT_CREATE && action != CEL_ACT_DELETE) {
+        if (scope->count >= CEL_MAX_SCOPE) return -1;
+        cel_scope_rule_t *r = &scope->rule[scope->count++];
+        r->kind = CEL_SCOPE_EQ;
+        r->column = "deleted";
+        r->value = "0";
+    }
     return 0;
 }
 
