@@ -45,6 +45,7 @@
 #include <stdint.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <stdbool.h>
 #include <arpa/inet.h>   /* htons/htonl/ntohs/ntohl */
 
@@ -475,6 +476,130 @@ static int run_provision(int argc, char **argv) {
     return 0;
 }
 
+/* Run argv[0] with execvp (no shell → no injection from paths); return its exit
+ * code, or -1 if it couldn't run. */
+static int run_argv(char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) { execvp(argv[0], argv); _exit(127); }
+    int st;
+    if (waitpid(pid, &st, 0) < 0) return -1;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+static int path_exists(const char *p) { struct stat s; return stat(p, &s) == 0; }
+
+static int copy_file(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb"); if (!in) return -1;
+    FILE *out = fopen(dst, "wb"); if (!out) { fclose(in); return -1; }
+    char buf[8192]; size_t n; int rc = 0;
+    while ((n = fread(buf, 1, sizeof buf, in)) > 0)
+        if (fwrite(buf, 1, n, out) != n) { rc = -1; break; }
+    fclose(in); if (fclose(out) != 0) rc = -1;
+    return rc;
+}
+
+/* `cellar export <host> <out.tar.gz>` — package an app bundle into one portable
+ * archive: a CONSISTENT, single-file snapshot of data.db (VACUUM INTO, safe even
+ * while the app is being served), with live sessions stripped, plus hooks.lua,
+ * policies.json and public/. */
+static int run_export(int argc, char **argv) {
+    if (argc < 4) { fprintf(stderr, "usage: cellar export <host> <out.tar.gz>\n"); return 2; }
+    const char *lvl = getenv("CEL_LOG_LEVEL");
+    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
+
+    const char *apps_dir = env_str("CEL_APPS_DIR", "");
+    if (!*apps_dir) { LOG_ERROR("export needs CEL_APPS_DIR"); logger_shutdown(); return 1; }
+    char host[256];
+    if (cel_apps_norm_host(argv[2], host, sizeof host) != 0) { LOG_ERROR("invalid host '%s'", argv[2]); logger_shutdown(); return 1; }
+    char bundle[1300];
+    snprintf(bundle, sizeof bundle, "%s/%s", apps_dir, host);
+    char src_db[1400];
+    snprintf(src_db, sizeof src_db, "%s/data.db", bundle);
+    if (!path_exists(src_db)) { LOG_ERROR("no app '%s' (missing %s)", host, src_db); logger_shutdown(); return 1; }
+
+    char staging[] = "/tmp/cellar-export-XXXXXX";
+    if (!mkdtemp(staging)) { LOG_ERROR("export: mkdtemp: %s", strerror(errno)); logger_shutdown(); return 1; }
+
+    int ok = 0;
+    app_db_global_init();
+    app_db_t *src = app_db_get(src_db);
+    if (src) {
+        char sql[1600], *err = NULL;
+        snprintf(sql, sizeof sql, "VACUUM INTO '%s/data.db'", staging);   /* consistent snapshot */
+        if (app_db_exec(src, sql, &err) == 0) {
+            char snap[1400];
+            snprintf(snap, sizeof snap, "%s/data.db", staging);
+            app_db_t *s = app_db_get(snap);            /* strip live sessions from the copy */
+            if (s) app_db_exec(s, "DELETE FROM cel_sessions", NULL);
+            ok = 1;
+        } else { LOG_ERROR("export: snapshot failed: %s", err ? err : "?"); }
+        if (err) sqlite3_free(err);
+    }
+    app_db_global_shutdown();
+
+    if (ok) {
+        char from[1500], to[1500];
+        for (const char *f = "hooks.lua"; f; f = (f[0] == 'h') ? "policies.json" : NULL) {
+            snprintf(from, sizeof from, "%s/%s", bundle, f);
+            snprintf(to,   sizeof to,   "%s/%s", staging, f);
+            if (path_exists(from)) copy_file(from, to);
+        }
+        char pub_from[1500], pub_to[1500];
+        snprintf(pub_from, sizeof pub_from, "%s/public", bundle);
+        snprintf(pub_to,   sizeof pub_to,   "%s/public", staging);
+        if (path_exists(pub_from)) { char *cp[] = { "cp", "-a", pub_from, pub_to, NULL }; run_argv(cp); }
+
+        char *tar[] = { "tar", "-czf", argv[3], "-C", staging, ".", NULL };
+        if (run_argv(tar) != 0) { LOG_ERROR("export: tar failed"); ok = 0; }
+    }
+
+    char *rm[] = { "rm", "-rf", staging, NULL };
+    run_argv(rm);
+    if (ok) LOG_INFO("exported '%s' -> %s", host, argv[3]);
+    logger_shutdown();
+    return ok ? 0 : 1;
+}
+
+/* `cellar import <host> <in.tar.gz>` — unpack an exported archive into a new app
+ * bundle under CEL_APPS_DIR (rehost by choosing a different <host>). Refuses to
+ * overwrite an existing app. */
+static int run_import(int argc, char **argv) {
+    if (argc < 4) { fprintf(stderr, "usage: cellar import <host> <in.tar.gz>\n"); return 2; }
+    const char *lvl = getenv("CEL_LOG_LEVEL");
+    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
+
+    const char *apps_dir = env_str("CEL_APPS_DIR", "");
+    if (!*apps_dir) { LOG_ERROR("import needs CEL_APPS_DIR"); logger_shutdown(); return 1; }
+    char host[256];
+    if (cel_apps_norm_host(argv[2], host, sizeof host) != 0) { LOG_ERROR("invalid host '%s'", argv[2]); logger_shutdown(); return 1; }
+    if (!path_exists(argv[3])) { LOG_ERROR("no such archive: %s", argv[3]); logger_shutdown(); return 1; }
+
+    char target[1300];
+    snprintf(target, sizeof target, "%s/%s", apps_dir, host);
+    char tdb[1400];
+    snprintf(tdb, sizeof tdb, "%s/data.db", target);
+    if (path_exists(tdb)) { LOG_ERROR("app '%s' already exists (remove %s first)", host, target); logger_shutdown(); return 1; }
+
+    mkdir(apps_dir, 0755);
+    if (mkdir(target, 0755) != 0 && errno != EEXIST) { LOG_ERROR("import: mkdir %s: %s", target, strerror(errno)); logger_shutdown(); return 1; }
+
+    char *tar[] = { "tar", "-xzf", argv[3], "-C", target, NULL };
+    if (run_argv(tar) != 0) { LOG_ERROR("import: tar extract failed"); logger_shutdown(); return 1; }
+    if (!path_exists(tdb)) { LOG_ERROR("import: archive has no data.db"); logger_shutdown(); return 1; }
+
+    /* ensure the identity schema is current (idempotent; bumps PRAGMA user_version
+     * if the imported app predates a schema change). */
+    app_db_global_init();
+    app_db_t *app = app_db_get(tdb);
+    if (app) { sqlite3 *c = app_db_conn_acquire(app); if (c) { cel_auth_schema_apply(c); app_db_conn_release(app, c); } }
+    app_db_global_shutdown();
+
+    LOG_INFO("imported '%s' from %s", host, argv[3]);
+    logger_shutdown();
+    return 0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   /* line-buffer logs even when redirected */
 
@@ -488,6 +613,10 @@ int main(int argc, char **argv) {
         return run_send_test_mail(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "provision") == 0)
         return run_provision(argc, argv);
+    if (argc >= 2 && strcmp(argv[1], "export") == 0)
+        return run_export(argc, argv);
+    if (argc >= 2 && strcmp(argv[1], "import") == 0)
+        return run_import(argc, argv);
 
     int port = env_int("CEL_PORT", 8080);
     const char *lvl = getenv("CEL_LOG_LEVEL");

@@ -395,6 +395,10 @@ if(CELLAR_BUILD_TESTS)
         # served (index, assets, SPA fallback) without shadowing the API routes.
         add_test(NAME static_serve
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/static_serve_test.sh $<TARGET_FILE:cellar>)
+        # Bundle export/import (Phase 2 §4): online VACUUM-INTO snapshot + tar of
+        # data.db/hooks.lua/public, import under a new host, sessions stripped.
+        add_test(NAME export_import
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/export_import_test.sh $<TARGET_FILE:cellar>)
         # --- Auth/transport e2e (Postgres-era; being ported to the SQLite harness
         #     under Task 8 — see tests/run_with_server.py). RPC is deferred to the
         #     Phase 2 hook layer, so rpc/rpc_tenant/rpc_secdef were removed. ---
