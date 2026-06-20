@@ -440,6 +440,10 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME rpc_hook
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/rpc_test.py)
+        # CRUD hooks (Phase 2 §8): before/authorize/after on the write path, via a
+        # before/authorize/after bundle (CEL_HOOKS_FILE=tests/hooks_crud.lua).
+        add_test(NAME hooks_crud
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/hooks_crud_test.sh $<TARGET_FILE:cellar>)
         # Self-service registration (#51): boots with the taxi example policy
         # (rider/driver self-registerable, admin not) and exercises /auth/register.
         add_test(NAME register

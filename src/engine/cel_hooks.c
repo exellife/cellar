@@ -244,6 +244,9 @@ static const char *PRELUDE =
 "  if ok == false then return false, reason and tostring(reason) or 'rejected' end\n"
 "  return true\n"
 "end\n"
+"function __cel_after(op, tbl, row_ptr, who_ptr)\n"
+"  if type(after) == 'function' then after(op, tbl, box(row_ptr, false), box(who_ptr, false)) end\n"
+"end\n"
 "function __cel_rpc(name, args_ptr, who_ptr)\n"
 "  if type(rpc) ~= 'function' then return nil, 'no rpc handler for ' .. tostring(name) end\n"
 "  local res, errm = rpc(name, box(args_ptr, false), box(who_ptr, false))\n"
@@ -385,4 +388,19 @@ cel_val_t *cel_hooks_rpc(cel_lua_t *Lh, const char *name, const cel_val_t *args,
     cJSON *result = lua_to_cval(L, -2, 0);
     lua_pop(L, 2);
     return (cel_val_t *)result;
+}
+
+void cel_hooks_after(cel_lua_t *Lh, const char *op, const char *table,
+                     const cel_val_t *row, const cel_val_t *who) {
+    lua_State *L = (lua_State *)cel_lua_state(Lh);
+    if (!L) return;
+    lua_getglobal(L, "__cel_after");
+    lua_pushstring(L, op ? op : "");
+    lua_pushstring(L, table ? table : "");
+    lua_pushlightuserdata(L, (void *)row);
+    lua_pushlightuserdata(L, (void *)who);
+    if (lua_pcall(L, 4, 0, 0) != 0) {
+        LOG_ERROR("[hook] after fault (ignored; write already committed): %s", lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
 }

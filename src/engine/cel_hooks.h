@@ -50,6 +50,12 @@ int cel_hooks_before(cel_lua_t *L, const char *op, const char *table,
                      cel_val_t *input, const cel_val_t *who,
                      char *errbuf, size_t errlen);
 
+/* after(op, table, row, who): post-commit side effects (notify, audit, enqueue).
+ * Return value ignored; a fault is logged but never fails the request (the write
+ * already committed). Absent hook → no-op. */
+void cel_hooks_after(cel_lua_t *L, const char *op, const char *table,
+                     const cel_val_t *row, const cel_val_t *who);
+
 /* rpc(name, args, who): a custom endpoint beyond CRUD. Returns an OWNED result
  * value (caller frees with cel_val_free) on success, or NULL with the reason in
  * errbuf — absent handler, a hook that returned nil, or a fault. */

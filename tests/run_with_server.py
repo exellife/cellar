@@ -59,8 +59,14 @@ def make_app_db():
     """)
     con.commit()
     con.close()
-    # A bundle hooks.lua so the rpc endpoint (a Lua hook) has a handler. Inert for
-    # every other test — the hook VM is only built when an rpc is dispatched.
+    # A bundle hooks.lua. CEL_HOOKS_FILE overrides it (the CRUD-hook test points it
+    # at a before/authorize/after bundle); the default below defines only rpc, so
+    # it's inert for every other test (no before/authorize/after).
+    custom = os.environ.get("CEL_HOOKS_FILE")
+    if custom:
+        with open(custom) as src, open(os.path.join(d, "hooks.lua"), "w") as h:
+            h.write(src.read())
+        return d, os.path.join(d, "data.db")
     with open(os.path.join(d, "hooks.lua"), "w") as h:
         h.write(
             "function rpc(name, args, who)\n"

@@ -32,6 +32,19 @@
 
 static cel_api_result_t session_result(const char *token, const cel_user_t *user);
 static void send_email_verification(const char *user_id);
+static cJSON *identity_to_json(const cel_identity_t *who);   /* defined near cel_api_rpc */
+
+/* The hook-contract op name for a CRUD action. */
+static const char *action_name(cel_action_t a) {
+    switch (a) {
+        case CEL_ACT_LIST:   return "list";
+        case CEL_ACT_GET:    return "get";
+        case CEL_ACT_CREATE: return "create";
+        case CEL_ACT_UPDATE: return "update";
+        case CEL_ACT_DELETE: return "delete";
+    }
+    return "?";
+}
 
 static cel_api_result_t result_error(int status, const char *message) {
     cJSON *o = cJSON_CreateObject();
@@ -224,25 +237,66 @@ static cel_api_result_t run_write(const cel_identity_t *who, const cJSON *req,
     if (!t) return result_error(404, "unknown table");
     if (!cel_policy_allows(t->name, action, who->role)) return result_error(403, "forbidden");
 
+    /* Lua hooks (design §8): before() may validate/transform the input and
+     * authorize() may further deny — both BEFORE the SQL builds. The hook db
+     * (cellar.query/exec) runs on a pooled connection per phase (autocommit; not
+     * yet enrolled in the write's transaction — atomicity is a later step), held
+     * only for the phase so we never deadlock against the write regardless of pool
+     * size. No hooks.lua → cel_hook_app_state is NULL and this is all skipped. */
+    cel_lua_t *hooks = cel_hook_app_state(cel_apps_current_hooks());
+    cJSON *who_v = hooks ? identity_to_json(who) : NULL;
+    const char *opn = action_name(action);
+    if (hooks) {
+        cJSON *vals = cJSON_GetObjectItemCaseSensitive(req, "values");   /* mutable; NULL for delete */
+        app_db_t *adb = app_db_current();
+        sqlite3 *hc = adb ? app_db_conn_acquire(adb) : NULL;
+        cel_hooks_set_db(hc);
+        char herr[256] = {0};
+        int rejected = cel_hooks_before(hooks, opn, t->name, (cel_val_t *)vals,
+                                        (const cel_val_t *)who_v, herr, sizeof herr) != 0;
+        int denied = !rejected && cel_hooks_authorize(hooks, opn, t->name,
+                                                      (const cel_val_t *)vals, (const cel_val_t *)who_v) == 0;
+        cel_hooks_set_db(NULL);
+        if (hc) app_db_conn_release(adb, hc);
+        if (rejected) { cJSON_Delete(who_v); return result_error(400, herr[0] ? herr : "rejected by hook"); }
+        if (denied)   { cJSON_Delete(who_v); return result_error(403, "forbidden"); }
+    }
+
     cel_scope_t scope;
-    if (make_scope(t, action, who, &scope) != 0) return result_error(500, "policy misconfiguration");
+    if (make_scope(t, action, who, &scope) != 0) {
+        cJSON_Delete(who_v); return result_error(500, "policy misconfiguration");
+    }
 
     char err[256] = {0};
     cel_query_t q;
-    if (build(t, req, &scope, &q, err, sizeof err) != 0) return result_error(400, err);
+    if (build(t, req, &scope, &q, err, sizeof err) != 0) {
+        cJSON_Delete(who_v); return result_error(400, err);
+    }
 
     int http = 200;
     char emsg[256] = {0};
     cJSON *rows = run_rows(&q, t, 1 /* write: take the per-app write lock */, &http, emsg, sizeof emsg);
     cel_query_free(&q);
-    if (!rows) return result_error(http, emsg[0] ? emsg : "query failed");
+    if (!rows) { cJSON_Delete(who_v); return result_error(http, emsg[0] ? emsg : "query failed"); }
 
     int found = cJSON_GetArraySize(rows) > 0;
     cJSON *row = found ? cJSON_DetachItemFromArray(rows, 0) : NULL;
     cJSON_Delete(rows);
-    if (require_row && !found) return result_error(404, "not found");
+    if (require_row && !found) { cJSON_Delete(who_v); return result_error(404, "not found"); }
 
     if (row) rt_emit(t->name, action, row);   /* realtime change event (in-process) */
+
+    /* after(): post-commit side effects on the committed row (fault is logged, not
+     * fatal — the write already happened). */
+    if (hooks && row) {
+        app_db_t *adb = app_db_current();
+        sqlite3 *hc = adb ? app_db_conn_acquire(adb) : NULL;
+        cel_hooks_set_db(hc);
+        cel_hooks_after(hooks, opn, t->name, (const cel_val_t *)row, (const cel_val_t *)who_v);
+        cel_hooks_set_db(NULL);
+        if (hc) app_db_conn_release(adb, hc);
+    }
+    cJSON_Delete(who_v);
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
