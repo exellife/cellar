@@ -36,10 +36,19 @@ int cel_sync_applied_get(struct sqlite3 *c, const char *mutation_id,
 int cel_sync_applied_put(struct sqlite3 *c, const char *mutation_id,
                          const char *status, long long rev);
 
-/* Record a device's high-water PULL cursor (for tombstone GC): upsert _sync_devices,
- * advancing `cursor` monotonically. Recorded from sync_pull (the device's true pull
- * position), never from push. 0 on success. */
+/* Record a device's durable PULL cursor (for tombstone GC): upsert _sync_devices,
+ * advancing `cursor` monotonically. Recorded from sync_pull as the device's `since`
+ * (its persisted position), never from push. 0 on success. */
 int cel_sync_device_seen(struct sqlite3 *c, const char *device_id, const char *user_id,
                          long long cursor);
+
+/* Tombstone GC. cel_sync_min_device_cursor: lowest durable cursor across all
+ * registered devices, or -1 if none (→ purge nothing). cel_sync_gc_table: physically
+ * delete tombstones (deleted=1) with rev <= min_cursor from `table` (a catalog-
+ * validated name); returns rows removed, or 0 when min_cursor<0, or -1 on error.
+ * cel_sync_prune_applied: drop _sync_applied rows older than before_epoch. */
+long long cel_sync_min_device_cursor(struct sqlite3 *c);
+int       cel_sync_gc_table(struct sqlite3 *c, const char *table, long long min_cursor);
+int       cel_sync_prune_applied(struct sqlite3 *c, long long before_epoch);
 
 #endif /* CEL_SYNC_H */

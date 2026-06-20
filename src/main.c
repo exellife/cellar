@@ -29,6 +29,9 @@
 #include "engine/api.h"   /* cel_rpc_audit_security_definer, cel_api_rt_recheck_member */
 #include "engine/cel_apps.h"
 #include "engine/cel_control.h"
+#include "engine/cel_sync.h"
+#include <sqlite3.h>
+#include <time.h>
 #include "handlers/auth_handlers.h"
 #include "handlers/schema_handlers.h"
 #include "handlers/data_handlers.h"
@@ -676,6 +679,56 @@ static int run_apps(void) {
     return 0;
 }
 
+/* `cellar sync-gc [host]` — tombstone garbage collection (offline-first sync). Purge
+ * tombstones (deleted=1) that every registered device has pulled past (rev <= the min
+ * device cursor) from each syncable table, and age-prune the _sync_applied idempotency
+ * keys. No host → the CEL_DATA_DB app; a host → CEL_APPS_DIR/<host>/data.db. Safe to
+ * run against a live server (SQLite serializes via the file lock + busy_timeout). */
+#define CEL_SYNC_APPLIED_TTL_SECS (7 * 24 * 3600)
+static int run_sync_gc(int argc, char **argv) {
+    const char *lvl = getenv("CEL_LOG_LEVEL");
+    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
+
+    char path[1200];
+    if (argc >= 3) {
+        const char *dir = env_str("CEL_APPS_DIR", "");
+        char host[256];
+        if (!dir[0]) { LOG_ERROR("sync-gc <host> needs CEL_APPS_DIR"); logger_shutdown(); return 2; }
+        if (cel_apps_norm_host(argv[2], host, sizeof host) != 0) { LOG_ERROR("invalid host '%s'", argv[2]); logger_shutdown(); return 2; }
+        snprintf(path, sizeof path, "%s/%s/data.db", dir, host);
+    } else {
+        snprintf(path, sizeof path, "%s", env_str("CEL_DATA_DB", "cellar.db"));
+    }
+
+    sqlite3 *c = NULL;
+    if (sqlite3_open_v2(path, &c, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        LOG_ERROR("sync-gc: cannot open %s: %s", path, c ? sqlite3_errmsg(c) : "?");
+        sqlite3_close(c); logger_shutdown(); return 1;
+    }
+    sqlite3_busy_timeout(c, 5000);
+
+    cel_catalog_t *cat = cel_catalog_build_sqlite(c);
+    long long mincur = cel_sync_min_device_cursor(c);
+    int tombs = 0, ntables = 0;
+    if (cat) for (int i = 0; i < cat->ntables; i++) {
+        if (!cat->tables[i].syncable) continue;
+        int n = cel_sync_gc_table(c, cat->tables[i].name, mincur);
+        if (n > 0) { tombs += n; ntables++; }
+    }
+    int pruned = cel_sync_prune_applied(c, (long long)time(NULL) - CEL_SYNC_APPLIED_TTL_SECS);
+    cel_catalog_free(cat);
+    sqlite3_close(c);
+
+    if (mincur < 0)
+        LOG_INFO("sync-gc %s: no devices registered — kept all tombstones; pruned %d idempotency key(s)",
+                 path, pruned < 0 ? 0 : pruned);
+    else
+        LOG_INFO("sync-gc %s: min device cursor=%lld; purged %d tombstone(s) across %d table(s); pruned %d key(s)",
+                 path, mincur, tombs, ntables, pruned < 0 ? 0 : pruned);
+    logger_shutdown();
+    return 0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   /* line-buffer logs even when redirected */
 
@@ -699,6 +752,8 @@ int main(int argc, char **argv) {
         return run_set_status(argc, argv, "active");
     if (argc >= 2 && strcmp(argv[1], "apps") == 0)
         return run_apps();
+    if (argc >= 2 && strcmp(argv[1], "sync-gc") == 0)
+        return run_sync_gc(argc, argv);
 
     int port = env_int("CEL_PORT", 8080);
     const char *lvl = getenv("CEL_LOG_LEVEL");

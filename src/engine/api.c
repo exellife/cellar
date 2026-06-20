@@ -886,16 +886,19 @@ cel_api_result_t cel_api_sync_pull(const cel_identity_t *who, const cJSON *req) 
      * truncated table's unsent rows (it may re-send a few — upserts are idempotent). */
     long long cursor = any_trunc ? trunc_min : global_max;
 
-    /* Record this device's high-water pull cursor (for tombstone GC), if it sent a
-     * device_id. A small write on the read path: take the write lock just for the
-     * upsert. The cursor is the device's true pull position — only ever advances. */
+    /* Record this device's durable cursor (for tombstone GC), if it sent a device_id.
+     * We record `since` — the position the device has already PERSISTED (it's asking
+     * for everything after it) — NOT the response cursor it hasn't saved yet. This is
+     * what keeps GC safe: a device that receives this pull but crashes before saving
+     * re-pulls from `since`, and GC never purged a tombstone past any device's `since`.
+     * A small write on the read path: take the write lock just for the upsert. */
     const cJSON *jdev = cJSON_GetObjectItemCaseSensitive(req, "device_id");
     if (cJSON_IsString(jdev) && jdev->valuestring[0]) {
         app_db_t *adb = app_db_current();
         if (adb) {
             app_db_write_lock(adb);
             sqlite3 *wc = app_db_conn_acquire(adb);
-            if (wc) { cel_sync_device_seen(wc, jdev->valuestring, who->user_id, cursor);
+            if (wc) { cel_sync_device_seen(wc, jdev->valuestring, who->user_id, since);
                       app_db_conn_release(adb, wc); }
             app_db_write_unlock(adb);
         }

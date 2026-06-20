@@ -99,6 +99,39 @@ long long cel_sync_next_rev(sqlite3 *c) {
     return rev;
 }
 
+long long cel_sync_min_device_cursor(sqlite3 *c) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(c, "SELECT count(*), MIN(cursor) FROM _sync_devices", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    long long v = -1;
+    if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int64(st, 0) > 0)
+        v = sqlite3_column_int64(st, 1);   /* -1 (no devices) → caller purges nothing */
+    sqlite3_finalize(st);
+    return v;
+}
+
+int cel_sync_gc_table(sqlite3 *c, const char *table, long long min_cursor) {
+    if (min_cursor < 0) return 0;   /* no registered devices → purge nothing (conservative) */
+    char sql[256];
+    snprintf(sql, sizeof sql, "DELETE FROM \"%s\" WHERE deleted = 1 AND rev <= ?1", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(c, sql, -1, &st, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int64(st, 1, min_cursor);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? sqlite3_changes(c) : -1;
+}
+
+int cel_sync_prune_applied(sqlite3 *c, long long before_epoch) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(c, "DELETE FROM _sync_applied WHERE at < ?1", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int64(st, 1, before_epoch);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? sqlite3_changes(c) : -1;
+}
+
 long long cel_sync_current_seq(sqlite3 *c) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(c, "SELECT seq FROM _sync_seq WHERE id = 1", -1, &st, NULL) != SQLITE_OK)
