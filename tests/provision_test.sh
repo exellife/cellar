@@ -15,6 +15,7 @@ chk() { if [ "$2" = "$3" ]; then echo "  ok    $1 ($2)"; else echo "  FAIL  $1: 
 CEL_APPS_DIR="$APPS" CEL_LOG_LEVEL=error "$BIN" provision shop.example admin@shop secret123 >/dev/null 2>&1
 chk "data.db created"  "$([ -f "$APPS/shop.example/data.db" ] && echo yes || echo no)" "yes"
 chk "hooks.lua created" "$([ -f "$APPS/shop.example/hooks.lua" ] && echo yes || echo no)" "yes"
+chk "public/index.html created" "$([ -f "$APPS/shop.example/public/index.html" ] && echo yes || echo no)" "yes"
 chk "admin identity seeded" \
     "$(sqlite3 "$APPS/shop.example/data.db" "SELECT count(*) FROM cel_identities WHERE provider_uid='admin@shop'")" "1"
 

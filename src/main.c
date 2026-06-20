@@ -378,6 +378,19 @@ static int write_if_absent(const char *path, const char *content) {
     return 1;
 }
 
+static const char *STARTER_INDEX =
+    "<!doctype html>\n"
+    "<html lang=\"en\">\n"
+    "<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+    "<title>cellar app</title></head>\n"
+    "<body>\n"
+    "  <h1>It works.</h1>\n"
+    "  <p>This is your app's <code>public/</code> root. Put your front-end here\n"
+    "     (HTML/CSS/JS/images/fonts). It talks to the backend over\n"
+    "     <code>/auth</code>, <code>/api</code>, <code>/rpc</code> and the realtime WebSocket.</p>\n"
+    "</body>\n"
+    "</html>\n";
+
 static const char *STARTER_HOOKS =
     "-- hooks.lua — this app's behavior (the cellar hook contract, design §8).\n"
     "-- Every hook is optional; an absent hook is a no-op. The `cellar` table gives\n"
@@ -445,6 +458,16 @@ static int run_provision(int argc, char **argv) {
     char hooks_path[1400];
     snprintf(hooks_path, sizeof hooks_path, "%s/hooks.lua", dir);
     if (write_if_absent(hooks_path, STARTER_HOOKS)) LOG_INFO("wrote starter %s", hooks_path);
+
+    /* public/ — the bundle's front-end root (HTML/CSS/JS/images/fonts). Part of the
+     * bundle layout (design §4); per-app static serving from here is the next
+     * wiring step (cel_http_router → portico_res_static with an SPA fallback). */
+    char pub_dir[1400];
+    snprintf(pub_dir, sizeof pub_dir, "%s/public", dir);
+    mkdir(pub_dir, 0755);   /* ignore EEXIST */
+    char index_path[1500];
+    snprintf(index_path, sizeof index_path, "%s/index.html", pub_dir);
+    if (write_if_absent(index_path, STARTER_INDEX)) LOG_INFO("wrote starter %s", index_path);
 
     LOG_INFO("provisioned app '%s' at %s", host, dir);
     app_db_global_shutdown();

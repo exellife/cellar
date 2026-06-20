@@ -69,10 +69,17 @@ apps/
     data.db        # schema + data + triggers/CHECK/generated cols (Layer-1 logic)
     hooks.lua      # Layer-2 business logic (or a `_hooks` table inside data.db)
     policies.json  # declarative authz (roles, ownership/scope rules)
+    public/        # the app's front-end: HTML/CSS/JS/images/fonts (served static)
 ```
 Provision = drop a directory; delete = `rm -rf`; export/backup/move = copy. Routing maps
 a Host/subdomain → a bundle. Because the bundle is self-contained, an app's schema,
-data, **and behavior** travel together.
+data, **behavior, and front-end** travel together.
+
+`public/` is served by `cel_http_router`: it resolves Host → app (as it already does
+for the DB), then tries `portico_res_static` against that app's `public/` first (with an
+`index.html` SPA fallback so client-side routes like `/admin` or `/profile/:id` resolve),
+and falls through to `/auth` · `/api` · `/rpc` · the realtime WS for everything else.
+(`cellar provision` scaffolds `public/index.html`; the router wiring is the next step.)
 
 ## 5. Per-app isolation & catalog
 
