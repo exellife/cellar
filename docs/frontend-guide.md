@@ -3,9 +3,9 @@
 This is the practical guide for anyone — a human dev or a coding agent — building a
 client against a cellar app: a web SPA, a Flutter/mobile app, or a script.
 
-cellar is a JSON/REST backend with opaque-token auth. The realtime WebSocket and
-the static-file serving are **optional** layers you opt into; the REST API is the
-whole contract.
+cellar is a JSON/REST backend with opaque-token auth. The realtime WebSocket, the
+offline-first **sync** API, and the static-file serving are **optional** layers you
+opt into; the REST API is the whole contract.
 
 ---
 
@@ -157,7 +157,54 @@ updates. Pure-REST clients ignore it entirely.
 
 ---
 
-## 6. What you can ask the backend to do (hooks)
+## 6. Offline-first sync (optional)
+
+For apps that must **work offline** and sync across devices (a notes app, a field-data
+tool, a mobile client on flaky networks), cellar has a delta-sync API on top of the
+normal write path. It's opt-in per table and additive — a purely online app ignores it.
+
+**A table is *syncable* when its schema declares two extra columns: `rev INTEGER` and
+`deleted INTEGER`** (ask the operator/backend to add them). The engine then stamps a
+monotonic `rev` on every write and turns `DELETE` into a soft-delete (a tombstone), so a
+device that was offline can later learn a row changed or went away.
+
+Two endpoints — both `POST`, bearer-authed, owner-scoped like the rest of the API:
+
+| Call | Body | Returns |
+|---|---|---|
+| `POST /sync/pull` | `{ since, device_id?, tables?, limit? }` | `{ changes:{ table:[rows] }, cursor, more }` — rows **include tombstones** (`deleted:1`) so deletions propagate |
+| `POST /sync/push` | `{ mutations:[ {op:"put"\|"del", table, id, base_rev?, values?, mutation_id?} ], device_id? }` | `{ results:[ {id, status:"applied"\|"conflict", winner?, rev, deduped?} ], cursor }` |
+
+The client loop (see the full reference client below):
+
+1. **Local mirror.** Keep a local copy of the rows (SQLite on mobile, IndexedDB/memory on web).
+2. **Offline writes queue.** Each create/edit/delete becomes a pending mutation. Mint the
+   row `id` **client-side** (a UUID) so offline creates never collide. Attach a unique
+   `mutation_id` per mutation, and `base_rev` = the last server-confirmed `rev` of the row.
+3. **`sync()` = push then pull.** Push the queue, then pull everything `since` your stored
+   `cursor` and apply it (the **server is authoritative** for synced state). Send a stable
+   `device_id` on both so the server can GC tombstones you've already seen.
+4. **Realtime is the online fast-path.** While connected, also apply `CHANGE` events (§5) so
+   peers' writes — including those that arrived via `/sync/push` — show up live.
+
+**Conflicts** (someone else changed the row since your `base_rev`): resolved **last-write-wins**
+by default; an app can override per-table with a `resolve(table, incoming, current, who)` hook
+(e.g. "most-recent edit wins", "higher quantity wins"). The result tells you `winner`
+(`incoming`/`server`); a `sync_pull` then brings the canonical row.
+
+**Idempotent retries:** re-pushing a mutation with the same `mutation_id` is a no-op
+(`deduped:true`) — so a reconnect that re-sends the queue can't double-apply or lose another
+device's write. Two caveats: the push response `cursor` is **informational** — advance your
+stored cursor only from a `pull` response; and tombstones are reclaimed out-of-band by the
+operator (`cellar sync-gc`), once every device has pulled past them.
+
+**Reference client:** [`examples/offline_notes/`](../examples/offline_notes/) is a complete,
+runnable web client — `public/sync.js` is the whole offline loop (local store, queue,
+push/pull, realtime, conflict handling) in ~150 lines. Crib from it.
+
+---
+
+## 7. What you can ask the backend to do (hooks)
 
 When the front-end needs server-side logic, that lives in the app's `hooks.lua`
 (the operator/backend writes it). As a front-end dev/agent, you can rely on — and
@@ -168,18 +215,23 @@ request — these:
   hits the DB (e.g. force `owner_id`, normalize fields, reject bad input → `400`).
 - **`authorize(op, table, row, who)`** → an extra allow/deny gate beyond the policy.
 - **`after(op, table, row, who)`** → post-commit side effects (audit, notify).
+- **`resolve(table, incoming, current, who)`** → the sync conflict rule (§6): pick
+  `'incoming'` or `'current'` per syncable table.
 
-So "this field should be server-set", "this action needs a custom rule", or "call
-this side-effect on create" are all backend hook changes, not front-end hacks.
+So "this field should be server-set", "this action needs a custom rule", "call
+this side-effect on create", or "this is how conflicts resolve" are all backend hook
+changes, not front-end hacks.
 
 ---
 
-## 7. Quick checklist
+## 8. Quick checklist
 
 - [ ] Get the app's origin and (for multi-app) confirm the Host routes to your app.
 - [ ] `POST /auth/login` → keep the bearer token; send it on every call.
 - [ ] Model your screens on `GET /api/<table>` (filter/select/order/embed/paginate).
 - [ ] CRUD via `POST/PATCH/DELETE /api/<table>[/<id>]`.
 - [ ] Anything non-CRUD → ask for an `rpc` hook; call `POST /rpc/<name>`.
+- [ ] Offline-first? Use `/sync/pull` + `/sync/push` (table needs `rev`+`deleted`);
+      start from the `examples/offline_notes/` client.
 - [ ] Web SPA → build into `public/`; native → hit the API directly.
 - [ ] Generate a client from `GET /openapi.json` if you want types.
