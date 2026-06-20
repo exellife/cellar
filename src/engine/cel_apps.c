@@ -1,5 +1,6 @@
 #include "cel_apps.h"
 #include "schema_catalog.h"
+#include "cel_sync.h"
 #include "core/app_db.h"
 #include "core/auth_schema.h"
 #include "cel_control.h"
@@ -84,6 +85,12 @@ static cel_app_t *open_into_cache(const char *host, const char *db_path) {
     if (!c) return NULL;
     cel_auth_schema_apply(c);
     cel_catalog_t *cat = cel_catalog_build_sqlite(c);
+    /* If any table opted into sync (carries rev + deleted), ensure this app's
+     * monotonic rev source exists. _sync_seq is _%-prefixed → not in the catalog. */
+    if (cat) {
+        for (int i = 0; i < cat->ntables; i++)
+            if (cat->tables[i].syncable) { cel_sync_ensure_seq(c); break; }
+    }
     app_db_conn_release(db, c);
 
     cel_app_t *slot = &g.apps[g.count++];

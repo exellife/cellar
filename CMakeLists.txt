@@ -219,6 +219,13 @@ if(CELLAR_BUILD_TESTS)
     target_link_libraries(cel_val_test cjson)
     add_test(NAME cel_val COMMAND cel_val_test)
 
+    # Sync Slice 0 (T2): the per-app rev source — _sync_seq seeding, monotonic
+    # next_rev, idempotent ensure, and rev-rolls-back-with-the-txn.
+    add_executable(cel_sync_test tests/cel_sync_test.c src/engine/cel_sync.c)
+    target_include_directories(cel_sync_test PRIVATE src/engine lib/logger/include)
+    target_link_libraries(cel_sync_test logger SQLite::SQLite3 Threads::Threads)
+    add_test(NAME cel_sync COMMAND cel_sync_test)
+
     # Phase-2 hook dispatcher (design §8): the `cellar` prelude boxes opaque
     # cel_val_t* payloads into Lua proxies, authorize/before run with table-like
     # sugar, before() mutates input in place, absent hooks no-op, faults fail
@@ -306,7 +313,7 @@ if(CELLAR_BUILD_TESTS)
     add_executable(cel_apps_test tests/cel_apps_test.c
         src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c
         src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
-        src/engine/cel_control.c
+        src/engine/cel_control.c src/engine/cel_sync.c
         src/engine/cel_hook_state.c src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c)
     target_include_directories(cel_apps_test PRIVATE src src/engine src/core lib/logger/include)
     target_link_libraries(cel_apps_test SQLite::SQLite3 cjson logger luajit Threads::Threads)
