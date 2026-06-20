@@ -23,7 +23,15 @@ PetiteVue.createApp({
     window.addEventListener("hashchange", () => { this.route = route(); });
     if (this.authed) await this.start();
   },
-  async start() { db.startRealtime(); await db.sync(); },
+  async start() {
+    db.startRealtime();          // instant updates while the WS is connected
+    await db.sync();             // initial catch-up
+    // safety net: poll so devices converge even if a realtime event is missed / the
+    // WS drops, and sync the moment you switch back to the tab.
+    setInterval(() => db.sync(), 12000);
+    window.addEventListener("focus", () => db.sync());
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) db.sync(); });
+  },
 
   // ---- auth ----
   async signin(register) {
