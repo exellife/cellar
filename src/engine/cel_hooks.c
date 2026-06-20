@@ -219,8 +219,9 @@ static const char *PRELUDE =
 "  local res = C.cel_hook_query(sql, arr, err, 256)\n"
 "  C.cel_val_free(arr)\n"
 "  if res == nil then error('query: ' .. ffi.string(err), 2) end\n"
-"  local out = deep(res)\n"
+"  local ok, out = pcall(deep, res)\n"   /* free the C result even if the deep-copy throws */
 "  C.cel_val_free(res)\n"
+"  if not ok then error(out, 2) end\n"
 "  return out\n"
 "end\n"
 "\n"

@@ -408,6 +408,10 @@ if(CELLAR_BUILD_TESTS)
         # registered+active hosts; suspend/resume take effect on a running server.
         add_test(NAME control_plane
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/control_plane_test.sh $<TARGET_FILE:cellar>)
+        # Security regression (Phase-2 audit): the bundle CLIs reject symlinked
+        # bundle paths (no read/write outside a bundle via provision/export/import).
+        add_test(NAME cli_symlink
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/cli_symlink_test.sh $<TARGET_FILE:cellar>)
         # --- Auth/transport e2e (Postgres-era; being ported to the SQLite harness
         #     under Task 8 — see tests/run_with_server.py). RPC is deferred to the
         #     Phase 2 hook layer, so rpc/rpc_tenant/rpc_secdef were removed. ---

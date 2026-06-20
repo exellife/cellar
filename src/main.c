@@ -45,6 +45,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <stdbool.h>
@@ -371,10 +372,12 @@ static int run_send_test_mail(int argc, char **argv) {
 /* Write `content` to `path` only if it doesn't already exist (so re-provisioning
  * never clobbers a hand-edited bundle file). Returns 1 if written, 0 if it existed. */
 static int write_if_absent(const char *path, const char *content) {
-    struct stat st;
-    if (stat(path, &st) == 0) return 0;   /* keep existing */
-    FILE *f = fopen(path, "wb");
-    if (!f) { LOG_WARN("provision: could not write %s: %s", path, strerror(errno)); return 0; }
+    /* O_CREAT|O_EXCL is atomic and refuses to follow a symlink (EEXIST/ELOOP):
+     * no stat()->fopen() TOCTOU window where a planted symlink redirects the write. */
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (fd < 0) return 0;   /* already exists (or error) — keep existing, never follow a link */
+    FILE *f = fdopen(fd, "wb");
+    if (!f) { close(fd); LOG_WARN("provision: could not write %s: %s", path, strerror(errno)); return 0; }
     fwrite(content, 1, strlen(content), f);
     fclose(f);
     return 1;
@@ -526,7 +529,13 @@ static int run_export(int argc, char **argv) {
     snprintf(bundle, sizeof bundle, "%s/%s", apps_dir, host);
     char src_db[1400];
     snprintf(src_db, sizeof src_db, "%s/data.db", bundle);
-    if (!path_exists(src_db)) { LOG_ERROR("no app '%s' (missing %s)", host, src_db); logger_shutdown(); return 1; }
+    /* lstat (not stat): the source data.db must be a real file in the bundle — a
+     * symlink there would make VACUUM snapshot another app's DB / an arbitrary file. */
+    struct stat sst;
+    if (lstat(src_db, &sst) != 0 || !S_ISREG(sst.st_mode)) {
+        LOG_ERROR("export: '%s' is not a regular file (missing, or a symlink — refusing)", src_db);
+        logger_shutdown(); return 1;
+    }
 
     char staging[] = "/tmp/cellar-export-XXXXXX";
     if (!mkdtemp(staging)) { LOG_ERROR("export: mkdtemp: %s", strerror(errno)); logger_shutdown(); return 1; }
@@ -593,6 +602,14 @@ static int run_import(int argc, char **argv) {
 
     mkdir(apps_dir, 0755);
     if (mkdir(target, 0755) != 0 && errno != EEXIST) { LOG_ERROR("import: mkdir %s: %s", target, strerror(errno)); logger_shutdown(); return 1; }
+    /* The target must be a real directory, not a symlink: mkdir() returns EEXIST
+     * for a pre-existing symlink, and `tar -C` would then extract THROUGH it to an
+     * arbitrary location (CRITICAL: arbitrary file write under cellar's privileges). */
+    struct stat tst;
+    if (lstat(target, &tst) != 0 || !S_ISDIR(tst.st_mode)) {
+        LOG_ERROR("import: '%s' is not a directory (a symlink? refusing to extract)", target);
+        logger_shutdown(); return 1;
+    }
 
     char *tar[] = { "tar", "-xzf", argv[3], "-C", target, NULL };
     if (run_argv(tar) != 0) { LOG_ERROR("import: tar extract failed"); logger_shutdown(); return 1; }
