@@ -132,15 +132,16 @@ static const char *sqlite_err_message(int rc) {
  * transaction (run_write) so before()'s hook writes, the main write, and the
  * RETURNING read are one atomic unit. On error sets *http + a client-safe errmsg.
  *
- * The serializer steps to completion; sqlite3_finalize then surfaces any step
+ * The serializer steps to completion; sqlite3_reset then surfaces any step
  * error (constraint / type mismatch / I/O) — checked so a failed write is
- * reported, not silently treated as an empty result. */
+ * reported, not silently treated as an empty result. The statement comes from the
+ * per-connection cache (parse+plan once per distinct SQL, not per request) and is
+ * owned by it — we reset, never finalize, so it stays compiled for the next call. */
 static cJSON *run_rows_on(sqlite3 *c, const cel_query_t *q, const cel_table_t *t,
                           int *http, char *errmsg, size_t errlen) {
-    sqlite3_stmt *st = NULL;
-    int rc = sqlite3_prepare_v2(c, q->sql, -1, &st, NULL);
-    if (rc != SQLITE_OK) {
-        LOG_ERROR("query prepare failed [%d]: %s | sql=%s", rc, sqlite3_errmsg(c), q->sql);
+    sqlite3_stmt *st = app_db_stmt_cached(app_db_current(), c, q->sql);
+    if (!st) {
+        LOG_ERROR("query prepare failed: %s | sql=%s", sqlite3_errmsg(c), q->sql);
         *http = 500; if (errmsg) snprintf(errmsg, errlen, "query failed");
         return NULL;
     }
@@ -152,7 +153,7 @@ static cJSON *run_rows_on(sqlite3 *c, const cel_query_t *q, const cel_table_t *t
 
     /* t == NULL: a table-less result (e.g. count/aggregate) — typed by storage class. */
     cJSON *rows = t ? cel_stmt_rows_to_json(st, t) : cel_stmt_result_to_json(st);
-    rc = sqlite3_finalize(st);
+    int rc = sqlite3_reset(st);   /* surfaces deferred step errors; keeps stmt cached */
     if (rc != SQLITE_OK) {
         *http = map_sqlite_err(rc);
         if (errmsg) snprintf(errmsg, errlen, "%s",

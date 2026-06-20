@@ -22,6 +22,13 @@ struct app_db {
     pthread_mutex_t pool_mtx;
     pthread_cond_t  pool_cv;
 
+    /* Per-connection prepared-statement cache (sql text -> compiled stmt), so the
+     * CRUD path parses + plans each distinct statement once, not once per request.
+     * A slot's cache is touched only by the thread holding that connection (it's
+     * checked out), so it needs no lock of its own. */
+    struct { char *sql; sqlite3_stmt *st; } cache[CEL_APP_CONNS_PER_APP][CEL_STMT_CACHE_MAX];
+    int             cache_n[CEL_APP_CONNS_PER_APP];
+
     /* Per-app writer serialization (design §6): one writer per file at a time. */
     pthread_mutex_t write_mtx;
 
@@ -115,8 +122,15 @@ static app_db_t *app_new(const char *path)
 
 static void app_free(app_db_t *db)
 {
-    for (int i = 0; i < db->nconns; i++)
+    for (int i = 0; i < db->nconns; i++) {
+        /* finalize the connection's cached statements before closing it (sqlite3_close
+         * refuses a connection with live statements). */
+        for (int j = 0; j < db->cache_n[i]; j++) {
+            sqlite3_finalize(db->cache[i][j].st);
+            free(db->cache[i][j].sql);
+        }
         if (db->conns[i]) sqlite3_close(db->conns[i]);
+    }
     pthread_mutex_destroy(&db->pool_mtx);
     pthread_cond_destroy(&db->pool_cv);
     pthread_mutex_destroy(&db->write_mtx);
@@ -239,6 +253,46 @@ void app_db_conn_release(app_db_t *db, sqlite3 *conn)
         }
     }
     pthread_mutex_unlock(&db->pool_mtx);
+}
+
+sqlite3_stmt *app_db_stmt_cached(app_db_t *db, sqlite3 *conn, const char *sql)
+{
+    /* Find the slot holding `conn`. It's checked out to this thread, so conns[slot]
+     * == conn is stable and that slot's cache is ours; other slots may be opened
+     * concurrently, but an aligned pointer read is atomic and `conn` is unique, so
+     * the lock-free scan resolves the right slot. nconns only grows, and our conn
+     * was opened before we borrowed it, so it's within the count we read. */
+    int slot = -1, n = db->nconns;
+    for (int i = 0; i < n; i++) if (db->conns[i] == conn) { slot = i; break; }
+    if (slot < 0) return NULL;
+
+    for (int i = 0; i < db->cache_n[slot]; i++) {
+        if (strcmp(db->cache[slot][i].sql, sql) == 0) {      /* hit: reuse */
+            sqlite3_stmt *st = db->cache[slot][i].st;
+            sqlite3_reset(st);
+            sqlite3_clear_bindings(st);
+            return st;
+        }
+    }
+
+    sqlite3_stmt *st = NULL;                                  /* miss: compile once, cache */
+    if (sqlite3_prepare_v3(conn, sql, -1, SQLITE_PREPARE_PERSISTENT, &st, NULL) != SQLITE_OK)
+        return NULL;
+    char *key = strdup(sql);
+    if (!key) { sqlite3_finalize(st); return NULL; }          /* every returned stmt must be cached */
+
+    int *cn = &db->cache_n[slot];
+    if (*cn >= CEL_STMT_CACHE_MAX) {                           /* FIFO-evict the oldest */
+        sqlite3_finalize(db->cache[slot][0].st);
+        free(db->cache[slot][0].sql);
+        memmove(&db->cache[slot][0], &db->cache[slot][1],
+                (size_t)(CEL_STMT_CACHE_MAX - 1) * sizeof db->cache[slot][0]);
+        (*cn)--;
+    }
+    db->cache[slot][*cn].sql = key;
+    db->cache[slot][*cn].st  = st;
+    (*cn)++;
+    return st;
 }
 
 void app_db_write_lock(app_db_t *db)   { pthread_mutex_lock(&db->write_mtx); }

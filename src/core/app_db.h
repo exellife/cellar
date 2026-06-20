@@ -77,6 +77,20 @@ void      app_db_unref(app_db_t *db);
 sqlite3 *app_db_conn_acquire(app_db_t *db);
 void     app_db_conn_release(app_db_t *db, sqlite3 *conn);
 
+/* Return a prepared statement for `sql` on the borrowed connection `conn`, from a
+ * PER-CONNECTION cache keyed by the SQL text (parse + plan happen once per distinct
+ * statement, not once per request — the major per-request cost on the CRUD path).
+ * The returned statement is reset with its bindings cleared, ready to bind+step;
+ * the caller must NOT finalize it (the cache owns it and finalizes at connection
+ * close) — just sqlite3_reset it when done. NULL on a compile error. `conn` must be
+ * one currently checked out by this thread. */
+sqlite3_stmt *app_db_stmt_cached(app_db_t *db, sqlite3 *conn, const char *sql);
+
+/* Distinct prepared statements cached per connection (FIFO-evicted past this). */
+#ifndef CEL_STMT_CACHE_MAX
+#define CEL_STMT_CACHE_MAX 64
+#endif
+
 /* Per-app writer serialization. Hold this across a write/DDL/transaction so a
  * single app's writers run one at a time (SQLite is single-writer per file);
  * different apps never block each other. Readers do NOT take this lock. */
