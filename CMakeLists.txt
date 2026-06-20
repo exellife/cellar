@@ -306,6 +306,7 @@ if(CELLAR_BUILD_TESTS)
     add_executable(cel_apps_test tests/cel_apps_test.c
         src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c
         src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
+        src/engine/cel_control.c
         src/engine/cel_hook_state.c src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c)
     target_include_directories(cel_apps_test PRIVATE src src/engine src/core lib/logger/include)
     target_link_libraries(cel_apps_test SQLite::SQLite3 cjson logger luajit Threads::Threads)
@@ -403,6 +404,10 @@ if(CELLAR_BUILD_TESTS)
         # different authz for the same request (policy bound per request).
         add_test(NAME perapp_policy
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/perapp_policy_test.sh $<TARGET_FILE:cellar>)
+        # Control-plane registry (design §11): CEL_CONTROL_DB gates routing to
+        # registered+active hosts; suspend/resume take effect on a running server.
+        add_test(NAME control_plane
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/control_plane_test.sh $<TARGET_FILE:cellar>)
         # --- Auth/transport e2e (Postgres-era; being ported to the SQLite harness
         #     under Task 8 — see tests/run_with_server.py). RPC is deferred to the
         #     Phase 2 hook layer, so rpc/rpc_tenant/rpc_secdef were removed. ---

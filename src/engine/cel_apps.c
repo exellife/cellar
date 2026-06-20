@@ -2,12 +2,14 @@
 #include "schema_catalog.h"
 #include "core/app_db.h"
 #include "core/auth_schema.h"
+#include "cel_control.h"
 #include "logger.h"
 
 #include <sqlite3.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -19,6 +21,7 @@ static struct {
     char            apps_dir[1024];
     char            single_db[1024];
     bool            multi;
+    bool            control;   /* CEL_CONTROL_DB configured → registry gates routing */
     pthread_mutex_t mtx;
 } g = { .mtx = PTHREAD_MUTEX_INITIALIZER };
 
@@ -46,6 +49,13 @@ void cel_apps_init(const char *apps_dir, const char *single_db) {
         snprintf(g.apps_dir, sizeof g.apps_dir, "%s", apps_dir);
         g.multi = true;
         LOG_INFO("apps: multi-app mode, bundles under %s", g.apps_dir);
+        /* Optional control-plane registry: when CEL_CONTROL_DB is set, routing is
+         * gated to registered + active hosts (an unregistered/suspended Host 404s). */
+        const char *cdb = getenv("CEL_CONTROL_DB");
+        if (cdb && *cdb && cel_control_open(cdb) == 0) {
+            g.control = true;
+            LOG_INFO("apps: control-plane registry at %s (routing gated)", cdb);
+        }
     } else {
         snprintf(g.single_db, sizeof g.single_db, "%s", (single_db && *single_db) ? single_db : "cellar.db");
         g.multi = false;
@@ -111,6 +121,10 @@ cel_app_t *cel_apps_resolve(const char *host) {
     char h[256];
     if (cel_apps_norm_host(host, h, sizeof h) != 0) return NULL;
 
+    /* Control-plane gate (read per request so `cellar suspend` takes effect on a
+     * running server): an unregistered or suspended host is never served. */
+    if (g.control && !cel_control_is_active(h)) return NULL;
+
     pthread_mutex_lock(&g.mtx);
     cel_app_t *app = find_cached(h);
     if (!app) {
@@ -164,4 +178,5 @@ void cel_apps_shutdown(void) {
     }
     g.count = 0;
     pthread_mutex_unlock(&g.mtx);
+    cel_control_close();
 }

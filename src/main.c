@@ -28,6 +28,7 @@
 #include "engine/policy.h"
 #include "engine/api.h"   /* cel_rpc_audit_security_definer, cel_api_rt_recheck_member */
 #include "engine/cel_apps.h"
+#include "engine/cel_control.h"
 #include "handlers/auth_handlers.h"
 #include "handlers/schema_handlers.h"
 #include "handlers/data_handlers.h"
@@ -472,6 +473,15 @@ static int run_provision(int argc, char **argv) {
 
     LOG_INFO("provisioned app '%s' at %s", host, dir);
     app_db_global_shutdown();
+
+    /* If a control-plane registry is configured, register the new app (active). */
+    const char *cdb = getenv("CEL_CONTROL_DB");
+    if (cdb && *cdb && cel_control_open(cdb) == 0) {
+        cel_control_register(host);
+        cel_control_close();
+        LOG_INFO("registered '%s' in the control-plane registry", host);
+    }
+
     logger_shutdown();
     return 0;
 }
@@ -596,6 +606,55 @@ static int run_import(int argc, char **argv) {
     app_db_global_shutdown();
 
     LOG_INFO("imported '%s' from %s", host, argv[3]);
+
+    const char *cdb = getenv("CEL_CONTROL_DB");
+    if (cdb && *cdb && cel_control_open(cdb) == 0) {
+        cel_control_register(host);
+        cel_control_close();
+        LOG_INFO("registered '%s' in the control-plane registry", host);
+    }
+
+    logger_shutdown();
+    return 0;
+}
+
+/* Open the control-plane registry from CEL_CONTROL_DB for a one-shot CLI. */
+static int cli_control_open(void) {
+    const char *lvl = getenv("CEL_LOG_LEVEL");
+    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_ERROR, NULL, 1);
+    const char *cdb = getenv("CEL_CONTROL_DB");
+    if (!cdb || !*cdb) { fprintf(stderr, "set CEL_CONTROL_DB (the control-plane registry path)\n"); return -1; }
+    if (cel_control_open(cdb) != 0) return -1;
+    return 0;
+}
+
+/* `cellar suspend|resume <host>` — take a registered app offline / back online
+ * (the running server re-reads status per request). */
+static int run_set_status(int argc, char **argv, const char *status) {
+    if (argc < 3) { fprintf(stderr, "usage: cellar %s <host>\n", argv[1]); return 2; }
+    char host[256];
+    if (cel_apps_norm_host(argv[2], host, sizeof host) != 0) { fprintf(stderr, "invalid host '%s'\n", argv[2]); return 1; }
+    if (cli_control_open() != 0) { logger_shutdown(); return 1; }
+    int n = cel_control_set_status(host, status);
+    cel_control_close();
+    if (n == 1)      LOG_INFO("'%s' -> %s", host, status);
+    else if (n == 0) LOG_WARN("'%s' is not registered", host);
+    else             LOG_ERROR("failed to update '%s'", host);
+    logger_shutdown();
+    return n == 1 ? 0 : 1;
+}
+
+static void apps_row(const char *host, const char *status, long long created, void *ud) {
+    (void)created; (void)ud;
+    printf("  %-44s %s\n", host, status ? status : "?");
+}
+
+/* `cellar apps` — list the registered apps and their status. */
+static int run_apps(void) {
+    if (cli_control_open() != 0) { logger_shutdown(); return 1; }
+    printf("  %-44s %s\n", "HOST", "STATUS");
+    cel_control_list(apps_row, NULL);
+    cel_control_close();
     logger_shutdown();
     return 0;
 }
@@ -617,6 +676,12 @@ int main(int argc, char **argv) {
         return run_export(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "import") == 0)
         return run_import(argc, argv);
+    if (argc >= 2 && strcmp(argv[1], "suspend") == 0)
+        return run_set_status(argc, argv, "suspended");
+    if (argc >= 2 && strcmp(argv[1], "resume") == 0)
+        return run_set_status(argc, argv, "active");
+    if (argc >= 2 && strcmp(argv[1], "apps") == 0)
+        return run_apps();
 
     int port = env_int("CEL_PORT", 8080);
     const char *lvl = getenv("CEL_LOG_LEVEL");
