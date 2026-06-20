@@ -203,6 +203,18 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       `export`/`import` reduce to copying the `.db`. _Touches:_ `cel_hook_state.{c,h}`,
       provision, export/import.
 
+- [ ] **Offline-first device sync.** Let clients (esp. Flutter) hold a local SQLite mirror
+      and sync across devices through cellar. Designed in
+      [`docs/cellar-sync-design.md`](docs/cellar-sync-design.md): v1 is server-authoritative
+      **delta sync** — per-app monotonic `rev` cursor + `deleted` tombstones on syncable
+      tables, `sync_pull(since)` / `sync_push(mutations)` RPCs through the existing
+      `authorize`/`before` hooks, last-write-wins with a `resolve(...)` hook override, and the
+      realtime feed as the online fast-path. Hard parts: tombstone GC (needs per-device
+      cursors), bootstrap/full re-sync, idempotent retries. CRDT (cr-sqlite) is the later
+      opt-in upgrade for tables LWW can't serve. _Build order in the note §10._ _Touches:_
+      `schema_catalog`, `api.c`, query builder, `cel_hooks`, `app_db`, `frontend-guide.md`,
+      + a reference offline client in `examples/`.
+
 - [ ] **MFA: per-app mode + expose `required`.** TOTP 2FA is fully live (enroll/confirm/
       disable/recovery-codes/verify routes, per-user lockout, `mfa-reset` CLI, `mfa_sqlite`
       test) but two gaps: (1) **mode is process-wide.** `CEL_MFA` is read once at boot →

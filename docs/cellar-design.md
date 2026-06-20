@@ -227,6 +227,11 @@ bundle tooling (provision/export/hot-reload).
   wildcards; path is fewer forwards.
 - **Backups** — the durability story is now the host's (data is at home): Litestream to
   cloud, or scheduled rsync of `apps/`.
+- **Offline-first device sync** — clients (esp. Flutter) that hold a local SQLite mirror
+  and sync across devices through cellar. Designed separately in
+  [`cellar-sync-design.md`](cellar-sync-design.md) (server-authoritative delta sync with
+  per-app `rev` cursor + tombstones + a `resolve` hook; CRDT/cr-sqlite as the later
+  upgrade). Not built; layers on the existing authz/hook/realtime primitives.
 
 ## 15. Non-goals (v1)
 
