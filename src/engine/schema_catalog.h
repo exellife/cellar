@@ -32,7 +32,7 @@ typedef enum {
 
 typedef struct {
     char          name[64];
-    char          pg_type[64];   /* raw udt_name, e.g. "int4", "varchar" */
+    char          decl_type[64];   /* raw SQLite declared type, e.g. "INTEGER", "UUID" */
     cel_coltype_t type;          /* normalized */
     bool          nullable;
     bool          has_default;

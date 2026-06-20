@@ -98,7 +98,7 @@ static int load_columns(sqlite3 *db, cel_table_t *t) {
         const char *decl = (const char *)sqlite3_column_text(st, 1);
         cel_column_t *c = add_column(t, name ? name : "");
         if (!c) { sqlite3_finalize(st); return -1; }
-        snprintf(c->pg_type, sizeof c->pg_type, "%s", decl ? decl : "");  /* raw declared type */
+        snprintf(c->decl_type, sizeof c->decl_type, "%s", decl ? decl : "");  /* raw declared type */
         c->type        = affinity_from_decl(decl);
         c->nullable    = sqlite3_column_int(st, 2) == 0;          /* notnull==0 → nullable */
         c->has_default = sqlite3_column_type(st, 3) != SQLITE_NULL;

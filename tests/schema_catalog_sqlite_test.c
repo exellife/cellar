@@ -89,7 +89,7 @@ int main(void) {
     CHECK(col(users, "email")->has_default == false, "no-default column !has_default");
 
     /* raw declared type preserved */
-    CHECK(strcasecmp(col(users, "created_at")->pg_type, "TIMESTAMP") == 0,
+    CHECK(strcasecmp(col(users, "created_at")->decl_type, "TIMESTAMP") == 0,
           "raw declared type retained");
 
     /* foreign key */

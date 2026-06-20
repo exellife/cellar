@@ -70,7 +70,7 @@ cJSON *cel_catalog_to_cjson(const cel_catalog_t *cat) {
             cJSON *jc = cJSON_CreateObject();
             cJSON_AddStringToObject(jc, "name", col->name);
             cJSON_AddStringToObject(jc, "type", cel_coltype_name(col->type));
-            cJSON_AddStringToObject(jc, "pg_type", col->pg_type);   /* raw declared type */
+            cJSON_AddStringToObject(jc, "decl_type", col->decl_type);   /* raw declared type */
             cJSON_AddBoolToObject(jc, "nullable", col->nullable);
             cJSON_AddBoolToObject(jc, "primary_key", col->is_pk);
             cJSON_AddBoolToObject(jc, "has_default", col->has_default);
