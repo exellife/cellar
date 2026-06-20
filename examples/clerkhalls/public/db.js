@@ -118,7 +118,10 @@ class DB {
       }
       if (n) this.log(`pulled ${n}`);
       this.cursor = pull.cursor; this._persist(); this._emit();
-    } catch (e) { this.log("sync error: " + (e.message || e)); }
+    } catch (e) {
+      if (e.status === 401) { this.logout(); this.onAuthLost && this.onAuthLost(); this.log("session expired"); }
+      else this.log("sync error: " + (e.message || e));
+    }
     finally { this._syncing = false; }
   }
 

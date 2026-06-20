@@ -24,6 +24,8 @@ PetiteVue.createApp({
     if (this.authed) await this.start();
   },
   async start() {
+    // a stale/expired token (e.g. server restarted) -> drop to the login screen.
+    db.onAuthLost = () => { this.authed = false; this.authMsg = "Session expired — please sign in again."; };
     db.startRealtime();          // instant updates while the WS is connected
     await db.sync();             // initial catch-up
     // safety net: poll so devices converge even if a realtime event is missed / the
