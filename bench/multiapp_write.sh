@@ -43,7 +43,9 @@ done
 echo
 printf "  %-9s %-12s %-14s %-12s\n" "apps" "conns/app" "aggregate" "per-app avg"
 for N in $NLIST; do
-  PER=$(( TOTAL / N )); [ "$PER" -lt 1 ] && PER=1
+  # default: fixed TOTAL load split across apps. FIXED_PER_APP=k: each app gets k
+  # connections (total load grows with N) — the cleaner test of per-app flatness.
+  if [ -n "${FIXED_PER_APP:-}" ]; then PER="$FIXED_PER_APP"; else PER=$(( TOTAL / N )); [ "$PER" -lt 1 ] && PER=1; fi
   pids=(); outs=()
   for i in $(seq 1 "$N"); do
     OUT="/tmp/maw_$$_a$i"

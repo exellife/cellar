@@ -17,9 +17,16 @@ afterward. No Postgres, no external setup.
 
 **Write scaling across apps** — `bench/multiapp_write.sh <binary> [dur] [total-conns]
 ["1 2 4 8"]` drives a fixed total write load split across N apps and reports
-aggregate writes/s. Because writes serialize *per app* (one writer per SQLite file)
-but apps never block each other, the aggregate climbs as the same load spreads over
-more files — horizontal write throughput by adding apps, not connections.
+aggregate writes/s (set `FIXED_PER_APP=k` to instead give each app k connections).
+Writes serialize *per app* (one writer per SQLite file) but apps never block each
+other, so the aggregate climbs as load spreads over more files — until a shared
+server-side ceiling (worker CPU; NOT disk, since `synchronous=NORMAL`). Measured on
+srvlab (32c, NVMe): 1 app ~14–20k, 8 apps ~40k writes/s (~2.8×), errors=0.
+
+To separate the generator from the server (the honest test), drive from another
+machine: provision `aN.local` apps + a `products` table on the server, then run N
+parallel `loadtest.py --url http://<server>:<port>/api/products --method POST
+--body '{"name":"w","price":1}' -H 'Host: aN.local' -H 'Authorization: Bearer <tok>'`.
 
 `loadtest.py` is the generator and can be pointed at any endpoint:
 
