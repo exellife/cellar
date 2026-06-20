@@ -472,6 +472,12 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME rpc_hook
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/rpc_test.py)
+        # Offline-first sync substrate (Slice 0, T1-T5): the syncable `items` table —
+        # monotonic engine-owned rev, force-owned rev/deleted, soft-delete + tombstone
+        # invisibility, non-syncable products unaffected, _sync_seq not REST-exposed.
+        add_test(NAME sync_rev
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
+                    $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/sync_rev_test.py)
         # CRUD hooks (Phase 2 §8): before/authorize/after on the write path, via a
         # before/authorize/after bundle (CEL_HOOKS_FILE=tests/hooks_crud.lua).
         add_test(NAME hooks_crud

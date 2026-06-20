@@ -46,6 +46,15 @@ def make_app_db():
             title    TEXT,
             body     TEXT
         );
+        -- A syncable table (offline-first sync Slice 0): carries rev + deleted, so
+        -- the engine stamps rev / soft-deletes it. Empty so the sync test counts
+        -- rev deterministically from 1. Inert for every other test.
+        CREATE TABLE items (
+            id       UUID PRIMARY KEY DEFAULT ({UUID4_DEFAULT}),
+            name     TEXT NOT NULL,
+            rev      INTEGER NOT NULL DEFAULT 0,
+            deleted  INTEGER NOT NULL DEFAULT 0
+        );
         -- Two categories (smoke/rest assert categories count == 2).
         INSERT INTO categories (name, description) VALUES
             ('Drinks', 'Beverages'),
