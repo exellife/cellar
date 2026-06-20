@@ -101,6 +101,16 @@ def main():
     chk("DELETE event carries the tombstone (deleted=1)",
         ev is not None and (ev.get("row") or {}).get("deleted") == 1, str(ev))
 
+    # a write that arrives via /sync/push must ALSO reach live subscribers (push and
+    # the realtime feed are the same change stream).
+    pid = "push-rt-1"
+    api(host, port, "POST", "/sync/push", tok,
+        {"mutations": [{"op": "put", "table": "items", "id": pid, "values": {"name": "viaPush"}}]})
+    chk("push create -> INSERT event delivered", wait_change(s, "INSERT", pid) is not None)
+    api(host, port, "POST", "/sync/push", tok,
+        {"mutations": [{"op": "del", "table": "items", "id": pid, "base_rev": 1}]})
+    chk("push delete -> DELETE event delivered", wait_change(s, "DELETE", pid) is not None)
+
     s.close()
     print(f"\n{'PASS' if fail == 0 else 'FAIL'}  ({ok} ok, {fail} failed)")
     return 1 if fail else 0

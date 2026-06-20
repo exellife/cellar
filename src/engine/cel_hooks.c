@@ -262,8 +262,11 @@ static const char *PRELUDE =
 "  if type(resolve) ~= 'function' then return 'incoming' end\n"   /* default LWW */
 "  local incoming = incoming_ptr ~= nil and box(incoming_ptr, false) or nil\n"
 "  local r = resolve(tbl, incoming, box(current_ptr, false), box(who_ptr, false))\n"
-"  if r == false or r == 'current' or r == 'server' then return 'current' end\n"
-"  return 'incoming'\n"   /* true / 'incoming' / anything else -> incoming wins */
+"  if r == true  or r == 'incoming' then return 'incoming' end\n"
+"  if r == false or r == nil or r == 'current' or r == 'server' then return 'current' end\n"
+   /* a merged-row (table) return is NOT yet supported — error loudly rather than
+    * silently applying the raw incoming row (which would discard the merge). */
+"  error(\"resolve() must return 'incoming' or 'current' (merged-row return not yet supported)\")\n"
 "end\n";
 
 int cel_hooks_install(cel_lua_t *L, char *errbuf, size_t errlen) {

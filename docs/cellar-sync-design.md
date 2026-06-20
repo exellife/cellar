@@ -118,14 +118,18 @@ local SQLite (and applies `deleted=1` as a local delete), then persists `cursor`
 ] }
 // response
 { "results": [ { "id": "…", "status": "applied", "rev": 58 },
-               { "id": "…", "status": "conflict", "winner": "server", "row": { …rev 60 } } ],
+               { "id": "…", "status": "conflict", "winner": "server", "rev": 60 } ],
   "cursor": 60 }
 ```
 
 Per mutation, the server compares the row's **current `rev`** to the client's `base_rev`:
 - `current == base_rev` → no concurrent change → apply, stamp a new `rev`, return `applied`.
-- `current > base_rev` → **conflict** → resolve (3.5), return the canonical row so the client
-  overwrites its local copy.
+- `current != base_rev` (or no `base_rev` on an existing row) → **conflict** → resolve (3.5).
+  The result reports `status:"conflict"`, the `winner` (`incoming`/`server`), and the resulting
+  `rev`. _(Implemented today: results carry `rev`, not the full canonical row — a client that
+  lost a conflict does a `sync_pull` to fetch the winning row. Returning the row inline is a
+  small follow-up.)_ A `put` against a tombstone is reported `conflict`/`winner:server` (the
+  deletion stands; resurrect-via-push isn't supported in v1) and never aborts the batch.
 
 Crucially, push applies through the **same `authorize`/`before` hooks** as a normal write —
 a device cannot push a row it couldn't otherwise create/update, and `before` still validates
@@ -138,11 +142,13 @@ the total order) unless an app rule says otherwise. The override lives **server-
 `hooks.lua`**, so every device agrees on the rule:
 
 ```lua
--- optional: resolve(table, incoming, current, who) -> 'incoming' | 'current' | merged-row
+-- optional: resolve(table, incoming, current, who) -> 'incoming' | 'current'
+-- (incoming == nil means the incoming op is a DELETE)
 function resolve(tbl, incoming, current, who)
-  if tbl == 'inventory' then
-    incoming.qty = math.max(incoming.qty, current.qty)   -- domain rule, not blind LWW
-    return incoming
+  if tbl == 'inventory' and incoming then
+    -- row-granular domain rule: keep whichever row has the higher qty
+    if (current.qty or 0) >= (incoming.qty or 0) then return 'current' end
+    return 'incoming'
   end
   return 'incoming'   -- default LWW
 end
@@ -151,6 +157,11 @@ end
 This is the design's payoff: the merge policy is **app logic in one place**, not duplicated
 across clients. (LWW's cost: the loser's edit is dropped. Fine for tasks/notes; for counters
 or collaborative text, that's the signal to reach for §7.)
+
+> **Implemented (Slice 2):** `resolve()` returns the **binary** decision `'incoming'` or
+> `'current'` — it picks one whole row. A **merged-row** return (take incoming's title but
+> current's qty) is **not yet supported**; returning a table errors (which fails closed = keep
+> current) rather than silently discarding the merge. Field-level merge is a tracked follow-up.
 
 ### 3.6 Realtime is the *online* fast-path, not a second mechanism
 
@@ -204,8 +215,19 @@ tombstone GC and for a device to ignore the echo of its own pushes (§6).
   devices can order their own offline edits.
 - **Security.** Push re-runs `authorize`/`before` per row (non-negotiable). Pull is
   owner-scoped by the existing policy. The sync RPCs are just structured CRUD — no new trust.
-- **Idempotency / retries.** A push that times out after committing must be safe to retry —
-  key mutations by `(id, base_rev)` (or a client mutation id) so a re-apply is a no-op.
+- **Idempotency / retries — ⚠️ KNOWN GAP (not yet implemented; audit-flagged HIGH).** An
+  offline client retries on timeout. Today a retried `put` whose first attempt already COMMITTED
+  (response lost) re-enters the conflict path — `base_rev` now `!= current rev` → LWW re-applies,
+  bumping `rev` again. Same-client retries stay value-convergent (the values are identical), but a
+  retry that interleaves with **another device's** write can **lose that device's update**
+  (stale incoming overwrites it). The fix (design intent) is to key mutations by a client
+  `mutation_id` (or `(id, base_rev)`) and record applied ids in the same txn so a re-apply is a
+  no-op — slated for **Slice 3** alongside per-device cursors. Until then, treat conflicts as
+  advisory and prefer a `resolve()` rule that can't lose data for conflict-sensitive tables.
+- **The push response `cursor` is informational, not a pull checkpoint.** It's the app's *global*
+  high-water after the batch. A client must advance its pull-cursor only from a `sync_pull`
+  response (which actually returns the rows ≤ cursor); advancing it from a `push` cursor could
+  skip foreign changes the client never received. Documented so clients don't misuse it.
 - **Schema migration across versions.** A device on an older schema syncing to a migrated app
   — out of scope for v1; note it as a constraint (clients pin a schema version).
 - **Hook-path writes bypass the substrate (Slice 0).** The `rev` stamp, the soft-delete, and the

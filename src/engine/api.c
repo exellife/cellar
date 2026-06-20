@@ -946,6 +946,14 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
     cJSON *results = cJSON_CreateArray();
     int err_code = 0; char err[256] = {0};
 
+    /* Rows that actually changed, held for post-commit realtime fan-out + after()
+     * (mirrors the normal write path — pushes must reach live subscribers too).
+     * Sized to the batch; `table` points into the process-stable catalog. */
+    int maxmut = cJSON_GetArraySize(muts);
+    struct { const char *table; cel_action_t action; cJSON *row; } *emits =
+        maxmut > 0 ? calloc((size_t)maxmut, sizeof *emits) : NULL;
+    int nemit = 0;
+
     const cJSON *m;
     cJSON_ArrayForEach(m, muts) {
         const cJSON *jop  = cJSON_GetObjectItemCaseSensitive(m, "op");
@@ -965,6 +973,9 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
         cJSON *current = sync_current_row(c, t, who, jid);
         bool exists = current != NULL;
         long long cur_rev = exists ? sync_row_rev(current) : 0;
+        int cur_del = 0;
+        if (exists) { const cJSON *d = cJSON_GetObjectItemCaseSensitive(current, "deleted");
+                      cur_del = cJSON_IsNumber(d) ? (int)d->valuedouble : 0; }
 
         /* classify: clean apply, conflict, or no-op. On a conflict the winner is LWW
          * (incoming) by default, overridable by the resolve() hook. */
@@ -976,18 +987,18 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
         cJSON_Delete(current);   /* consulted by resolve; the apply doesn't need it */
 
         cJSON *outrow = NULL; int rc = 0; const char *status = "applied"; long long out_rev = cur_rev;
+        cel_action_t emit_action = CEL_ACT_CREATE; bool applied = false;
 
         if (is_del) {
-            cel_action_t act = CEL_ACT_DELETE;
-            if (!cel_policy_allows(t->name, act, who->role)) { err_code = 403; snprintf(err, sizeof err, "forbidden"); break; }
-            if (!exists) { status = "applied"; out_rev = base_rev < 0 ? 0 : base_rev; }   /* idempotent */
+            if (!cel_policy_allows(t->name, CEL_ACT_DELETE, who->role)) { err_code = 403; snprintf(err, sizeof err, "forbidden"); break; }
+            if (!exists) { status = "applied"; out_rev = 0; }   /* idempotent no-op; no server rev */
             else if (!incoming_wins) { status = "conflict"; }   /* server wins → keep */
             else {
                 cJSON *mreq = cJSON_CreateObject();
                 cJSON_AddItemReferenceToObject(mreq, "id", (cJSON *)jid);
-                rc = write_txn_body(c, who, mreq, t, cel_build_delete, act, 1, hooks, who_v, "delete", &outrow, err, sizeof err);
+                rc = write_txn_body(c, who, mreq, t, cel_build_delete, CEL_ACT_DELETE, 1, hooks, who_v, "delete", &outrow, err, sizeof err);
                 cJSON_Delete(mreq);
-                if (rc == 0 && outrow) out_rev = sync_row_rev(outrow);
+                if (rc == 0 && outrow) { out_rev = sync_row_rev(outrow); emit_action = CEL_ACT_DELETE; applied = true; }
                 status = conflict ? "conflict" : "applied";
             }
         } else { /* put */
@@ -1000,8 +1011,14 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
                 cJSON_AddItemToObject(mreq, "values", vals);
                 rc = write_txn_body(c, who, mreq, t, cel_build_create, CEL_ACT_CREATE, 0, hooks, who_v, "create", &outrow, err, sizeof err);
                 cJSON_Delete(mreq);
-                if (rc == 0 && outrow) out_rev = sync_row_rev(outrow);
+                if (rc == 0 && outrow) { out_rev = sync_row_rev(outrow); emit_action = CEL_ACT_CREATE; applied = true; }
                 status = "applied";
+            } else if (cur_del) {
+                /* the row is a tombstone. Resurrect-via-push isn't supported in v1
+                 * (the deleted=0 update scope wouldn't match it), so the deletion
+                 * stands and we report a server-wins conflict — and crucially do NOT
+                 * kill the batch. The client re-adds with a fresh id if it wants it. */
+                status = "conflict"; conflict = true; incoming_wins = false;
             } else if (!incoming_wins) {
                 status = "conflict";                             /* server wins → keep current */
             } else {
@@ -1012,12 +1029,15 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
                 cJSON_AddItemToObject(mreq, "values", vals);
                 rc = write_txn_body(c, who, mreq, t, cel_build_update, CEL_ACT_UPDATE, 1, hooks, who_v, "update", &outrow, err, sizeof err);
                 cJSON_Delete(mreq);
-                if (rc == 0 && outrow) out_rev = sync_row_rev(outrow);
+                if (rc == 0 && outrow) { out_rev = sync_row_rev(outrow); emit_action = CEL_ACT_UPDATE; applied = true; }
                 status = conflict ? "conflict" : "applied";
             }
         }
-        cJSON_Delete(outrow);
-        if (rc != 0) { err_code = rc; break; }                  /* hard error → roll back batch */
+        if (rc != 0) { cJSON_Delete(outrow); err_code = rc; break; }   /* hard error → roll back */
+
+        if (applied && emits) { emits[nemit].table = t->name; emits[nemit].action = emit_action;
+                                emits[nemit].row = outrow; nemit++; }   /* held for post-commit emit */
+        else cJSON_Delete(outrow);
 
         cJSON *r = cJSON_CreateObject();
         cJSON_AddItemReferenceToObject(r, "id", (cJSON *)jid);
@@ -1031,17 +1051,35 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
         sqlite3_exec(c, "ROLLBACK", NULL, NULL, NULL);
         cel_hooks_set_db(NULL);
         app_db_conn_release(adb, c); app_db_write_unlock(adb);
-        cJSON_Delete(results); cJSON_Delete(who_v);
+        for (int i = 0; i < nemit; i++) cJSON_Delete(emits[i].row);
+        free(emits); cJSON_Delete(results); cJSON_Delete(who_v);
         return result_error(err_code, err[0] ? err : "push failed");
     }
     if (sqlite3_exec(c, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
         sqlite3_exec(c, "ROLLBACK", NULL, NULL, NULL);
         app_db_conn_release(adb, c); app_db_write_unlock(adb);
-        cJSON_Delete(results); cJSON_Delete(who_v);
+        for (int i = 0; i < nemit; i++) cJSON_Delete(emits[i].row);
+        free(emits); cJSON_Delete(results); cJSON_Delete(who_v);
         return result_error(500, "commit failed");
     }
     long long cursor = cel_sync_current_seq(c);
     app_db_conn_release(adb, c); app_db_write_unlock(adb);
+
+    /* post-commit: realtime fan-out + after() for the rows that changed, on a
+     * SEPARATE pooled conn (after()'s writes aren't part of the committed batch —
+     * §14). A soft-delete emits a DELETE event; absent subscribers → rt_emit no-ops. */
+    if (nemit > 0) {
+        sqlite3 *hc = hooks ? app_db_conn_acquire(adb) : NULL;
+        if (hc) cel_hooks_set_db(hc);
+        for (int i = 0; i < nemit; i++) {
+            rt_emit(emits[i].table, emits[i].action, emits[i].row);
+            if (hooks) cel_hooks_after(hooks, action_name(emits[i].action), emits[i].table,
+                                       (const cel_val_t *)emits[i].row, (const cel_val_t *)who_v);
+            cJSON_Delete(emits[i].row);
+        }
+        if (hc) { cel_hooks_set_db(NULL); app_db_conn_release(adb, hc); }
+    }
+    free(emits);
     cJSON_Delete(who_v);
 
     cJSON *o = cJSON_CreateObject();
