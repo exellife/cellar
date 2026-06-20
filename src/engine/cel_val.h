@@ -38,4 +38,15 @@ void cel_val_set_bool(cel_val_t *v, const char *key, int b);
 void cel_val_set_null(cel_val_t *v, const char *key);
 void cel_val_unset   (cel_val_t *v, const char *key);
 
+/* ---- owned-value construction ----
+ * For building bind-param arrays (cellar.query/exec) and freeing query results
+ * that cross back to Lua. cel_val_free frees an OWNED value (no-op on NULL); never
+ * call it on a borrowed handle returned by cel_val_get / cel_val_at. */
+cel_val_t *cel_val_new_array(void);
+void       cel_val_push_str (cel_val_t *arr, const char *s);
+void       cel_val_push_num (cel_val_t *arr, double n);
+void       cel_val_push_bool(cel_val_t *arr, int b);
+void       cel_val_push_null(cel_val_t *arr);
+void       cel_val_free     (cel_val_t *v);
+
 #endif /* CEL_VAL_H */

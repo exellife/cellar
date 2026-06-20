@@ -80,3 +80,19 @@ void cel_val_unset(cel_val_t *v, const char *key) {
     cJSON *o = J(v);
     if (cJSON_IsObject(o) && key) cJSON_DeleteItemFromObjectCaseSensitive(o, key);
 }
+
+/* ---- owned-value construction ---- */
+cel_val_t *cel_val_new_array(void) { return (cel_val_t *)cJSON_CreateArray(); }
+
+static void arr_push(cel_val_t *arr, cJSON *item) {
+    cJSON *a = J(arr);
+    if (!item) return;
+    if (cJSON_IsArray(a)) cJSON_AddItemToArray(a, item);
+    else                  cJSON_Delete(item);
+}
+void cel_val_push_str (cel_val_t *arr, const char *s) { arr_push(arr, cJSON_CreateString(s ? s : "")); }
+void cel_val_push_num (cel_val_t *arr, double n)      { arr_push(arr, cJSON_CreateNumber(n)); }
+void cel_val_push_bool(cel_val_t *arr, int b)         { arr_push(arr, cJSON_CreateBool(b ? 1 : 0)); }
+void cel_val_push_null(cel_val_t *arr)                { arr_push(arr, cJSON_CreateNull()); }
+
+void cel_val_free(cel_val_t *v) { cJSON_Delete(J(v)); }

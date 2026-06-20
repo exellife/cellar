@@ -226,7 +226,7 @@ if(CELLAR_BUILD_TESTS)
     add_executable(cel_hooks_test tests/cel_hooks_test.c
         src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c)
     target_include_directories(cel_hooks_test PRIVATE src/engine lib/logger/include)
-    target_link_libraries(cel_hooks_test luajit cjson logger Threads::Threads)
+    target_link_libraries(cel_hooks_test luajit cjson logger SQLite::SQLite3 Threads::Threads)
     target_link_options(cel_hooks_test PRIVATE -rdynamic)
     add_dependencies(cel_hooks_test luajit_build)
     add_test(NAME cel_hooks COMMAND cel_hooks_test)
