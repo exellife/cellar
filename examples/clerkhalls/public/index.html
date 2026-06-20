@@ -7,7 +7,97 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <div class="auth"><div class="brand big">ClerkHalls</div><p class="muted">Loading…</p></div>
-  <script type="module" src="/app.js"></script>
+<div id="app" v-cloak @vue:mounted="init()">
+
+  <!-- ============ AUTH ============ -->
+  <div class="auth" v-if="!authed">
+    <div class="brand big">ClerkHalls</div>
+    <p class="muted">Sign in to your organization. Open a second browser as another device to see live sync.</p>
+    <div class="card">
+      <label class="field"><span>Email</span><input v-model="email" @keyup.enter="signin(false)"></label>
+      <label class="field"><span>Password</span><input type="password" v-model="password" @keyup.enter="signin(false)"></label>
+      <div class="modal-actions">
+        <button class="ghost" @click="signin(true)">Create account</button>
+        <button class="primary" @click="signin(false)">Sign in</button>
+      </div>
+      <p class="msg">{{ authMsg }}</p>
+    </div>
+  </div>
+
+  <!-- ============ APP SHELL ============ -->
+  <div class="app" v-else>
+    <aside class="nav">
+      <div class="brand">ClerkHalls</div>
+      <a class="navlink" :class="{ active: route==='venues' }"   @click="go('venues')">Venues &amp; Rooms</a>
+      <a class="navlink" :class="{ active: route==='bookings' }" @click="go('bookings')">Bookings</a>
+      <a class="navlink" :class="{ active: route==='menu' }"     @click="go('menu')">Menu</a>
+      <a class="navlink" :class="{ active: route==='settings' }" @click="go('settings')">Settings</a>
+      <div class="nav-foot">
+        <div class="syncbar">
+          <div class="syncrow"><span class="dot" :class="{ on: s.online }"></span><span class="small muted">{{ s.log }}</span></div>
+          <span class="badge" :class="{ hot: s.pending }">{{ s.pending }} pending</span>
+          <label class="switch small"><input type="checkbox" :checked="s.online" @change="db.setOnline($event.target.checked)"><span>online</span></label>
+          <span class="small muted device">dev {{ db.device.slice(0,6) }}</span>
+        </div>
+        <button class="ghost small" @click="signout()">sign out</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <!-- ---- Venues & Rooms ---- -->
+      <div v-if="route==='venues'">
+        <div class="page-head"><h1>Venues &amp; Rooms</h1><button class="primary" @click="newVenue()">+ Venue</button></div>
+        <p class="muted">A venue is a location; each holds bookable rooms. Deleting a venue removes its rooms.</p>
+        <p class="empty" v-if="!venues().length">No venues yet — add one to start.</p>
+        <section class="card venue" v-for="v in venues()" :key="v.id">
+          <div class="venue-head">
+            <div>
+              <h2>{{ v.name }}</h2>
+              <div class="muted small">{{ [v.address, v.phone].filter(Boolean).join(' · ') || '—' }}</div>
+            </div>
+            <div class="row-actions">
+              <button class="ghost" @click="editVenue(v)">edit</button>
+              <button class="ghost danger" @click="delVenue(v)">delete</button>
+            </div>
+          </div>
+          <div class="rooms">
+            <div class="room" v-for="r in rooms(v.id)" :key="r.id">
+              <span class="room-name">{{ r.name }}</span>
+              <span class="muted small" v-if="r.capacity">cap {{ r.capacity }}</span>
+              <span class="room-actions">
+                <button class="mini" @click="editRoom(v.id, r)">✎</button>
+                <button class="mini danger" @click="delRoom(r)">✕</button>
+              </span>
+            </div>
+            <button class="add-room" @click="newRoom(v.id)">+ Room</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- ---- stubs ---- -->
+      <div v-if="route==='bookings'"><div class="page-head"><h1>Bookings</h1></div><p class="empty">Coming in the next iteration.</p></div>
+      <div v-if="route==='menu'"><div class="page-head"><h1>Menu catalog</h1></div><p class="empty">Coming in the next iteration.</p></div>
+      <div v-if="route==='settings'"><div class="page-head"><h1>Settings</h1></div><p class="empty">Coming in the next iteration.</p></div>
+    </main>
+  </div>
+
+  <!-- ============ MODAL ============ -->
+  <div class="modal-backdrop" v-if="modal" @click="modal=null">
+    <div class="modal" @click.stop>
+      <h3>{{ modal.title }}</h3>
+      <label class="field" v-for="f in modal.fields" :key="f.key">
+        <span>{{ f.label }}<template v-if="f.required"> *</template></span>
+        <input :type="f.type" v-model="modal.model[f.key]" :placeholder="f.label" @keyup.enter="saveModal()">
+      </label>
+      <div class="modal-actions">
+        <button class="ghost" @click="modal=null">Cancel</button>
+        <button class="primary" @click="saveModal()">Save</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+<script src="/vendor/petite-vue.iife.js"></script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

@@ -28,6 +28,19 @@ class DB {
     for (const t of SYNCABLE) this.tables[t] = new Map(saved[t] || []);
     this._subs = new Set();
     this._syncing = false;
+    // a reactive projection the petite-vue views bind to: state[table] = live rows.
+    // Rebuilt on every change (app-scale data → cheap); keeps sync internals (Maps)
+    // separate from reactivity.
+    this.state = window.PetiteVue.reactive({ online: this.online, pending: 0, log: "" });
+    for (const t of SYNCABLE) this.state[t] = [];
+    this._refresh();
+  }
+
+  _refresh() {
+    for (const t of SYNCABLE) this.state[t] = [...this.tables[t].values()].filter(r => !r.deleted);
+    this.state.online = this.online;
+    this.state.pending = this.queue.length;
+    this.state.log = this._log || (this.online ? "online" : "offline");
   }
 
   // ---- persistence + events ----
@@ -39,7 +52,7 @@ class DB {
     LS.setItem("ch_queue", JSON.stringify(this.queue));
   }
   on(cb) { this._subs.add(cb); return () => this._subs.delete(cb); }
-  _emit() { for (const cb of this._subs) cb(); }
+  _emit() { this._refresh(); for (const cb of this._subs) cb(); }   // reactive views update via _refresh
   log(m) { this._log = m; this._emit(); }     // last status line (views show it)
   get pending() { return this.queue.length; }
 

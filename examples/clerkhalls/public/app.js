@@ -1,92 +1,80 @@
-// app.js — ClerkHalls shell: auth, nav, hash router, sync status bar.
+// app.js — ClerkHalls, on petite-vue. The template lives in index.html (#app); this
+// is the reactive scope: auth, hash routing, and per-screen data/methods. Rows come
+// from db.state (the sync engine's reactive projection); writes go through db.*.
 import { db } from "/db.js";
-import { el, clear } from "/ui.js";
-import * as venues from "/views/venues.js";
 
-const stub = (name) => ({ title: name, render(root) {
-  clear(root).append(el("div", { class: "page-head" }, el("h1", {}, name)),
-    el("p", { class: "empty" }, "Coming in the next iteration.")); } });
+const route = () => (location.hash.replace(/^#\/?/, "") || "venues").split("/")[0];
+const byOrder = (a, b) =>
+  (a.sort_order ?? 0) - (b.sort_order ?? 0) || String(a.name || "").localeCompare(b.name || "");
+const field = (key, label, required, val, type) =>
+  ({ key, label, required: !!required, val: val ?? "", type: type || "text" });
 
-const ROUTES = {
-  venues,
-  bookings: stub("Bookings"),
-  menu: stub("Menu catalog"),
-  settings: stub("Settings"),
-};
-const NAV = [["venues", "Venues & Rooms"], ["bookings", "Bookings"], ["menu", "Menu"], ["settings", "Settings"]];
+PetiteVue.createApp({
+  db,
+  s: db.state,                                  // reactive store: s.<table> = live rows
+  route: route(),
+  authed: db.authed,
+  email: localStorage.getItem("ch_email") || "owner@clerkhalls.local",
+  password: "clerkhalls",
+  authMsg: "",
+  modal: null,                                  // { title, fields, save, model }
 
-const $ = (s) => document.querySelector(s);
+  async init() {
+    window.addEventListener("hashchange", () => { this.route = route(); });
+    if (this.authed) await this.start();
+  },
+  async start() { db.startRealtime(); await db.sync(); },
 
-function route() { return (location.hash.replace(/^#\/?/, "") || "venues").split("/")[0]; }
+  // ---- auth ----
+  async signin(register) {
+    try {
+      if (register) await db.register(this.email.trim(), this.password);
+      await db.login(this.email.trim(), this.password);
+      this.authed = true;
+      await this.start();
+    } catch (e) {
+      this.authMsg = e.status === 401 ? "Wrong email or password." : (e.message || "Sign-in failed.");
+    }
+  },
+  signout() { db.logout(); location.reload(); },
+  go(r) { location.hash = "#/" + r; },
 
-function renderShell() {
-  const r = route(); const view = ROUTES[r] || venues;
-  document.body.innerHTML = "";
-  document.body.append(
-    el("div", { class: "app" },
-      el("aside", { class: "nav" },
-        el("div", { class: "brand" }, "ClerkHalls"),
-        ...NAV.map(([key, label]) =>
-          el("a", { href: "#/" + key, class: "navlink" + (r === key ? " active" : "") }, label)),
-        el("div", { class: "nav-foot" },
-          syncBar(),
-          el("button", { class: "ghost small", onclick: () => { db.logout(); location.reload(); } }, "sign out"))),
-      el("main", { class: "content", id: "content" })));
-  view.render($("#content"));
-}
+  // ---- venues & rooms ----
+  venues() { return [...this.s.event_halls].sort(byOrder); },
+  rooms(vid) { return this.s.halls.filter(r => r.event_hall_id === vid).sort(byOrder); },
 
-function syncBar() {
-  const dot = el("span", { class: "dot" + (db.online ? " on" : "") });
-  const status = el("span", { class: "small muted" }, db._log || (db.online ? "online" : "offline"));
-  const pending = el("span", { class: "badge" + (db.pending ? " hot" : "") }, `${db.pending} pending`);
-  const toggle = el("label", { class: "switch small" },
-    el("input", { type: "checkbox", checked: db.online ? true : false,
-                  onchange: (e) => db.setOnline(e.target.checked) }),
-    el("span", {}, "online"));
-  return el("div", { class: "syncbar" }, el("div", { class: "syncrow" }, dot, status), pending, toggle,
-    el("span", { class: "small muted device" }, "dev " + db.device.slice(0, 6)));
-}
+  newVenue() {
+    this.open("New venue", [field("name", "Name", true), field("address", "Address"), field("phone", "Phone")],
+      v => db.save("event_halls", { ...v, sort_order: this.s.event_halls.length }));
+  },
+  editVenue(x) {
+    this.open("Edit venue",
+      [field("name", "Name", true, x.name), field("address", "Address", false, x.address), field("phone", "Phone", false, x.phone)],
+      v => db.save("event_halls", { id: x.id, ...v }));
+  },
+  delVenue(x) {
+    const n = this.rooms(x.id).length;
+    if (confirm(`Delete venue "${x.name}"${n ? ` and its ${n} room(s)` : ""}?`)) db.remove("event_halls", x.id);
+  },
+  newRoom(vid) {
+    this.open("New room", [field("name", "Name", true), field("capacity", "Capacity", false, "", "number")],
+      v => db.save("halls", { event_hall_id: vid, name: v.name, capacity: v.capacity ? +v.capacity : null, sort_order: this.rooms(vid).length }));
+  },
+  editRoom(vid, x) {
+    this.open("Edit room",
+      [field("name", "Name", true, x.name), field("capacity", "Capacity", false, x.capacity, "number")],
+      v => db.save("halls", { id: x.id, event_hall_id: vid, name: v.name, capacity: v.capacity ? +v.capacity : null }));
+  },
+  delRoom(x) { if (confirm(`Delete room "${x.name}"?`)) db.remove("halls", x.id); },
 
-// ---- auth gate ----
-function renderAuth(msg) {
-  document.body.innerHTML = "";
-  const email = el("input", { type: "email", placeholder: "email", value: localStorage.getItem("ch_email") || "owner@clerkhalls.local", autocomplete: "username" });
-  const pass = el("input", { type: "password", placeholder: "password (8+)", value: "clerkhalls", autocomplete: "current-password" });
-  const note = el("p", { class: "msg" }, msg || "");
-  const go = async (register) => {
-    try { if (register) await db.register(email.value.trim(), pass.value); await db.login(email.value.trim(), pass.value); boot(); }
-    catch (e) { note.textContent = e.status === 401 ? "Wrong email or password." : (e.message || "Failed."); }
-  };
-  document.body.append(el("div", { class: "auth" },
-    el("div", { class: "brand big" }, "ClerkHalls"),
-    el("p", { class: "muted" }, "Sign in to your organization. Open a second browser as another device to see live sync."),
-    el("div", { class: "card" },
-      el("label", { class: "field" }, el("span", {}, "Email"), email),
-      el("label", { class: "field" }, el("span", {}, "Password"), pass),
-      el("div", { class: "modal-actions" },
-        el("button", { class: "ghost", onclick: () => go(true) }, "Create account"),
-        el("button", { class: "primary", onclick: () => go(false) }, "Sign in")),
-      note)));
-}
-
-// ---- boot ----
-let booted = false;
-async function boot() {
-  if (booted) { renderShell(); return; }
-  booted = true;
-  db.on(() => { if (booted) updateSyncBar(); });   // re-render the sync bar on changes
-  window.addEventListener("hashchange", renderShell);
-  renderShell();
-  db.startRealtime();
-  await db.sync();
-  renderShell();
-}
-function updateSyncBar() {
-  const old = $(".nav-foot"); if (!old) return;
-  // cheap: re-render the whole current view + bar (data changed)
-  const view = ROUTES[route()] || venues;
-  const c = $("#content"); if (c) view.render(c);
-  const bar = $(".syncbar"); if (bar) bar.replaceWith(syncBar());
-}
-
-if (db.authed) boot(); else renderAuth();
+  // ---- generic modal editor ----
+  open(title, fields, save) {
+    this.modal = { title, fields, save, model: Object.fromEntries(fields.map(f => [f.key, f.val])) };
+  },
+  saveModal() {
+    const m = this.modal;
+    if (m.fields.some(f => f.required && !String(m.model[f.key] ?? "").trim())) return;
+    m.save({ ...m.model });
+    this.modal = null;
+  },
+}).mount("#app");
