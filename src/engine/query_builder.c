@@ -777,6 +777,37 @@ int cel_build_delete(const cel_table_t *t, const cJSON *req, const cel_scope_t *
     return 0;
 }
 
+int cel_build_soft_delete(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                          cel_query_t *out, char *errbuf, size_t errlen) {
+    if (t->pk_index < 0) FAIL("table '%s' has no primary key", t->name);
+    const cJSON *id   = req  ? cJSON_GetObjectItemCaseSensitive(req, "id") : NULL;
+    const cJSON *vals = req  ? cJSON_GetObjectItemCaseSensitive(req, "values") : NULL;
+    const cJSON *rev  = vals ? cJSON_GetObjectItemCaseSensitive(vals, "rev") : NULL;
+    if (!id || cJSON_IsNull(id)) FAIL("'id' is required");
+    if (!cJSON_IsNumber(rev))    FAIL("internal: soft-delete rev missing");
+
+    sb_t sql;
+    if (q_init(out) || sb_init(&sql)) { cel_query_free(out); FAIL("out of memory"); }
+
+    /* engine-owned columns only (deleted literal, rev bound) → no scoped-column
+     * guard; `AND deleted = 0` so a tombstone is never re-deleted (→ caller 404s). */
+    int rc = sb_puts(&sql, "UPDATE ") || sb_put_ident(&sql, t->name) ||
+             sb_puts(&sql, " SET deleted = 1, rev = ");
+    if (!rc) rc = push_value(out, &sql, rev, "rev", errbuf, errlen);
+    if (!rc) rc = sb_puts(&sql, " WHERE ") || sb_put_ident(&sql, t->cols[t->pk_index].name) ||
+                  sb_puts(&sql, " = ");
+    if (!rc) rc = push_value(out, &sql, id, "id", errbuf, errlen);
+    if (!rc) rc = sb_puts(&sql, " AND deleted = 0");
+    for (int i = 0; !rc && i < scope_count(scope); i++)
+        rc = sb_puts(&sql, " AND ") || append_scope_predicate(t, out, &sql, &scope->rule[i]);
+    if (!rc) rc = append_returning_all(t, &sql);
+    if (rc) { free(sql.buf); cel_query_free(out);
+              if (!errbuf[0]) snprintf(errbuf, errlen, "failed to build query");
+              return -1; }
+    out->sql = sql.buf;
+    return 0;
+}
+
 /* NOTE (SQLite pivot): the emitted shape — SELECT * FROM fn(name := ?N) — is a
  * Postgres set-returning-function call with named args, which SQLite has no
  * equivalent for. RPC on SQLite is deferred to the hook layer (design §8:

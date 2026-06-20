@@ -118,6 +118,14 @@ int cel_build_update(const cel_table_t *t, const cJSON *req, const cel_scope_t *
 int cel_build_delete(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
                      cel_query_t *out, char *errbuf, size_t errlen);
 
+/* Soft-delete for a syncable table (sync Slice 0): instead of removing the row,
+ *   { id, values: { rev: N } }  -> UPDATE ... SET deleted = 1, rev = N
+ *                                  WHERE pk = id AND deleted = 0 [AND scope]
+ * Sets only engine-owned columns (so no scoped-column guard) and never
+ * re-tombstones an already-deleted row. The caller allocates `rev`. */
+int cel_build_soft_delete(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
+                          cel_query_t *out, char *errbuf, size_t errlen);
+
 /* Build an RPC call: SELECT * FROM "fn"(name := ?1, ...). `fn` and each arg name
  * (the keys of the `args` object, may be NULL/empty for no args) must be safe
  * identifiers; arg VALUES are bound as parameters. `fn` is quoted; arg names are

@@ -295,12 +295,15 @@ static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *re
     }
 
     /* Sync substrate (design: cellar-sync-design.md): on a syncable table the engine
-     * OWNS `rev` (and `deleted` on create). Strip any client-supplied values and
-     * stamp the next monotonic rev — AFTER the hooks, so before() never sees engine
-     * fields and a client can't spoof a tombstone or a revision. The bump runs on
-     * the txn conn, so it rolls back with a failed/denied write (no rev gaps). */
-    if (t->syncable && (action == CEL_ACT_CREATE || action == CEL_ACT_UPDATE)) {
+     * OWNS `rev` (and `deleted`). A DELETE becomes a soft-delete (deleted=1) so the
+     * tombstone can propagate. Strip any client-supplied rev/deleted and stamp the
+     * next monotonic rev — AFTER the hooks, so before() never sees engine fields and
+     * a client can't spoof a tombstone or a revision. The bump runs on the txn conn,
+     * so it rolls back with a failed/denied write (no rev gaps). */
+    int soft_delete = t->syncable && action == CEL_ACT_DELETE;
+    if (t->syncable && (action == CEL_ACT_CREATE || action == CEL_ACT_UPDATE || soft_delete)) {
         cJSON *vals = cJSON_GetObjectItemCaseSensitive(req, "values");
+        if (!vals) vals = cJSON_AddObjectToObject((cJSON *)req, "values");  /* delete carries none */
         if (vals) {
             cJSON_DeleteItemFromObjectCaseSensitive(vals, "rev");
             cJSON_DeleteItemFromObjectCaseSensitive(vals, "deleted");
@@ -308,6 +311,7 @@ static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *re
             if (rev < 0) { snprintf(msg, msglen, "rev allocation failed"); return 500; }
             cJSON_AddNumberToObject(vals, "rev", (double)rev);
             if (action == CEL_ACT_CREATE) cJSON_AddNumberToObject(vals, "deleted", 0);
+            /* soft_delete: cel_build_soft_delete sets deleted=1 and binds this rev */
         }
     }
 
@@ -316,7 +320,8 @@ static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *re
 
     char err[256] = {0};
     cel_query_t q;
-    if (build(t, req, &scope, &q, err, sizeof err) != 0) {
+    build_fn do_build = soft_delete ? cel_build_soft_delete : build;
+    if (do_build(t, req, &scope, &q, err, sizeof err) != 0) {
         snprintf(msg, msglen, "%s", err[0] ? err : "bad request"); return 400;
     }
 
