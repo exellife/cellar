@@ -262,9 +262,14 @@ sequence/cursor/resolve protocol.
    caller may list, `make_scope(LIST)` with the tombstone rule stripped (tombstones returned) +
    `cel_build_pull` (`rev > since … ORDER BY rev LIMIT n`). Cursor is multi-table-page-safe (min
    returned-max among truncated tables). e2e `sync_pull`.
-3. **`sync_push`.** Batch apply with the rev compare + conflict path, through the existing
-   `authorize`/`before` hooks; optional `resolve(...)` hook. *Touches:* `api.c run_write`
-   (batch variant in one txn), `cel_hooks`.
+3. **`sync_push`.** ✅ DONE — built-in `POST /sync/push`: `{mutations:[{op:put|del, table, id,
+   base_rev?, values?}]}` → `{results:[{id, status, winner?, rev}], cursor}`, applied
+   ALL-OR-NOTHING in one txn (a hard error rolls back the batch). Each mutation reuses
+   `write_txn_body` (so `before`/`authorize` + rev stamp + soft-delete run per row). Conflict =
+   `base_rev != current rev`; resolved LWW by default, overridable by the `resolve(table,
+   incoming, current, who)` hook (`'incoming'`/`'current'`; absent → LWW; fault → keep current).
+   `put` on an absent row = create with the client id. e2e `sync_push`. _Follow-up: field-level
+   merged-row return from `resolve()`._
 4. **Per-device cursors + tombstone GC.** `_sync_devices` table, GC job. *Touches:* `app_db`,
    a maintenance CLI.
 5. **Client guidance.** Extend [`frontend-guide.md`](frontend-guide.md) with the

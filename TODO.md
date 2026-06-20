@@ -213,9 +213,11 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       **Slice 0 DONE (the rev + tombstone substrate; commits T1–T7):** detect-by-columns opt-in
       (`rev`+`deleted`), per-app `_sync_seq` + `next_rev()`, engine stamps rev / force-owns
       rev+deleted, DELETE→soft-delete, reads hide tombstones; e2e `sync_rev` + dogfooded on
-      `tasks_app`. **Slice 1 DONE:** built-in `POST /sync/pull` (delta read; tombstones included; safe multi-table
-      cursor; e2e `sync_pull`). **Next slices:** (2) `sync_push(mutations)` + conflict resolution;
-      (3) per-device cursors + tombstone GC; (4) client reference impl. **Known gap to close:**
+      `tasks_app`. **Slices 1 & 2 DONE:** `POST /sync/pull` (delta read; tombstones; safe multi-table cursor) and
+      `POST /sync/push` (batch all-or-nothing; client-id creates; LWW + `resolve()` hook override;
+      e2e `sync_pull`/`sync_push`). **Next slices:** (3) per-device cursors + tombstone GC;
+      (4) client reference impl (offline loop in `examples/`); (+) `resolve()` field-level merged-row
+      return. **Known gap to close:**
       hook-issued `cellar.exec` writes bypass the substrate (no rev stamp, no auto soft-delete /
       tombstone-filter) — expose a sync-aware hook helper (`cellar.delete`) or stamp inside
       `cellar.exec` for syncable tables (see design note §6, last bullet).

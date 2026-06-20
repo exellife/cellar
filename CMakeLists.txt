@@ -488,6 +488,11 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME sync_pull
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/sync_pull_test.py)
+        # Sync Slice 2: POST /sync/push batch apply — client-id creates, clean +
+        # conflicting writes (LWW + resolve() override), idempotent del, all-or-
+        # nothing rollback, round-trip. Boots with a resolve() bundle.
+        add_test(NAME sync_push
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/sync_push_test.sh $<TARGET_FILE:cellar>)
         # CRUD hooks (Phase 2 §8): before/authorize/after on the write path, via a
         # before/authorize/after bundle (CEL_HOOKS_FILE=tests/hooks_crud.lua).
         add_test(NAME hooks_crud
