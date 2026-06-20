@@ -79,7 +79,7 @@ Returns `{ rows: [...], count }`. Query params:
 | `order` | `?order=-price` | sort (`-` = desc) |
 | `limit` / `cursor` | `?order=sku&limit=20&cursor=<next_cursor>` | keyset pagination (response has `next_cursor`) |
 | `count` | `?count=exact` | adds `total` (unpaginated) |
-| `embed` | `?embed=categories` | inline a related row/array (follows foreign keys; `embed=products.categories` nests) |
+| `embed` | `?embed=categories` | inline a related row/array — follows FKs **both ways**: forward (a row's parent, e.g. `bookings?embed=halls`) and reverse/to-many (a row's children, e.g. `bookings?embed=payments`). Nests: `embed=products.categories`. **List-only** — for one row + its relations use `?id=eq.<id>&embed=…`, not `GET /api/<table>/<id>` (which ignores `embed`). |
 | `group` / `aggregate` | `?group=category_id&aggregate=count,sum:price,avg:price` | rollups |
 
 `GET /api/<table>/<id>` → `{ row }` (or `404`).
