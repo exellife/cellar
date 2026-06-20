@@ -15,6 +15,12 @@ rows, default 5000), boots single-app cellar with a `bench@cellar.dev` admin and
 the rate limiters **off** (so the benchmark isn't throttled), and tears it all down
 afterward. No Postgres, no external setup.
 
+**Write scaling across apps** — `bench/multiapp_write.sh <binary> [dur] [total-conns]
+["1 2 4 8"]` drives a fixed total write load split across N apps and reports
+aggregate writes/s. Because writes serialize *per app* (one writer per SQLite file)
+but apps never block each other, the aggregate climbs as the same load spreads over
+more files — horizontal write throughput by adding apps, not connections.
+
 `loadtest.py` is the generator and can be pointed at any endpoint:
 
 ```sh
