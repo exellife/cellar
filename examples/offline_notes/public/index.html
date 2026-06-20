@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Offline Notes — a cellar sync demo</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>Offline Notes</h1>
+    <p class="tag">An <b>offline-first</b> client on cellar's sync API. Each browser tab is a
+       separate <b>device</b>: edit while "offline", flip back online, watch it converge.</p>
+  </header>
+
+  <section id="auth" class="card">
+    <p class="hint">Sign in (or create an account) — open a <b>second tab</b> as the same user
+       to see two devices sync.</p>
+    <form id="auth-form">
+      <input id="email" type="email" placeholder="email" value="me@notes.local" autocomplete="username" required>
+      <input id="password" type="password" placeholder="password (8+ chars)" value="notes-secret" autocomplete="current-password" required>
+      <button id="signin" type="submit">Sign in</button>
+      <button id="register" type="button" class="ghost">Create account</button>
+    </form>
+    <p id="auth-msg" class="msg"></p>
+  </section>
+
+  <main id="app" hidden>
+    <div class="toolbar card">
+      <label class="switch"><input type="checkbox" id="online" checked><span>online</span></label>
+      <span class="badge" id="pending">0 pending</span>
+      <button id="sync-now" class="ghost">sync now</button>
+      <span class="device" id="device"></span>
+      <button id="new" class="primary">+ New note</button>
+    </div>
+
+    <section class="notes" id="notes"></section>
+
+    <section class="card log">
+      <h2>sync log</h2>
+      <div id="log"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Open devtools → Network: while <b>offline</b> nothing hits the server and edits queue
+       locally (sessionStorage); going <b>online</b> fires <code>/sync/push</code> then
+       <code>/sync/pull</code>. Conflicts resolve by the <code>resolve()</code> hook
+       (most-recent edit wins). See <code>examples/offline_notes/README.md</code>.</p>
+  </footer>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

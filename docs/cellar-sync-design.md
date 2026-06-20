@@ -300,9 +300,10 @@ sequence/cursor/resolve protocol.
      cursor (its `since`) in `_sync_devices`, monotonically.
    - **Tombstone GC**: `cellar sync-gc [host]` purges tombstones with `rev ≤ min(device cursor)`
      per syncable table + age-prunes `_sync_applied`; no devices → purge nothing. e2e `sync_gc`.
-5. **Client guidance.** Extend [`frontend-guide.md`](frontend-guide.md) with the
-   offline-first loop (local SQLite mirror, pull-on-reconnect, push queue, apply CHANGE live)
-   and ship a reference implementation in `examples/` (a Flutter or web offline client).
+5. **Client guidance.** ✅ DONE — `examples/offline_notes/` is a runnable web reference client:
+   a local mirror + pending-mutation queue (client ids + `mutation_id`s), per-tab `device_id`,
+   an online/offline toggle, `sync()` = push-then-pull, realtime CHANGE applied live, and a
+   `resolve()` (most-recent-edit-wins) rule. `public/sync.js` is the whole offline loop.
 6. *(later)* cr-sqlite opt-in mode for tables that need CRDT merge (§7).
 
 ---

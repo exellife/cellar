@@ -1,0 +1,19 @@
+{
+  "_comment": "Offline Notes authorization. Notes are owner-scoped (each member syncs only their own) and realtime-enabled. The before() hook forces owner_id on create, so create needs no owner_column here.",
+
+  "_default": "deny",
+
+  "_roles": {
+    "admin":  { "superuser": true },
+    "member": { "self_register": true, "allow": ["list", "get", "create", "update", "delete"] }
+  },
+
+  "notes": {
+    "realtime": true,
+    "list":   { "roles": ["member"], "owner_column": "owner_id" },
+    "get":    { "roles": ["member"], "owner_column": "owner_id" },
+    "create": { "roles": ["member"] },
+    "update": { "roles": ["member"], "owner_column": "owner_id" },
+    "delete": { "roles": ["member"], "owner_column": "owner_id" }
+  }
+}
