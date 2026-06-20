@@ -11,6 +11,10 @@ const SYNCABLE = [
   "menu_categories", "menu_items",
 ];
 
+// Bump when the schema / table names change so stale local state (rows + queued
+// mutations referencing renamed/removed tables) is cleared instead of poisoning sync.
+const DATA_VERSION = "2";   // 2: event_halls -> venues
+
 const LS = localStorage;
 const uuid = () => crypto.randomUUID();
 const nowIso = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
@@ -18,6 +22,12 @@ const j = (k, d) => { try { return JSON.parse(LS.getItem(k)) ?? d; } catch { ret
 
 class DB {
   constructor() {
+    // schema/data migration: on a model change, drop the local mirror + queue +
+    // cursor (a full re-pull rebuilds them) so stale-table mutations can't wedge sync.
+    if (LS.getItem("ch_ver") !== DATA_VERSION) {
+      for (const k of ["ch_rows", "ch_queue", "ch_cursor"]) LS.removeItem(k);
+      LS.setItem("ch_ver", DATA_VERSION);
+    }
     this.device = LS.getItem("ch_dev") || (LS.setItem("ch_dev", uuid()), LS.getItem("ch_dev"));
     this.token  = LS.getItem("ch_tok") || null;
     this.cursor = +(LS.getItem("ch_cursor") || 0);
