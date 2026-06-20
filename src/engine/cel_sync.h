@@ -22,4 +22,8 @@ int cel_sync_ensure_seq(struct sqlite3 *c);
  * denied write consumes no rev). Returns the new rev (>= 1), or -1 on error. */
 long long cel_sync_next_rev(struct sqlite3 *c);
 
+/* The app's current high-water rev (the last allocated value), or 0 if `_sync_seq`
+ * is absent/empty. Used as the cursor a client should advance to after a push. */
+long long cel_sync_current_seq(struct sqlite3 *c);
+
 #endif /* CEL_SYNC_H */

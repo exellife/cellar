@@ -34,6 +34,13 @@ cel_api_result_t cel_api_schema(const cel_identity_t *who);
  * limit? }. Engine built-in (not a hooks.lua rpc). */
 cel_api_result_t cel_api_sync_pull(const cel_identity_t *who, const cJSON *req);
 
+/* Offline-first sync — delta push (design: cellar-sync-design.md). Applies a batch
+ * of client mutations all-or-nothing: { mutations: [{ op:"put"|"del", table, id,
+ * base_rev?, values? }] } -> { results: [{ id, status:"applied"|"conflict",
+ * winner?, rev }], cursor }. Conflicts (base_rev != current rev) resolve LWW by
+ * default, overridable by a resolve() hook. Goes through authorize/before per row. */
+cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req);
+
 /* login is public (no identity required). With TOTP 2FA enabled, a user who has a
  * confirmed enrollment gets 200 + {status:"mfa_required", challenge} instead of a
  * token; the client completes login by POSTing the challenge + code to mfa_verify. */

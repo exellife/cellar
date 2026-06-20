@@ -431,6 +431,20 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         return st;
     }
 
+    /* POST /sync/push — offline-first delta push: a batch of client mutations,
+     * applied all-or-nothing with per-row results (LWW + optional resolve hook). */
+    if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/sync/push")) {
+        cel_identity_t who;
+        identity_from_request(req, &who);
+        if (!cel_ratelimit_allow(g_api_rl, who.user_id[0] ? who.user_id : portico_req_client_ip(req)))
+            return send_error(res, 429, "too many requests");
+        cJSON *body = req->body_len > 0 ? cJSON_ParseWithLength(req->body, req->body_len) : NULL;
+        if (!cJSON_IsObject(body)) { cJSON_Delete(body); return send_error(res, 400, "invalid JSON"); }
+        int st = send_api(res, cel_api_sync_push(&who, body));
+        cJSON_Delete(body);
+        return st;
+    }
+
     /* /api/<table>[/<id>] */
     if (req->path_len > 5 && memcmp(req->path, "/api/", 5) == 0) {
         cel_identity_t who;

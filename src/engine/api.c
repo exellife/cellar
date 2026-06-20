@@ -895,6 +895,163 @@ cel_api_result_t cel_api_sync_pull(const cel_identity_t *who, const cJSON *req) 
     return r;
 }
 
+/* ---- offline-first sync: delta push (Slice 2) ----------------------------- */
+
+static long long sync_row_rev(const cJSON *row) {
+    const cJSON *r = cJSON_GetObjectItemCaseSensitive(row, "rev");
+    return cJSON_IsNumber(r) ? (long long)r->valuedouble : 0;
+}
+
+/* Read a row's current rev+deleted by id, owner-scoped but INCLUDING tombstones
+ * (a deleted row still exists for conflict purposes). Runs on the batch conn `c`.
+ * Returns true if the row exists (and is visible to `who`). */
+static bool sync_current(sqlite3 *c, const cel_table_t *t, const cel_identity_t *who,
+                         const cJSON *id, long long *rev, int *deleted) {
+    cel_scope_t scope;
+    if (make_scope(t, CEL_ACT_GET, who, &scope) != 0) return false;
+    sync_scope_keep_owner(&scope);                 /* drop deleted=0 → see tombstones */
+    cJSON *gr = cJSON_CreateObject();
+    cJSON_AddItemReferenceToObject(gr, "id", (cJSON *)id);
+    cel_query_t q; char e[128] = {0};
+    int brc = cel_build_get(t, gr, &scope, &q, e, sizeof e);
+    cJSON_Delete(gr);
+    if (brc != 0) return false;
+    int http = 200; char em[128] = {0};
+    cJSON *rows = run_rows_on(c, &q, t, &http, em, sizeof em);
+    cel_query_free(&q);
+    if (!rows) return false;
+    bool found = cJSON_GetArraySize(rows) > 0;
+    if (found) {
+        cJSON *row = cJSON_GetArrayItem(rows, 0);
+        *rev = sync_row_rev(row);
+        const cJSON *d = cJSON_GetObjectItemCaseSensitive(row, "deleted");
+        *deleted = cJSON_IsNumber(d) ? (int)d->valuedouble : 0;
+    }
+    cJSON_Delete(rows);
+    return found;
+}
+
+cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) {
+    if (!who->authenticated) return result_error(401, "authentication required");
+    const cJSON *muts = cJSON_GetObjectItemCaseSensitive(req, "mutations");
+    if (!cJSON_IsArray(muts)) return result_error(400, "mutations array required");
+
+    app_db_t *adb = app_db_current();
+    if (!adb) return result_error(500, "database unavailable");
+    cel_lua_t *hooks = cel_hook_app_state(cel_apps_current_hooks());
+    cJSON *who_v = hooks ? identity_to_json(who) : NULL;
+
+    app_db_write_lock(adb);
+    sqlite3 *c = app_db_conn_acquire(adb);
+    if (!c) { app_db_write_unlock(adb); cJSON_Delete(who_v); return result_error(500, "database unavailable"); }
+    if (sqlite3_exec(c, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+        app_db_conn_release(adb, c); app_db_write_unlock(adb); cJSON_Delete(who_v);
+        return result_error(500, "could not begin transaction");
+    }
+
+    cJSON *results = cJSON_CreateArray();
+    int err_code = 0; char err[256] = {0};
+
+    const cJSON *m;
+    cJSON_ArrayForEach(m, muts) {
+        const cJSON *jop  = cJSON_GetObjectItemCaseSensitive(m, "op");
+        const cJSON *jtab = cJSON_GetObjectItemCaseSensitive(m, "table");
+        const cJSON *jid  = cJSON_GetObjectItemCaseSensitive(m, "id");
+        const cJSON *jbr  = cJSON_GetObjectItemCaseSensitive(m, "base_rev");
+        const cJSON *jval = cJSON_GetObjectItemCaseSensitive(m, "values");
+        const char *op = cJSON_IsString(jop) ? jop->valuestring : "";
+        bool is_del = strcmp(op, "del") == 0, is_put = strcmp(op, "put") == 0;
+        if ((!is_put && !is_del) || !cJSON_IsString(jtab) || !cJSON_IsString(jid)) {
+            err_code = 400; snprintf(err, sizeof err, "each mutation needs op(put|del), table, id"); break;
+        }
+        const cel_table_t *t = cel_catalog_find(cel_catalog_active(), jtab->valuestring);
+        if (!t || !t->syncable) { err_code = 400; snprintf(err, sizeof err, "unknown or non-syncable table '%s'", jtab->valuestring); break; }
+
+        long long base_rev = cJSON_IsNumber(jbr) ? (long long)jbr->valuedouble : -1;
+        long long cur_rev = 0; int cur_del = 0;
+        bool exists = sync_current(c, t, who, jid, &cur_rev, &cur_del);
+
+        /* classify: clean apply, conflict (resolve → LWW default), or no-op */
+        bool conflict = exists && (base_rev < 0 || base_rev != cur_rev);
+        bool incoming_wins = true;   /* LWW default; resolve() hook overrides in S2-T4 */
+
+        cJSON *outrow = NULL; int rc = 0; const char *status = "applied"; long long out_rev = cur_rev;
+
+        if (is_del) {
+            cel_action_t act = CEL_ACT_DELETE;
+            if (!cel_policy_allows(t->name, act, who->role)) { err_code = 403; snprintf(err, sizeof err, "forbidden"); break; }
+            if (!exists) { status = "applied"; out_rev = base_rev < 0 ? 0 : base_rev; }   /* idempotent */
+            else if (!incoming_wins) { status = "conflict"; }   /* server wins → keep */
+            else {
+                cJSON *mreq = cJSON_CreateObject();
+                cJSON_AddItemReferenceToObject(mreq, "id", (cJSON *)jid);
+                rc = write_txn_body(c, who, mreq, t, cel_build_delete, act, 1, hooks, who_v, "delete", &outrow, err, sizeof err);
+                cJSON_Delete(mreq);
+                if (rc == 0 && outrow) out_rev = sync_row_rev(outrow);
+                status = conflict ? "conflict" : "applied";
+            }
+        } else { /* put */
+            if (!exists) {                                       /* create with the client id */
+                if (!cel_policy_allows(t->name, CEL_ACT_CREATE, who->role)) { err_code = 403; snprintf(err, sizeof err, "forbidden"); break; }
+                cJSON *vals = cJSON_IsObject(jval) ? cJSON_Duplicate(jval, 1) : cJSON_CreateObject();
+                cJSON_DeleteItemFromObjectCaseSensitive(vals, "id");
+                cJSON_AddItemToObject(vals, "id", cJSON_Duplicate((cJSON *)jid, 1));
+                cJSON *mreq = cJSON_CreateObject();
+                cJSON_AddItemToObject(mreq, "values", vals);
+                rc = write_txn_body(c, who, mreq, t, cel_build_create, CEL_ACT_CREATE, 0, hooks, who_v, "create", &outrow, err, sizeof err);
+                cJSON_Delete(mreq);
+                if (rc == 0 && outrow) out_rev = sync_row_rev(outrow);
+                status = "applied";
+            } else if (!incoming_wins) {
+                status = "conflict";                             /* server wins → keep current */
+            } else {
+                if (!cel_policy_allows(t->name, CEL_ACT_UPDATE, who->role)) { err_code = 403; snprintf(err, sizeof err, "forbidden"); break; }
+                cJSON *vals = cJSON_IsObject(jval) ? cJSON_Duplicate(jval, 1) : cJSON_CreateObject();
+                cJSON *mreq = cJSON_CreateObject();
+                cJSON_AddItemReferenceToObject(mreq, "id", (cJSON *)jid);
+                cJSON_AddItemToObject(mreq, "values", vals);
+                rc = write_txn_body(c, who, mreq, t, cel_build_update, CEL_ACT_UPDATE, 1, hooks, who_v, "update", &outrow, err, sizeof err);
+                cJSON_Delete(mreq);
+                if (rc == 0 && outrow) out_rev = sync_row_rev(outrow);
+                status = conflict ? "conflict" : "applied";
+            }
+        }
+        cJSON_Delete(outrow);
+        if (rc != 0) { err_code = rc; break; }                  /* hard error → roll back batch */
+
+        cJSON *r = cJSON_CreateObject();
+        cJSON_AddItemReferenceToObject(r, "id", (cJSON *)jid);
+        cJSON_AddStringToObject(r, "status", status);
+        if (conflict) cJSON_AddStringToObject(r, "winner", incoming_wins ? "incoming" : "server");
+        cJSON_AddNumberToObject(r, "rev", (double)out_rev);
+        cJSON_AddItemToArray(results, r);
+    }
+
+    if (err_code) {
+        sqlite3_exec(c, "ROLLBACK", NULL, NULL, NULL);
+        cel_hooks_set_db(NULL);
+        app_db_conn_release(adb, c); app_db_write_unlock(adb);
+        cJSON_Delete(results); cJSON_Delete(who_v);
+        return result_error(err_code, err[0] ? err : "push failed");
+    }
+    if (sqlite3_exec(c, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+        sqlite3_exec(c, "ROLLBACK", NULL, NULL, NULL);
+        app_db_conn_release(adb, c); app_db_write_unlock(adb);
+        cJSON_Delete(results); cJSON_Delete(who_v);
+        return result_error(500, "commit failed");
+    }
+    long long cursor = cel_sync_current_seq(c);
+    app_db_conn_release(adb, c); app_db_write_unlock(adb);
+    cJSON_Delete(who_v);
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "status", "ok");
+    cJSON_AddItemToObject(o, "results", results);
+    cJSON_AddNumberToObject(o, "cursor", (double)cursor);
+    cel_api_result_t r = { o, 200 };
+    return r;
+}
+
 cel_api_result_t cel_api_create(const cel_identity_t *who, const cJSON *req) {
     return run_write(who, req, cel_build_create, CEL_ACT_CREATE, 201, 0);
 }

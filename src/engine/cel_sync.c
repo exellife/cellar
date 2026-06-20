@@ -35,3 +35,13 @@ long long cel_sync_next_rev(sqlite3 *c) {
     if (rev < 0) LOG_ERROR("sync: next_rev produced no row (is _sync_seq seeded?)");
     return rev;
 }
+
+long long cel_sync_current_seq(sqlite3 *c) {
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(c, "SELECT seq FROM _sync_seq WHERE id = 1", -1, &st, NULL) != SQLITE_OK)
+        return 0;
+    long long seq = 0;
+    if (sqlite3_step(st) == SQLITE_ROW) seq = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return seq;
+}
