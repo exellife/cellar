@@ -219,6 +219,18 @@ if(CELLAR_BUILD_TESTS)
     target_link_libraries(cel_val_test cjson)
     add_test(NAME cel_val COMMAND cel_val_test)
 
+    # Phase-2 hook dispatcher (design §8): the `cellar` prelude boxes opaque
+    # cel_val_t* payloads into Lua proxies, authorize/before run with table-like
+    # sugar, before() mutates input in place, absent hooks no-op, faults fail
+    # closed. Linked -rdynamic so the prelude's ffi.C resolves cellar's symbols.
+    add_executable(cel_hooks_test tests/cel_hooks_test.c
+        src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c)
+    target_include_directories(cel_hooks_test PRIVATE src/engine lib/logger/include)
+    target_link_libraries(cel_hooks_test luajit cjson logger Threads::Threads)
+    target_link_options(cel_hooks_test PRIVATE -rdynamic)
+    add_dependencies(cel_hooks_test luajit_build)
+    add_test(NAME cel_hooks COMMAND cel_hooks_test)
+
     # DB-free unit test for the per-app SQLite handle layer (Phase 1 foundation):
     # open-by-file, the connection pool, per-app write serialization, concurrent
     # readers, the get-by-path cache, and isolation between app files. Creates

@@ -28,4 +28,9 @@ void cel_lua_close(cel_lua_t *L);
  * message into errbuf (when given) — the error is contained, not propagated. */
 int cel_lua_dostring(cel_lua_t *L, const char *src, char *errbuf, size_t errlen);
 
+/* The underlying LuaJIT state, as an opaque pointer (really lua_State *). For the
+ * hook dispatcher (cel_hooks) which needs the raw stack API; kept void* so this
+ * header doesn't drag in lua.h. NULL if the state is gone. */
+void *cel_lua_state(cel_lua_t *L);
+
 #endif /* CEL_LUA_H */

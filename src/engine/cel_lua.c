@@ -27,6 +27,8 @@ void cel_lua_close(cel_lua_t *h) {
     free(h);
 }
 
+void *cel_lua_state(cel_lua_t *h) { return h ? h->L : NULL; }
+
 int cel_lua_dostring(cel_lua_t *h, const char *src, char *errbuf, size_t errlen) {
     if (errbuf && errlen) errbuf[0] = '\0';
     if (!h || !h->L) {
