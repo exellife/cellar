@@ -89,7 +89,11 @@ static cel_app_t *open_into_cache(const char *host, const char *db_path) {
      * monotonic rev source exists. _sync_seq is _%-prefixed → not in the catalog. */
     if (cat) {
         for (int i = 0; i < cat->ntables; i++)
-            if (cat->tables[i].syncable) { cel_sync_ensure_seq(c); break; }
+            if (cat->tables[i].syncable) {
+                if (cel_sync_ensure_seq(c) != 0)   /* late failure → first write 500s; log early */
+                    LOG_WARN("apps: could not ensure _sync_seq for %s", host);
+                break;
+            }
     }
     app_db_conn_release(db, c);
 
