@@ -9,6 +9,10 @@
     "viewer": { "allow": ["list", "get"] }
   },
 
+  "items": {
+    "realtime": true
+  },
+
   "notes": {
     "realtime": true,
     "list":   { "roles": ["admin", "editor", "viewer"], "owner_column": "owner_id" },

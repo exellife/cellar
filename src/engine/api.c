@@ -1283,6 +1283,13 @@ int cel_api_authorize_subscription(const cel_identity_t *who, const cJSON *req,
 
     for (int i = 0; i < scope.count && sub->npreds < CEL_RT_MAX_PREDS; i++) {
         const cel_scope_rule_t *r = &scope.rule[i];
+        /* Skip the syncable tombstone filter (deleted=0): it's a read-visibility
+         * rule, not ownership. A soft-delete emits a DELETE event whose row carries
+         * deleted=1, and the owner must still receive it to drop the row live — the
+         * owner predicate(s) still restrict delivery to the subscriber's own rows. */
+        if (t->syncable && r->kind == CEL_SCOPE_EQ &&
+            strcmp(r->column, "deleted") == 0 && strcmp(r->value, "0") == 0)
+            continue;
         cel_rt_pred_t *p = &sub->preds[sub->npreds];
         if (r->kind == CEL_SCOPE_EQ) {
             p->is_or = false;

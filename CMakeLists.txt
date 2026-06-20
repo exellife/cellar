@@ -478,6 +478,11 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME sync_rev
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/sync_rev_test.py)
+        # Regression: a soft-delete on a syncable+realtime table still pushes a
+        # DELETE event (the deleted=0 read-filter must not gate realtime delivery).
+        add_test(NAME sync_realtime
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
+                    $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/sync_realtime_test.py)
         # CRUD hooks (Phase 2 §8): before/authorize/after on the write path, via a
         # before/authorize/after bundle (CEL_HOOKS_FILE=tests/hooks_crud.lua).
         add_test(NAME hooks_crud
