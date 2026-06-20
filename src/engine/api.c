@@ -2,6 +2,10 @@
 #include "schema_catalog.h"
 #include "query_builder.h"
 #include "result_json.h"
+#include "cel_apps.h"
+#include "cel_hooks.h"
+#include "cel_hook_state.h"
+#include "cel_val.h"
 #include "core/app_db.h"
 #include "core/auth.h"
 #include "core/mfa.h"
@@ -619,17 +623,49 @@ cel_api_result_t cel_api_delete(const cel_identity_t *who, const cJSON *req) {
     return run_write(who, req, cel_build_delete, CEL_ACT_DELETE, 200, 1);
 }
 
+/* Build the `who` object a hook sees from the resolved identity. */
+static cJSON *identity_to_json(const cel_identity_t *who) {
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddBoolToObject(o, "authenticated", who->authenticated);
+    cJSON_AddStringToObject(o, "user_id", who->user_id);
+    cJSON_AddStringToObject(o, "role", who->role);
+    return o;
+}
+
+/* RPC is a Lua hook (design §8): rpc(name, args, who) -> result. The app's
+ * hooks.lua is the authority — it inspects `who` and decides what to run. */
 cel_api_result_t cel_api_rpc(const cel_identity_t *who, const cJSON *req) {
     const cJSON *fn = cJSON_GetObjectItemCaseSensitive(req, "fn");
     if (!cJSON_IsString(fn) || !fn->valuestring[0]) return result_error(400, "fn required");
-    /* Deny-by-default whitelist (a non-whitelisted fn is unreachable by anyone). */
-    if (!cel_policy_rpc_allows(fn->valuestring, who->role)) return result_error(403, "forbidden");
 
-    /* RPC is deferred on the SQLite backend: there is no Postgres-style SQL-function
-     * RPC (SELECT * FROM fn(name := ?)). It returns in the hook layer (design §8:
-     * rpc(name, args, who)) / Layer-1 SQL functions in Phase 2. Until then a
-     * whitelisted call resolves but isn't executable. */
-    return result_error(501, "rpc is not available on this backend yet");
+    cel_lua_t *L = cel_hook_app_state(cel_apps_current_hooks());
+    if (!L) return result_error(501, "rpc is not available (no hooks.lua for this app)");
+
+    const cJSON *args = cJSON_GetObjectItemCaseSensitive(req, "args");   /* may be NULL */
+    cJSON *who_v = identity_to_json(who);
+
+    /* Bind a connection for the hook's cellar.query/exec. No request transaction
+     * yet — writes autocommit per statement (atomic before/after lands in Step 3). */
+    app_db_t *app = app_db_current();
+    sqlite3 *conn = app ? app_db_conn_acquire(app) : NULL;
+    cel_hooks_set_db(conn);
+
+    char err[256];
+    cel_val_t *res = cel_hooks_rpc(L, fn->valuestring,
+                                   (const cel_val_t *)args, (const cel_val_t *)who_v,
+                                   err, sizeof err);
+
+    cel_hooks_set_db(NULL);
+    if (conn) app_db_conn_release(app, conn);
+    cJSON_Delete(who_v);
+
+    if (!res) return result_error(400, err[0] ? err : "rpc failed");
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "status", "ok");
+    cJSON_AddItemToObject(o, "result", (cJSON *)res);   /* transfers ownership */
+    cel_api_result_t r = { o, 200 };
+    return r;
 }
 
 void cel_rpc_audit_security_definer(void) {

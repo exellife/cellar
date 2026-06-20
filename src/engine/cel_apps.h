@@ -16,12 +16,15 @@
 
 #include "schema_catalog.h"
 #include "core/app_db.h"
+#include "cel_hook_state.h"
 
-/* A resolved app: its SQLite handle and its (cached) introspected catalog. */
+/* A resolved app: its SQLite handle, its (cached) introspected catalog, and its
+ * hook metadata (the bundle's hooks.lua, compiled lazily per worker thread). */
 typedef struct {
-    char           host[256];
-    app_db_t      *db;
-    cel_catalog_t *catalog;
+    char            host[256];
+    app_db_t       *db;
+    cel_catalog_t  *catalog;
+    cel_hook_app_t *hooks;
 } cel_app_t;
 
 /* Configure routing. If `apps_dir` is non-empty → multi-app (<apps_dir>/<host>/
@@ -43,6 +46,10 @@ cel_app_t *cel_apps_default(void);
  * the process default). */
 void cel_apps_enter(const cel_app_t *app);
 void cel_apps_leave(void);
+
+/* The hook metadata of this thread's current app (set by cel_apps_enter), or NULL
+ * outside a bound request / when the app has none. */
+cel_hook_app_t *cel_apps_current_hooks(void);
 
 /* Free the cached catalogs (handles are freed by app_db_global_shutdown). */
 void cel_apps_shutdown(void);

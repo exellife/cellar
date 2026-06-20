@@ -59,6 +59,26 @@ def make_app_db():
     """)
     con.commit()
     con.close()
+    # A bundle hooks.lua so the rpc endpoint (a Lua hook) has a handler. Inert for
+    # every other test — the hook VM is only built when an rpc is dispatched.
+    with open(os.path.join(d, "hooks.lua"), "w") as h:
+        h.write(
+            "function rpc(name, args, who)\n"
+            "  if name == 'ping' then return { pong = true } end\n"
+            "  if name == 'whoami' then return { role = who.role, auth = who.authenticated } end\n"
+            "  if name == 'echo' then return { got = args.msg } end\n"
+            "  if name == 'count_products' then\n"
+            "    local rows = cellar.query('SELECT count(*) AS n FROM products')\n"
+            "    return { n = rows[1].n }\n"
+            "  end\n"
+            "  if name == 'add_product' then\n"
+            "    cellar.exec('INSERT INTO products(name, sku, price) VALUES (?, ?, ?)',\n"
+            "                { args.name, args.sku, args.price })\n"
+            "    return { ok = true }\n"
+            "  end\n"
+            "  if name == 'boom' then error('intentional hook fault') end\n"
+            "  return nil, 'unknown rpc: ' .. name\n"
+            "end\n")
     return d, os.path.join(d, "data.db")
 
 def free_port():

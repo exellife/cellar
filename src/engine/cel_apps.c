@@ -80,6 +80,14 @@ static cel_app_t *open_into_cache(const char *host, const char *db_path) {
     snprintf(slot->host, sizeof slot->host, "%s", host);
     slot->db = db;
     slot->catalog = cat;
+
+    /* the bundle dir is data.db's directory; hooks live in <dir>/hooks.lua */
+    char dir[1024];
+    snprintf(dir, sizeof dir, "%s", db_path);
+    char *slash = strrchr(dir, '/');
+    if (slash) *slash = '\0'; else snprintf(dir, sizeof dir, ".");
+    slot->hooks = cel_hook_app_create(dir);
+
     return slot;
 }
 
@@ -116,19 +124,30 @@ cel_app_t *cel_apps_default(void) {
     return g.multi ? NULL : cel_apps_resolve(NULL);
 }
 
+/* This thread's current app's hook metadata (mirrors the app_db / catalog
+ * thread-local bindings cel_apps_enter installs). */
+static __thread cel_hook_app_t *t_cur_hooks = NULL;
+
 void cel_apps_enter(const cel_app_t *app) {
     app_db_set_current(app ? app->db : NULL);
     cel_catalog_set_active(app ? app->catalog : NULL);
+    t_cur_hooks = app ? app->hooks : NULL;
 }
 
 void cel_apps_leave(void) {
     app_db_set_current(NULL);
     cel_catalog_set_active(NULL);
+    t_cur_hooks = NULL;
 }
+
+cel_hook_app_t *cel_apps_current_hooks(void) { return t_cur_hooks; }
 
 void cel_apps_shutdown(void) {
     pthread_mutex_lock(&g.mtx);
-    for (int i = 0; i < g.count; i++) cel_catalog_free(g.apps[i].catalog);
+    for (int i = 0; i < g.count; i++) {
+        cel_catalog_free(g.apps[i].catalog);
+        cel_hook_app_destroy(g.apps[i].hooks);
+    }
     g.count = 0;
     pthread_mutex_unlock(&g.mtx);
 }

@@ -305,9 +305,12 @@ if(CELLAR_BUILD_TESTS)
     # thread-local binding. Builds throwaway bundle dirs under /tmp; no Postgres.
     add_executable(cel_apps_test tests/cel_apps_test.c
         src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c
-        src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c)
-    target_include_directories(cel_apps_test PRIVATE src src/engine src/core)
-    target_link_libraries(cel_apps_test SQLite::SQLite3 cjson logger Threads::Threads)
+        src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c
+        src/engine/cel_hook_state.c src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c)
+    target_include_directories(cel_apps_test PRIVATE src src/engine src/core lib/logger/include)
+    target_link_libraries(cel_apps_test SQLite::SQLite3 cjson logger luajit Threads::Threads)
+    target_link_options(cel_apps_test PRIVATE -rdynamic)
+    add_dependencies(cel_apps_test luajit_build)
     add_test(NAME cel_apps COMMAND cel_apps_test)
 
     # MFA (TOTP) on per-app SQLite (Phase 1 step 5b): enroll -> confirm (real TOTP
@@ -432,6 +435,11 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME openapi
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/openapi_test.py)
+        # RPC as a Lua hook (Phase 2 §8): POST /rpc/<fn> dispatches to the bundle's
+        # hooks.lua rpc(name,args,who) — scalar/db results, who, args, faults.
+        add_test(NAME rpc_hook
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
+                    $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/rpc_test.py)
         # Self-service registration (#51): boots with the taxi example policy
         # (rider/driver self-registerable, admin not) and exercises /auth/register.
         add_test(NAME register
