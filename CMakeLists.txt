@@ -231,6 +231,17 @@ if(CELLAR_BUILD_TESTS)
     add_dependencies(cel_hooks_test luajit_build)
     add_test(NAME cel_hooks COMMAND cel_hooks_test)
 
+    # Phase-2 per-app hook VM cache (design §9): lazy per-(thread×app) state, load
+    # from <bundle>/hooks.lua, mtime hot-reload, compile-error recovery, per-thread
+    # independence. No server needed (drives a temp bundle dir).
+    add_executable(cel_hook_state_test tests/cel_hook_state_test.c
+        src/engine/cel_hook_state.c src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c)
+    target_include_directories(cel_hook_state_test PRIVATE src/engine lib/logger/include)
+    target_link_libraries(cel_hook_state_test luajit cjson logger SQLite::SQLite3 Threads::Threads)
+    target_link_options(cel_hook_state_test PRIVATE -rdynamic)
+    add_dependencies(cel_hook_state_test luajit_build)
+    add_test(NAME cel_hook_state COMMAND cel_hook_state_test)
+
     # DB-free unit test for the per-app SQLite handle layer (Phase 1 foundation):
     # open-by-file, the connection pool, per-app write serialization, concurrent
     # readers, the get-by-path cache, and isolation between app files. Creates
