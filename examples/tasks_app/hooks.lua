@@ -74,9 +74,11 @@ end
 -- ---------------------------------------------------------------------------
 function rpc(name, args, who)
   if name == 'board_stats' then
-    -- Counts per column, for the signed-in user — one query, grouped.
+    -- Counts per column, for the signed-in user — one query, grouped. NOTE: this
+    -- table is syncable, so it must filter `deleted = 0` itself — the engine only
+    -- auto-hides tombstones on its OWN read path, not inside a hook's cellar.query.
     local rows = cellar.query(
-      'SELECT status, count(*) AS n FROM tasks WHERE owner_id = ? GROUP BY status',
+      'SELECT status, count(*) AS n FROM tasks WHERE owner_id = ? AND deleted = 0 GROUP BY status',
       { who.user_id })
     local out = { todo = 0, doing = 0, done = 0 }
     for _, r in ipairs(rows) do out[r.status] = r.n end
@@ -88,9 +90,14 @@ function rpc(name, args, who)
       { who.user_id })
 
   elseif name == 'clear_done' then
-    -- A custom bulk mutation: archive (delete) all of my completed tasks.
-    local n = cellar.exec('DELETE FROM tasks WHERE owner_id = ? AND status = ?',
-                          { who.user_id, 'done' })
+    -- A custom bulk mutation: archive all of my completed tasks. Because the table
+    -- is syncable we SOFT-delete (set deleted=1) rather than DELETE, so the removals
+    -- propagate as tombstones — a raw DELETE here would hard-remove the rows and a
+    -- synced device would never learn they're gone. (Slice 0 caveat: a hook's own
+    -- writes aren't engine-rev-stamped; the deletions still sync via `deleted`.)
+    local n = cellar.exec(
+      'UPDATE tasks SET deleted = 1 WHERE owner_id = ? AND status = ? AND deleted = 0',
+      { who.user_id, 'done' })
     return { cleared = n }
   end
 

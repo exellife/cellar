@@ -23,7 +23,14 @@ CREATE TABLE tasks (
   owner_id    TEXT    NOT NULL,        -- server-owned; the before() hook forces this
   assignee    TEXT,                    -- a free-text label (who it's for)
   created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
-  done_at     INTEGER                  -- set by the before() hook when status -> done
+  done_at     INTEGER,                 -- set by the before() hook when status -> done
+  -- Opt this table into offline-first sync (cellar-sync-design.md): declaring both
+  -- `rev` and `deleted` makes it "syncable". The engine then stamps a monotonic
+  -- `rev` on every write and turns DELETE into a soft-delete (deleted=1) so a
+  -- device that was offline can learn the row went away. Both are engine-owned;
+  -- clients never set them, and tombstones are invisible to normal reads.
+  rev         INTEGER NOT NULL DEFAULT 0,
+  deleted     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX tasks_owner_idx ON tasks(owner_id);
 

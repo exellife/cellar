@@ -37,6 +37,14 @@ so there's no ORM and no migration step. Notice the schema does real work on its
 `CHECK (priority BETWEEN 1 AND 5)` are enforced by SQLite — a bad value comes back as
 a `400` with **no hook code**. The `id` has a UUID `DEFAULT`, so clients never send one.
 
+`tasks` also opts into **offline-first sync**: it declares `rev` + `deleted` columns,
+which makes it *syncable* (see [`docs/cellar-sync-design.md`](../../docs/cellar-sync-design.md)).
+The engine then stamps a monotonic `rev` on every write and turns `DELETE` into a
+soft-delete (tombstone), so a device that was offline can later learn the row went
+away — all transparent to the UI. (Note in `hooks.lua`: a hook's own `cellar.exec`/
+`cellar.query` must respect `deleted` itself — `clear_done` soft-deletes and
+`board_stats` filters `deleted = 0`.)
+
 ### 2. `policies.json` — who can do what
 `_default: "deny"` makes the app fail-closed; only what's listed is allowed. Two
 roles: `admin` (a `superuser`) and `member` (`self_register` — the UI's "Create

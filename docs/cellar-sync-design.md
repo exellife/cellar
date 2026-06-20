@@ -208,6 +208,14 @@ tombstone GC and for a device to ignore the echo of its own pushes (§6).
   key mutations by `(id, base_rev)` (or a client mutation id) so a re-apply is a no-op.
 - **Schema migration across versions.** A device on an older schema syncing to a migrated app
   — out of scope for v1; note it as a constraint (clients pin a schema version).
+- **Hook-path writes bypass the substrate (Slice 0).** The `rev` stamp, the soft-delete, and the
+  tombstone read-filter live on the *engine* write/read path (`api.c`). A hook's own
+  `cellar.exec('INSERT/UPDATE/DELETE …')` does **not** get them: a raw `DELETE` hard-removes a
+  syncable row (no tombstone → the deletion never propagates), and a hook's `cellar.query` sees
+  tombstones unless it adds `deleted = 0` itself. Today the app author must be aware (the
+  `tasks_app` example soft-deletes in `clear_done` and filters `deleted=0` in `board_stats`).
+  Fix later: expose a sync-aware helper to hooks (e.g. `cellar.delete(table, id)` that soft-deletes
+  + allocates a rev), or stamp/rewrite inside `cellar.exec` when it targets a syncable table.
 
 ---
 

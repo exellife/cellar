@@ -203,17 +203,21 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       `export`/`import` reduce to copying the `.db`. _Touches:_ `cel_hook_state.{c,h}`,
       provision, export/import.
 
-- [ ] **Offline-first device sync.** Let clients (esp. Flutter) hold a local SQLite mirror
+- [~] **Offline-first device sync.** Let clients (esp. Flutter) hold a local SQLite mirror
       and sync across devices through cellar. Designed in
       [`docs/cellar-sync-design.md`](docs/cellar-sync-design.md): v1 is server-authoritative
       **delta sync** — per-app monotonic `rev` cursor + `deleted` tombstones on syncable
       tables, `sync_pull(since)` / `sync_push(mutations)` RPCs through the existing
       `authorize`/`before` hooks, last-write-wins with a `resolve(...)` hook override, and the
-      realtime feed as the online fast-path. Hard parts: tombstone GC (needs per-device
-      cursors), bootstrap/full re-sync, idempotent retries. CRDT (cr-sqlite) is the later
-      opt-in upgrade for tables LWW can't serve. _Build order in the note §10._ _Touches:_
-      `schema_catalog`, `api.c`, query builder, `cel_hooks`, `app_db`, `frontend-guide.md`,
-      + a reference offline client in `examples/`.
+      realtime feed as the online fast-path. CRDT (cr-sqlite) is the later opt-in upgrade.
+      **Slice 0 DONE (the rev + tombstone substrate; commits T1–T7):** detect-by-columns opt-in
+      (`rev`+`deleted`), per-app `_sync_seq` + `next_rev()`, engine stamps rev / force-owns
+      rev+deleted, DELETE→soft-delete, reads hide tombstones; e2e `sync_rev` + dogfooded on
+      `tasks_app`. **Next slices:** (1) `sync_pull(since)`; (2) `sync_push(mutations)` + conflict;
+      (3) per-device cursors + tombstone GC; (4) client reference impl. **Known gap to close:**
+      hook-issued `cellar.exec` writes bypass the substrate (no rev stamp, no auto soft-delete /
+      tombstone-filter) — expose a sync-aware hook helper (`cellar.delete`) or stamp inside
+      `cellar.exec` for syncable tables (see design note §6, last bullet).
 
 - [ ] **MFA: per-app mode + expose `required`.** TOTP 2FA is fully live (enroll/confirm/
       disable/recovery-codes/verify routes, per-user lockout, `mfa-reset` CLI, `mfa_sqlite`
