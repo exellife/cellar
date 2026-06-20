@@ -22,6 +22,7 @@
  * hook metadata (the bundle's hooks.lua, compiled lazily per worker thread). */
 typedef struct {
     char            host[256];
+    char            bundle_dir[1024];   /* the bundle directory (data.db's dir); <dir>/public is the front-end */
     app_db_t       *db;
     cel_catalog_t  *catalog;
     cel_hook_app_t *hooks;
@@ -56,6 +57,10 @@ void cel_apps_leave(void);
 /* The hook metadata of this thread's current app (set by cel_apps_enter), or NULL
  * outside a bound request / when the app has none. */
 cel_hook_app_t *cel_apps_current_hooks(void);
+
+/* This thread's current app (set by cel_apps_enter), or NULL outside a bound
+ * request. Used by the router to find the app's public/ front-end directory. */
+const cel_app_t *cel_apps_current(void);
 
 /* Free the cached catalogs (handles are freed by app_db_global_shutdown). */
 void cel_apps_shutdown(void);

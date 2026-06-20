@@ -391,6 +391,10 @@ if(CELLAR_BUILD_TESTS)
         # working app bundle (data.db + hooks.lua + seeded admin) that then serves.
         add_test(NAME provision
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/provision_test.sh $<TARGET_FILE:cellar>)
+        # Per-bundle static serving (Phase 2 §4): an app's public/ front-end is
+        # served (index, assets, SPA fallback) without shadowing the API routes.
+        add_test(NAME static_serve
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/static_serve_test.sh $<TARGET_FILE:cellar>)
         # --- Auth/transport e2e (Postgres-era; being ported to the SQLite harness
         #     under Task 8 — see tests/run_with_server.py). RPC is deferred to the
         #     Phase 2 hook layer, so rpc/rpc_tenant/rpc_secdef were removed. ---

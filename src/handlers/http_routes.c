@@ -15,6 +15,7 @@
 #include <strings.h>
 #include <time.h>
 #include <sodium.h>
+#include <sys/stat.h>
 
 /* Max accepted request body (bytes); 0 = no cap. Set from CEL_MAX_BODY at startup. */
 static size_t g_max_body = 0;
@@ -477,6 +478,27 @@ static int route(const portico_request_t *req, portico_response_t *res) {
             st = send_error(res, 405, "method not allowed");
         }
         return st;
+    }
+
+    /* per-bundle front-end: serve the current app's public/ for GET/HEAD, AFTER
+     * the API routes (so /api, /auth, /rpc are never shadowed) but BEFORE the
+     * embedded admin UI — an app with its own public/ owns its site. An SPA
+     * fallback serves index.html for unmatched client-side routes (/admin,
+     * /profile/:id, …). Apps without a public/ dir fall through to the admin UI. */
+    if (portico_req_method_is(req, "GET") || portico_req_method_is(req, "HEAD")) {
+        const cel_app_t *app = cel_apps_current();
+        char pub[1100];
+        if (app && app->bundle_dir[0] &&
+            (size_t)snprintf(pub, sizeof pub, "%s/public", app->bundle_dir) < sizeof pub) {
+            struct stat st;
+            if (stat(pub, &st) == 0 && S_ISDIR(st.st_mode)) {
+                portico_static_opts_t opts = {
+                    .docroot = pub, .url_prefix = NULL, .index = "index.html",
+                    .cache_control = NULL, .spa_fallback = "index.html", .dir_redirect = 1 };
+                if (portico_res_static(res, req, &opts) == 0) return 200;   /* served (2xx/3xx) */
+                return 404;   /* e.g. a traversal 403 — counts in the 4xx bucket */
+            }
+        }
     }
 
     /* embedded admin UI: serve static assets for GET paths (after the API routes) */
