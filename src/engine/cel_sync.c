@@ -52,6 +52,24 @@ int cel_sync_applied_get(sqlite3 *c, const char *mutation_id,
     return found;
 }
 
+int cel_sync_device_seen(sqlite3 *c, const char *device_id, const char *user_id, long long cursor) {
+    sqlite3_stmt *st = NULL;
+    /* Upsert; cursor only ever advances (MAX) so a stale/parallel pull can't rewind it. */
+    if (sqlite3_prepare_v2(c,
+            "INSERT INTO _sync_devices(device_id, user_id, cursor, seen_at) "
+            "VALUES (?1, ?2, ?3, unixepoch()) "
+            "ON CONFLICT(device_id) DO UPDATE SET "
+            "  cursor = MAX(cursor, excluded.cursor), "
+            "  user_id = excluded.user_id, seen_at = excluded.seen_at", -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_text(st, 1, device_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, user_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(st, 3, cursor);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE ? 0 : -1;
+}
+
 int cel_sync_applied_put(sqlite3 *c, const char *mutation_id, const char *status, long long rev) {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(c,

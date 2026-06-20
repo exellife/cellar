@@ -36,4 +36,10 @@ int cel_sync_applied_get(struct sqlite3 *c, const char *mutation_id,
 int cel_sync_applied_put(struct sqlite3 *c, const char *mutation_id,
                          const char *status, long long rev);
 
+/* Record a device's high-water PULL cursor (for tombstone GC): upsert _sync_devices,
+ * advancing `cursor` monotonically. Recorded from sync_pull (the device's true pull
+ * position), never from push. 0 on success. */
+int cel_sync_device_seen(struct sqlite3 *c, const char *device_id, const char *user_id,
+                         long long cursor);
+
 #endif /* CEL_SYNC_H */
