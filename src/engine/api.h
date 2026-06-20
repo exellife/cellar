@@ -28,6 +28,12 @@ cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req);
 cel_api_result_t cel_api_get(const cel_identity_t *who, const cJSON *req);
 cel_api_result_t cel_api_schema(const cel_identity_t *who);
 
+/* Offline-first sync — delta pull (design: cellar-sync-design.md). Returns the
+ * caller's owner-scoped rows (INCLUDING tombstones) across syncable tables with
+ * rev > since: { changes: { table: [rows] }, cursor, more }. Req: { since, tables?,
+ * limit? }. Engine built-in (not a hooks.lua rpc). */
+cel_api_result_t cel_api_sync_pull(const cel_identity_t *who, const cJSON *req);
+
 /* login is public (no identity required). With TOTP 2FA enabled, a user who has a
  * confirmed enrollment gets 200 + {status:"mfa_required", challenge} instead of a
  * token; the client completes login by POSTing the challenge + code to mfa_verify. */

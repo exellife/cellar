@@ -415,6 +415,22 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         return st;
     }
 
+    /* POST /sync/pull — offline-first delta pull: rows changed since a rev cursor
+     * across the caller's syncable tables (engine built-in, not a hooks.lua rpc).
+     * Body: { since, tables?, limit? }. */
+    if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/sync/pull")) {
+        cel_identity_t who;
+        identity_from_request(req, &who);
+        if (!cel_ratelimit_allow(g_api_rl, who.user_id[0] ? who.user_id : portico_req_client_ip(req)))
+            return send_error(res, 429, "too many requests");
+        cJSON *body = req->body_len > 0 ? cJSON_ParseWithLength(req->body, req->body_len)
+                                        : cJSON_CreateObject();
+        if (!cJSON_IsObject(body)) { cJSON_Delete(body); return send_error(res, 400, "invalid JSON"); }
+        int st = send_api(res, cel_api_sync_pull(&who, body));
+        cJSON_Delete(body);
+        return st;
+    }
+
     /* /api/<table>[/<id>] */
     if (req->path_len > 5 && memcmp(req->path, "/api/", 5) == 0) {
         cel_identity_t who;

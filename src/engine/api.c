@@ -793,6 +793,108 @@ cel_api_result_t cel_api_get(const cel_identity_t *who, const cJSON *req) {
     return r;
 }
 
+/* ---- offline-first sync: delta pull (Slice 1) ----------------------------- */
+
+#define CEL_SYNC_PULL_LIMIT_DEFAULT 500
+#define CEL_SYNC_PULL_LIMIT_MAX     2000
+
+static bool sync_name_listed(const cJSON *arr, const char *name) {
+    const cJSON *e;
+    cJSON_ArrayForEach(e, arr)
+        if (cJSON_IsString(e) && strcmp(e->valuestring, name) == 0) return true;
+    return false;
+}
+
+/* Drop the syncable tombstone rule (deleted=0) from a scope so a pull returns
+ * tombstones too; the owner rule(s) stay, keeping the pull owner-scoped. */
+static void sync_scope_keep_owner(cel_scope_t *scope) {
+    int j = 0;
+    for (int i = 0; i < scope->count; i++) {
+        const cel_scope_rule_t *r = &scope->rule[i];
+        if (r->kind == CEL_SCOPE_EQ && r->column && strcmp(r->column, "deleted") == 0 &&
+            r->value && strcmp(r->value, "0") == 0)
+            continue;
+        if (j != i) scope->rule[j] = *r;
+        j++;
+    }
+    scope->count = j;
+}
+
+cel_api_result_t cel_api_sync_pull(const cel_identity_t *who, const cJSON *req) {
+    if (!who->authenticated) return result_error(401, "authentication required");
+    const cel_catalog_t *cat = cel_catalog_active();
+    if (!cat) return result_error(500, "database unavailable");
+
+    long long since = 0;
+    const cJSON *js = cJSON_GetObjectItemCaseSensitive(req, "since");
+    if (cJSON_IsNumber(js) && js->valuedouble > 0) since = (long long)js->valuedouble;
+
+    long long limit = CEL_SYNC_PULL_LIMIT_DEFAULT;
+    const cJSON *jl = cJSON_GetObjectItemCaseSensitive(req, "limit");
+    if (cJSON_IsNumber(jl) && jl->valuedouble >= 1) {
+        limit = (long long)jl->valuedouble;
+        if (limit > CEL_SYNC_PULL_LIMIT_MAX) limit = CEL_SYNC_PULL_LIMIT_MAX;
+    }
+
+    const cJSON *jtables = cJSON_GetObjectItemCaseSensitive(req, "tables");
+    bool filter_tables = cJSON_IsArray(jtables);
+
+    cJSON *changes = cJSON_CreateObject();
+    long long global_max = since;   /* highest rev returned */
+    long long trunc_min  = -1;      /* min returned-max among TRUNCATED tables */
+    bool any_trunc = false;
+
+    for (int i = 0; i < cat->ntables; i++) {
+        const cel_table_t *t = &cat->tables[i];
+        if (!t->syncable) continue;
+        if (filter_tables && !sync_name_listed(jtables, t->name)) continue;
+        if (!cel_policy_allows(t->name, CEL_ACT_LIST, who->role)) continue;
+
+        cel_scope_t scope;
+        if (make_scope(t, CEL_ACT_LIST, who, &scope) != 0) {
+            cJSON_Delete(changes); return result_error(500, "policy misconfiguration");
+        }
+        sync_scope_keep_owner(&scope);
+
+        char err[256] = {0};
+        cel_query_t q;
+        if (cel_build_pull(t, &scope, since, limit, &q, err, sizeof err) != 0) {
+            cJSON_Delete(changes); return result_error(500, err[0] ? err : "build failed");
+        }
+        int http = 200; char emsg[256] = {0};
+        cJSON *rows = run_rows(&q, t, 0, &http, emsg, sizeof emsg);
+        cel_query_free(&q);
+        if (!rows) { cJSON_Delete(changes); return result_error(http, emsg[0] ? emsg : "query failed"); }
+
+        int n = cJSON_GetArraySize(rows);
+        if (n == 0) { cJSON_Delete(rows); continue; }   /* no changes for this table */
+
+        /* rows are ORDER BY rev ASC → the last one carries this table's max rev. */
+        const cJSON *rrev = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(rows, n - 1), "rev");
+        long long tmax = cJSON_IsNumber(rrev) ? (long long)rrev->valuedouble : since;
+        if (tmax > global_max) global_max = tmax;
+        if ((long long)n >= limit) {                    /* this table was truncated */
+            any_trunc = true;
+            if (trunc_min < 0 || tmax < trunc_min) trunc_min = tmax;
+        }
+        cJSON_AddItemToObject(changes, t->name, rows);
+    }
+
+    /* Cursor safety: advance only to a rev for which EVERY table is complete. If
+     * nothing was truncated that's the global max; otherwise it's the smallest
+     * returned-max among truncated tables, so re-pulling from it can't skip a
+     * truncated table's unsent rows (it may re-send a few — upserts are idempotent). */
+    long long cursor = any_trunc ? trunc_min : global_max;
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "status", "ok");
+    cJSON_AddItemToObject(o, "changes", changes);
+    cJSON_AddNumberToObject(o, "cursor", (double)cursor);
+    cJSON_AddBoolToObject(o, "more", any_trunc);
+    cel_api_result_t r = { o, 200 };
+    return r;
+}
+
 cel_api_result_t cel_api_create(const cel_identity_t *who, const cJSON *req) {
     return run_write(who, req, cel_build_create, CEL_ACT_CREATE, 201, 0);
 }

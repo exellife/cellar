@@ -808,6 +808,29 @@ int cel_build_soft_delete(const cel_table_t *t, const cJSON *req, const cel_scop
     return 0;
 }
 
+int cel_build_pull(const cel_table_t *t, const cel_scope_t *scope, long long since,
+                   long long limit, cel_query_t *out, char *errbuf, size_t errlen) {
+    /* SELECT * FROM t WHERE rev > <since> [AND owner-scope] ORDER BY rev ASC LIMIT <limit>.
+     * `since`/`limit` are engine-validated integers, inlined (%lld → injection-safe);
+     * the scope passed in has had the tombstone rule stripped, so tombstones ARE
+     * returned (a pull must propagate deletions). */
+    sb_t sql;
+    if (q_init(out) || sb_init(&sql)) { cel_query_free(out); FAIL("out of memory"); }
+    char nbuf[32];
+    int rc = sb_puts(&sql, "SELECT * FROM ") || sb_put_ident(&sql, t->name) ||
+             sb_puts(&sql, " WHERE ") || sb_put_ident(&sql, "rev") || sb_puts(&sql, " > ");
+    if (!rc) { snprintf(nbuf, sizeof nbuf, "%lld", since); rc = sb_puts(&sql, nbuf); }
+    for (int i = 0; !rc && i < scope_count(scope); i++)
+        rc = sb_puts(&sql, " AND ") || append_scope_predicate(t, out, &sql, &scope->rule[i]);
+    if (!rc) rc = sb_puts(&sql, " ORDER BY ") || sb_put_ident(&sql, "rev") || sb_puts(&sql, " ASC LIMIT ");
+    if (!rc) { snprintf(nbuf, sizeof nbuf, "%lld", limit); rc = sb_puts(&sql, nbuf); }
+    if (rc) { free(sql.buf); cel_query_free(out);
+              if (!errbuf[0]) snprintf(errbuf, errlen, "failed to build pull query");
+              return -1; }
+    out->sql = sql.buf;
+    return 0;
+}
+
 /* NOTE (SQLite pivot): the emitted shape — SELECT * FROM fn(name := ?N) — is a
  * Postgres set-returning-function call with named args, which SQLite has no
  * equivalent for. RPC on SQLite is deferred to the hook layer (design §8:

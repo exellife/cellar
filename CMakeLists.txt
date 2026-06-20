@@ -483,6 +483,11 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME sync_realtime
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/sync_realtime_test.py)
+        # Sync Slice 1: POST /sync/pull delta read — tombstones included, safe
+        # {cursor, more}, incremental + paginated pulls, tables filter, 401.
+        add_test(NAME sync_pull
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
+                    $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/sync_pull_test.py)
         # CRUD hooks (Phase 2 §8): before/authorize/after on the write path, via a
         # before/authorize/after bundle (CEL_HOOKS_FILE=tests/hooks_crud.lua).
         add_test(NAME hooks_crud

@@ -118,6 +118,12 @@ int cel_build_update(const cel_table_t *t, const cJSON *req, const cel_scope_t *
 int cel_build_delete(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
                      cel_query_t *out, char *errbuf, size_t errlen);
 
+/* Delta pull for a syncable table (sync Slice 1): SELECT * WHERE rev > since
+ * [AND scope] ORDER BY rev ASC LIMIT limit. The caller passes a scope with the
+ * tombstone rule already stripped, so deleted rows ARE returned. */
+int cel_build_pull(const cel_table_t *t, const cel_scope_t *scope, long long since,
+                   long long limit, cel_query_t *out, char *errbuf, size_t errlen);
+
 /* Soft-delete for a syncable table (sync Slice 0): instead of removing the row,
  *   { id, values: { rev: N } }  -> UPDATE ... SET deleted = 1, rev = N
  *                                  WHERE pk = id AND deleted = 0 [AND scope]
