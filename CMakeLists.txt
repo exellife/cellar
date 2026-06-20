@@ -47,27 +47,23 @@ endif()
 
 # ---------------------------------------------------------------------------
 # SQLite — the per-app data engine (Phase 1: Postgres → file-per-app SQLite).
-# Uses system libsqlite3-dev when installed; pass -DSQLITE3_ROOT=<prefix> to
-# point at a local/staged copy (headers in <prefix>/include, lib in
-# <prefix>/lib) — the repo defaults to build-deps/sqlite for that. Vendoring the
-# amalgamation under third_party/ is still an open decision (design §14).
+# Vendored amalgamation under third_party/sqlite (pinned at 3.45.1), compiled
+# straight into the build — no system dependency, so a fresh clone builds
+# reproducibly (mirrors third_party/cjson). We own the version and the
+# compile-time flags. To bump: drop a newer sqlite3.c/.h in third_party/sqlite.
 # ---------------------------------------------------------------------------
-find_path(SQLITE3_INCLUDE_DIR sqlite3.h
-    HINTS ${SQLITE3_ROOT}/include
-    PATHS ${CMAKE_SOURCE_DIR}/build-deps/sqlite/include)
-find_library(SQLITE3_LIBRARY NAMES sqlite3
-    HINTS ${SQLITE3_ROOT}/lib
-    PATHS ${CMAKE_SOURCE_DIR}/build-deps/sqlite/lib)
-if(NOT SQLITE3_INCLUDE_DIR OR NOT SQLITE3_LIBRARY)
-    message(FATAL_ERROR "SQLite not found. Install libsqlite3-dev, or pass "
-            "-DSQLITE3_ROOT=<prefix> (headers in <prefix>/include, lib in <prefix>/lib).")
-endif()
-add_library(SQLite::SQLite3 UNKNOWN IMPORTED)
-set_target_properties(SQLite::SQLite3 PROPERTIES
-    IMPORTED_LOCATION "${SQLITE3_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORIES "${SQLITE3_INCLUDE_DIR}"
-    INTERFACE_LINK_LIBRARIES "${CMAKE_DL_LIBS};m")   # static libsqlite3.a needs dl + libm
-message(STATUS "cellar: SQLite -> ${SQLITE3_LIBRARY} (include ${SQLITE3_INCLUDE_DIR})")
+add_library(sqlite3 STATIC ${CMAKE_SOURCE_DIR}/third_party/sqlite/sqlite3.c)
+target_include_directories(sqlite3 PUBLIC ${CMAKE_SOURCE_DIR}/third_party/sqlite/include)
+target_compile_definitions(sqlite3 PRIVATE
+    SQLITE_DQS=0                  # double-quoted tokens are identifiers only (matches our builder)
+    SQLITE_THREADSAFE=1           # serialized default (app_db opens connections NOMUTEX)
+    SQLITE_DEFAULT_MEMSTATUS=0    # perf: skip global malloc accounting
+    SQLITE_LIKE_DOESNT_MATCH_BLOBS
+    SQLITE_OMIT_DEPRECATED
+    SQLITE_USE_ALLOCA)
+target_link_libraries(sqlite3 PRIVATE ${CMAKE_DL_LIBS} m Threads::Threads)
+add_library(SQLite::SQLite3 ALIAS sqlite3)
+message(STATUS "cellar: SQLite -> vendored amalgamation third_party/sqlite (3.45.1)")
 
 # ---------------------------------------------------------------------------
 # portico — the HTTP/1.1 + WebSocket transport library (sibling project).

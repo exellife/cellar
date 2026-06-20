@@ -186,11 +186,10 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
 - [ ] **Hooks: file vs in-db** — `hooks.lua` on disk vs a `_hooks` table in `data.db`.
 - [ ] **`after` transactionality** — in-txn (atomic) vs post-commit (safe side-effects).
 - [ ] **Per-app routing** — subdomain-per-app (SNI forward each) vs path prefix.
-- [ ] **Vendor SQLite:** add the amalgamation (`sqlite3.c`, public domain) under
-      `third_party/`; decide `STRICT` tables + CHECK constraints for type fidelity.
-      _Status:_ deferred — sqlite.org is unreachable in this env, so v1 links **system
-      libsqlite3** (`libsqlite3-dev`, or staged `build-deps/sqlite`). The C code is
-      identical either way; swap to a committed amalgamation when the network allows.
+- [x] **Vendor SQLite:** the amalgamation (`sqlite3.c`, public domain) is committed
+      under `third_party/sqlite` (3.45.1) and compiled into the build — no system
+      dependency, reproducible from a clean clone (mirrors `third_party/cjson`). Still
+      open: decide `STRICT` tables + CHECK constraints for type fidelity.
 - [ ] **Naming convention** for the rebranded symbols (`cel_*` / `CEL_*`?).
 
 ---

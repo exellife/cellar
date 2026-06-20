@@ -22,7 +22,8 @@ config/policies.local.json
 # headless UI test deps (dev only)
 /tests/ui/node_modules/
 
-# local SQLite dev prefix (staged from libsqlite3-dev .deb; not committed — install libsqlite3-dev or vendor the amalgamation)
+# local staging for deps not yet vendored in third_party/ (e.g. LuaJIT .debs/spike);
+# SQLite is now vendored at third_party/sqlite, so nothing here is needed to build
 /build-deps/
 
 # downloaded packages (e.g. staged SQLite dev files)
