@@ -1,0 +1,60 @@
+:root {
+  --bg:#0f1115; --panel:#181b22; --panel2:#1f232c; --line:#2a2f3a; --ink:#e7e9ee;
+  --dim:#9aa3b2; --accent:#6ea8fe; --good:#4ade80; --warn:#fb923c; --danger:#f87171;
+}
+* { box-sizing:border-box; }
+body { margin:0; font:15px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  background:var(--bg); color:var(--ink); }
+h1 { font-size:24px; margin:0; letter-spacing:-.4px; } h2 { font-size:18px; margin:0; } h3 { margin:0 0 12px; }
+.muted { color:var(--dim); } .small { font-size:12px; } .empty { color:var(--dim); padding:20px 0; }
+button { font:inherit; cursor:pointer; border-radius:8px; border:1px solid var(--line); background:var(--panel2); color:var(--ink); padding:8px 13px; }
+button.primary { background:var(--accent); color:#0b1020; border:none; font-weight:600; }
+button.ghost { background:transparent; color:var(--dim); }
+button.danger, .danger { color:var(--danger); }
+button.mini { padding:2px 8px; font-size:12px; }
+input { font:inherit; border-radius:8px; border:1px solid var(--line); background:var(--panel2); color:var(--ink); padding:9px 12px; width:100%; }
+
+/* layout */
+.app { display:grid; grid-template-columns:230px 1fr; min-height:100vh; }
+.nav { background:var(--panel); border-right:1px solid var(--line); padding:18px 14px; display:flex; flex-direction:column; gap:4px; }
+.brand { font-weight:700; font-size:18px; letter-spacing:-.5px; padding:4px 8px 16px; }
+.brand.big { font-size:30px; text-align:center; margin-bottom:6px; }
+.navlink { text-decoration:none; color:var(--dim); padding:9px 12px; border-radius:8px; }
+.navlink:hover { background:var(--panel2); color:var(--ink); }
+.navlink.active { background:var(--panel2); color:var(--ink); border-left:2px solid var(--accent); }
+.nav-foot { margin-top:auto; display:flex; flex-direction:column; gap:10px; padding-top:14px; }
+.content { padding:26px 30px; max-width:900px; }
+
+.page-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin:14px 0; }
+
+/* venues + rooms */
+.venue-head { display:flex; align-items:flex-start; justify-content:space-between; }
+.row-actions, .room-actions { display:flex; gap:6px; }
+.rooms { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+.room { display:flex; align-items:center; gap:8px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:6px 10px; }
+.room-name { font-weight:500; }
+.add-room { background:transparent; border:1px dashed var(--line); color:var(--dim); }
+
+/* sync bar */
+.syncbar { display:flex; flex-direction:column; gap:7px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px; }
+.syncrow { display:flex; align-items:center; gap:7px; }
+.dot { width:9px; height:9px; border-radius:50%; background:var(--dim); }
+.dot.on { background:var(--good); box-shadow:0 0 7px var(--good); }
+.badge { padding:2px 9px; border:1px solid var(--line); border-radius:999px; font-size:12px; color:var(--dim); align-self:flex-start; }
+.badge.hot { color:var(--warn); border-color:var(--warn); }
+.switch { display:inline-flex; align-items:center; gap:6px; color:var(--dim); cursor:pointer; }
+.switch input { width:15px; height:15px; accent-color:var(--good); }
+.device { font-family:ui-monospace,monospace; }
+
+/* auth */
+.auth { max-width:380px; margin:9vh auto; padding:20px; text-align:center; }
+.auth .card { text-align:left; }
+.field { display:block; margin-bottom:12px; }
+.field span { display:block; color:var(--dim); font-size:13px; margin-bottom:4px; }
+.msg { color:var(--warn); min-height:1.1em; margin:8px 0 0; }
+
+/* modal */
+.modal-backdrop { position:fixed; inset:0; background:#000a; display:flex; align-items:center; justify-content:center; padding:20px; }
+.modal { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px; width:360px; max-width:100%; }
+.modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }

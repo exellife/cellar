@@ -1,0 +1,19 @@
+{
+  "_comment": "ClerkHalls authorization. One bundle = one organization; staff share the org's data (no per-row ownership). admin is a superuser. NOTE: cellar fail-closes a LISTED table's unlisted actions, so a table that wants realtime must also spell out its action roles (a realtime-only entry would deny everything) — hence the explicit staff CRUD per table below. self_register is on for easy local testing; turn it off for production and add staff via POST /auth/users.",
+
+  "_default": "allow",
+  "_roles": {
+    "admin": { "superuser": true },
+    "staff": { "self_register": true }
+  },
+
+  "organization":            { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
+  "event_halls":             { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
+  "halls":                   { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
+  "bookings":                { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
+  "booking_item_categories": { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
+  "booking_items":           { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
+  "payments":                { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
+  "menu_categories":         { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] },
+  "menu_items":              { "realtime": true, "list": ["staff"], "get": ["staff"], "create": ["staff"], "update": ["staff"], "delete": ["staff"] }
+}
