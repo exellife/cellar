@@ -17,7 +17,7 @@ No build step, no framework, no external services. SQLite + Lua + static files.
 
 ```sh
 # from the repo root, after building cellar (cmake --build build-cmake):
-examples/tasks/run.sh
+examples/tasks_app/run.sh
 # then open http://localhost:8080/
 ```
 
@@ -87,7 +87,7 @@ so a member only ever receives their own tasks.
   public/                  # the served front-end (index.html, app.js, cellar.js, style.css)
 ```
 
-Delete `examples/tasks/.run/` to start over. To rehost the same app elsewhere, that
+Delete `examples/tasks_app/.run/` to start over. To rehost the same app elsewhere, that
 directory *is* the app — copy it (or `cellar export`/`import` it).
 
 ## Where to go next

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Tasklets — provision the example bundle and boot cellar to serve it.
 #
-#   examples/tasks/run.sh [cellar-binary] [port]
+#   examples/tasks_app/run.sh [cellar-binary] [port]
 #
-# Builds a throwaway bundle under examples/tasks/.run/ named "localhost" (so a
+# Builds a throwaway bundle under examples/tasks_app/.run/ named "localhost" (so a
 # browser at http://localhost:<port> routes to it via the Host header), applies the
 # schema, installs hooks.lua + policies.json + public/, seeds a few demo tasks, and
 # starts the server. Ctrl-C to stop; the bundle persists between runs (delete .run/
