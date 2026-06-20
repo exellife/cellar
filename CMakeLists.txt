@@ -66,6 +66,32 @@ add_library(SQLite::SQLite3 ALIAS sqlite3)
 message(STATUS "cellar: SQLite -> vendored amalgamation third_party/sqlite (3.45.1)")
 
 # ---------------------------------------------------------------------------
+# LuaJIT — the Phase-2 hook runtime (design §7-9). Vendored source under
+# third_party/luajit (pinned v2.1), built from source OUT of the committed tree
+# (copied into <build>/luajit, made there) so the source stays pristine. Yields
+# a static libluajit.a — GC64, -fPIC so it links into cellar's PIE executable.
+# Hooks reach cellar's C API via FFI, so anything linking it must export its
+# dynamic symbols (-rdynamic on the final executable).
+# ---------------------------------------------------------------------------
+set(LUAJIT_SRC   ${CMAKE_SOURCE_DIR}/third_party/luajit)
+set(LUAJIT_BUILD ${CMAKE_BINARY_DIR}/luajit)
+set(LUAJIT_LIB   ${LUAJIT_BUILD}/src/libluajit.a)
+add_custom_command(
+    OUTPUT ${LUAJIT_LIB}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${LUAJIT_SRC} ${LUAJIT_BUILD}
+    COMMAND ${CMAKE_MAKE_PROGRAM} -C ${LUAJIT_BUILD} BUILDMODE=static XCFLAGS=-fPIC amalg
+    COMMENT "Building vendored LuaJIT (static, GC64, -fPIC)"
+    VERBATIM)
+add_custom_target(luajit_build DEPENDS ${LUAJIT_LIB})
+add_library(luajit STATIC IMPORTED GLOBAL)
+set_target_properties(luajit PROPERTIES
+    IMPORTED_LOCATION ${LUAJIT_LIB}
+    INTERFACE_INCLUDE_DIRECTORIES ${LUAJIT_SRC}/src   # headers are pristine source
+    INTERFACE_LINK_LIBRARIES "${CMAKE_DL_LIBS};m")
+add_dependencies(luajit luajit_build)
+message(STATUS "cellar: LuaJIT -> vendored source third_party/luajit (built static, GC64)")
+
+# ---------------------------------------------------------------------------
 # portico — the HTTP/1.1 + WebSocket transport library (sibling project).
 # Provides the WebSocket core (replaces the old vendored lib/wslib) plus the
 # HTTP layer used by the REST front door. Override PORTICO_DIR to relocate.
@@ -139,11 +165,16 @@ target_link_libraries(cellar PRIVATE
     logger
     cjson
     SQLite::SQLite3
+    luajit
     OpenSSL::Crypto
     CURL::libcurl
     ${SODIUM_LIB}
     ${UUID_LIB}
     Threads::Threads)
+# Hooks call cellar's C API via FFI → export the binary's dynamic symbols so
+# LuaJIT's ffi.C can resolve them. Build LuaJIT before cellar links.
+target_link_options(cellar PRIVATE -rdynamic)
+add_dependencies(cellar luajit_build)
 
 # ---------------------------------------------------------------------------
 # Install (cmake --install build-cmake [--prefix /usr/local])
@@ -169,6 +200,16 @@ if(CELLAR_BUILD_TESTS)
     target_include_directories(query_builder_test PRIVATE src/engine)
     target_link_libraries(query_builder_test cjson)
     add_test(NAME query_builder COMMAND query_builder_test)
+
+    # Phase-2 foundation: the LuaJIT hook VM lifecycle (open/run/close), pcall
+    # error isolation (compile + runtime faults don't crash), and FFI available
+    # in the embedded state. No server/DB needed. Linked -rdynamic isn't required
+    # here (the FFI call targets libc, not cellar's own symbols).
+    add_executable(cel_lua_test tests/cel_lua_test.c src/engine/cel_lua.c)
+    target_include_directories(cel_lua_test PRIVATE src/engine)
+    target_link_libraries(cel_lua_test luajit Threads::Threads)
+    add_dependencies(cel_lua_test luajit_build)
+    add_test(NAME cel_lua COMMAND cel_lua_test)
 
     # DB-free unit test for the per-app SQLite handle layer (Phase 1 foundation):
     # open-by-file, the connection pool, per-app write serialization, concurrent

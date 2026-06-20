@@ -1,0 +1,25 @@
+*.[oa]
+*.so
+*.obj
+*.lib
+*.exp
+*.pdb
+*.dll
+*.exe
+*.manifest
+*.dmp
+*.swp
+.tags
+
+# cellar: we build LuaJIT out-of-tree (CMake copies this into <build>/luajit), so
+# the committed source stays pristine. Guard against an accidental in-source make.
+src/luajit
+src/host/minilua
+src/host/buildvm
+src/lj_bcdef.h
+src/lj_ffdef.h
+src/lj_libdef.h
+src/lj_recdef.h
+src/lj_folddef.h
+src/host/buildvm_arch.h
+src/jit/vmdef.lua
