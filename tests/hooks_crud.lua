@@ -18,7 +18,12 @@ end
 function authorize(op, table, row, who)
   if table == 'products' and op == 'create'
      and row.sku and tostring(row.sku):match('^BLOCKED') then
-    return false                                   -- -> 403
+    return false                                   -- create gate -> 403
+  end
+  -- row-level READ gate: hide a fetched product whose name contains 'SECRET'.
+  if table == 'products' and op == 'get'
+     and row.name and tostring(row.name):find('SECRET') then
+    return false                                   -- get gate -> 403
   end
   return true
 end

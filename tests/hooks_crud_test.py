@@ -44,6 +44,7 @@ def main():
     row = (b or {}).get("row", {})
     chk("create -> 201", s == 201, f"status={s}")
     chk("before transformed name (HOOKED:)", row.get("name") == "HOOKED:Widget", str(row.get("name")))
+    widget_id = row.get("id")
 
     # ---- before(): rejects invalid input ----
     s, b = req("POST", "/api/products", {"sku": "CRUD-2", "price": 1}, token=admin)  # no name
@@ -57,6 +58,19 @@ def main():
     # a non-blocked sku still goes through
     s, b = req("POST", "/api/products", {"name": "Fine", "sku": "OKAY-3", "price": 1}, token=admin)
     chk("non-blocked create -> 201", s == 201, f"status={s}")
+
+    # ---- authorize() on the READ path: row-level get gate ----
+    s, _ = req("GET", f"/api/products/{widget_id}", token=admin)
+    chk("get normal product -> 200 (read allowed)", s == 200, f"status={s}")
+    # a product whose stored name contains SECRET is hidden on GET by authorize
+    s, b = req("POST", "/api/products", {"name": "SECRET", "sku": "SEC-1", "price": 1}, token=admin)
+    sec_id = (b or {}).get("row", {}).get("id")   # stored name == 'HOOKED:SECRET'
+    chk("create SECRET product -> 201", s == 201, f"status={s}")
+    s, _ = req("GET", f"/api/products/{sec_id}", token=admin)
+    chk("get SECRET product -> 403 (read authz denies)", s == 403, f"status={s}")
+    # list still works (authorize('list',...) allowed)
+    s, b = req("GET", "/api/products?select=id&limit=1", token=admin)
+    chk("list products -> 200 (list authorize allows)", s == 200, f"status={s}")
 
     # ---- after(): post-commit side effect wrote audit notes ----
     s, b = req("GET", "/api/notes?select=title&order=title", token=admin)

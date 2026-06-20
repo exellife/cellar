@@ -46,6 +46,24 @@ static const char *action_name(cel_action_t a) {
     return "?";
 }
 
+/* Run authorize() for a read (list table-level with row=NULL; get with the fetched
+ * row), binding a hook db connection for the phase. Returns 1 if the app's hook
+ * denies (caller -> 403); 0 if allowed or the app has no hooks. */
+static int hook_denies_read(const cel_identity_t *who, const char *op,
+                            const char *table, const cel_val_t *row) {
+    cel_lua_t *hooks = cel_hook_app_state(cel_apps_current_hooks());
+    if (!hooks) return 0;
+    cJSON *who_v = identity_to_json(who);
+    app_db_t *adb = app_db_current();
+    sqlite3 *hc = adb ? app_db_conn_acquire(adb) : NULL;
+    cel_hooks_set_db(hc);
+    int denied = cel_hooks_authorize(hooks, op, table, row, (const cel_val_t *)who_v) == 0;
+    cel_hooks_set_db(NULL);
+    if (hc) app_db_conn_release(adb, hc);
+    cJSON_Delete(who_v);
+    return denied;
+}
+
 static cel_api_result_t result_error(int status, const char *message) {
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "error");
@@ -529,6 +547,8 @@ cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req) {
     const cel_table_t *t = resolve_table(req);
     if (!t) return result_error(404, "unknown table");
     if (!cel_policy_allows(t->name, CEL_ACT_LIST, who->role)) return result_error(403, "forbidden");
+    /* authorize() is a table-level gate for list (no single row). */
+    if (hook_denies_read(who, "list", t->name, NULL)) return result_error(403, "forbidden");
 
     cel_scope_t scope;
     if (make_scope(t, CEL_ACT_LIST, who, &scope) != 0) return result_error(500, "policy misconfiguration");
@@ -659,6 +679,11 @@ cel_api_result_t cel_api_get(const cel_identity_t *who, const cJSON *req) {
     if (cJSON_GetArraySize(rows) == 0) { cJSON_Delete(rows); return result_error(404, "not found"); }
     cJSON *row = cJSON_DetachItemFromArray(rows, 0);
     cJSON_Delete(rows);
+
+    /* authorize() sees the fetched row (row-level read authz). */
+    if (hook_denies_read(who, "get", t->name, (const cel_val_t *)row)) {
+        cJSON_Delete(row); return result_error(403, "forbidden");
+    }
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
