@@ -60,7 +60,6 @@ typedef struct {
     char via_key[CEL_RT_VALUE];   /* the ref value subscribed to (e.g. conversation id) */
     char user_id[CEL_RT_VALUE];   /* the subscriber's user id (set for every sub) */
     char role[CEL_RT_IDENT];      /* the subscriber's role (passed to on_realtime) */
-    char tenant[CEL_RT_VALUE];    /* tenant context for the re-check (L-4); "" = none */
 } cel_subscription_t;
 
 /* The transport push: deliver a framed CHANGE carrying `json` to connection fd. */

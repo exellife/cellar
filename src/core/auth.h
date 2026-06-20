@@ -16,7 +16,6 @@ typedef struct {
     char id[37];          /* user UUID (text) */
     char email[256];
     char role[32];        /* admin | editor | viewer | platform_admin */
-    char tenant_id[37];   /* tenant UUID (text); "" in single-tenant deployments */
     bool email_verified;  /* email_verified_at IS NOT NULL */
 } cel_user_t;
 
@@ -78,14 +77,13 @@ int cel_auth_register(const char *email, const char *password, const char *role,
                       int ttl_seconds, char *out_token, size_t token_size,
                       cel_user_t *out_user);
 
-/* Admin-provisioned account creation: insert a user with `role` and (when
- * `tenant_id` is non-NULL/non-empty) bind it to that tenant. No session is
- * created — the new user logs in themselves. Writes the new user's id (text)
- * into `out_id` (>= 37 bytes). Returns CEL_AUTH_CONFLICT for a duplicate email,
- * CEL_AUTH_INVALID for an invalid tenant reference. Authorization (who may
- * create which role/tenant) is the caller's responsibility — see cel_api_create_user. */
+/* Admin-provisioned account creation: insert a user with `role`. No session is
+ * created — the new user logs in themselves. Writes the new user's id (text) into
+ * `out_id` (>= 37 bytes). Returns CEL_AUTH_CONFLICT for a duplicate email.
+ * Authorization (who may create which role) is the caller's responsibility — see
+ * cel_api_create_user. */
 int cel_auth_create_user(const char *email, const char *password, const char *role,
-                         const char *tenant_id, char *out_id, size_t out_id_size);
+                         char *out_id, size_t out_id_size);
 
 /* Resolve a token to its user (if the session is valid and unexpired). */
 int cel_auth_verify(const char *token, cel_user_t *out_user);

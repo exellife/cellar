@@ -84,7 +84,6 @@ void cel_identity_from_token(const char *token, cel_identity_t *out) {
         out->authenticated = true;
         snprintf(out->user_id, sizeof out->user_id, "%s", u.id);
         snprintf(out->role, sizeof out->role, "%s", u.role);
-        snprintf(out->tenant_id, sizeof out->tenant_id, "%s", u.tenant_id);
     }
 }
 
@@ -1137,20 +1136,13 @@ cel_api_result_t cel_api_create_user(const cel_identity_t *who, const cJSON *req
 
     /* Escalation boundary: platform_admin is created out-of-band only (CLI),
      * never via any authenticated request — the line that keeps the global
-     * platform tier unreachable from in-band actors. Other (tenant-scoped)
-     * superuser roles are fine: they stay confined by tenant scope. */
+     * platform tier unreachable from in-band actors. */
     if (!strcmp(role, "platform_admin"))
         return result_error(403, "platform_admin can only be created out-of-band");
 
-    /* Isolation is the app's file boundary — no tenant to resolve. (Auth still
-     * lives in the transitional Postgres store; tenant is passed empty.) */
-    const char *tenant = "";
-
     char id[37];
-    int rc = cel_auth_create_user(email->valuestring, pass->valuestring, role, tenant,
-                                  id, sizeof id);
+    int rc = cel_auth_create_user(email->valuestring, pass->valuestring, role, id, sizeof id);
     if (rc == CEL_AUTH_CONFLICT) return result_error(409, "email already registered");
-    if (rc == CEL_AUTH_INVALID)  return result_error(400, "invalid tenant");
     if (rc != CEL_AUTH_OK)       return result_error(500, "server error");
 
     cJSON *o = cJSON_CreateObject();
@@ -1159,7 +1151,6 @@ cel_api_result_t cel_api_create_user(const cel_identity_t *who, const cJSON *req
     cJSON_AddStringToObject(u, "id", id);
     cJSON_AddStringToObject(u, "email", email->valuestring);
     cJSON_AddStringToObject(u, "role", role);
-    if (tenant[0]) cJSON_AddStringToObject(u, "tenant_id", tenant);
     cel_api_result_t r = { o, 201 };
     return r;
 }

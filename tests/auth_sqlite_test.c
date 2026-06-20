@@ -95,9 +95,9 @@ int main(void) {
 
     /* admin-provisioned account + duplicate */
     char id2[37];
-    rc = cel_auth_create_user("b@x.com", "password1", "editor", "", id2, sizeof id2);
+    rc = cel_auth_create_user("b@x.com", "password1", "editor", id2, sizeof id2);
     CHECK(rc == CEL_AUTH_OK, "create_user ok");
-    CHECK(cel_auth_create_user("b@x.com", "password1", "editor", "", id2, sizeof id2) == CEL_AUTH_CONFLICT,
+    CHECK(cel_auth_create_user("b@x.com", "password1", "editor", id2, sizeof id2) == CEL_AUTH_CONFLICT,
           "create_user duplicate -> conflict");
     rc = cel_auth_login("b@x.com", "password1", TTL, tok, sizeof tok, chal, sizeof chal, &u);
     CHECK(rc == CEL_AUTH_OK && strcmp(u.role, "editor") == 0, "created user can log in");

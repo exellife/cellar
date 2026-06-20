@@ -24,9 +24,6 @@ typedef struct {
     bool authenticated;
     char user_id[37];
     char role[32];      /* admin | editor | viewer | platform_admin | "anon" when unauthenticated */
-    char tenant_id[37]; /* the caller's tenant UUID; "" in single-tenant deployments
-                         * (and for platform_admin, who is global). Read by the scope
-                         * engine to apply tenant scoping in pooled mode. */
 } cel_identity_t;
 
 typedef enum {

@@ -52,7 +52,7 @@ int main(void) {
 
     /* a user to enroll */
     char uid[37];
-    CHECK(cel_auth_create_user("m@x.com", "password1", "admin", "", uid, sizeof uid) == CEL_AUTH_OK,
+    CHECK(cel_auth_create_user("m@x.com", "password1", "admin", uid, sizeof uid) == CEL_AUTH_OK,
           "create user");
 
     /* enroll: get a secret, not yet required (unconfirmed) */

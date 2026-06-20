@@ -176,7 +176,6 @@ int cel_auth_login(const char *email, const char *password, int ttl_seconds,
     snprintf(out_user->id,    sizeof out_user->id,    "%s", uid);
     snprintf(out_user->email, sizeof out_user->email, "%s", uemail);
     snprintf(out_user->role,  sizeof out_user->role,  "%s", role);
-    out_user->tenant_id[0] = '\0';
     out_user->email_verified = email_verified;
 
     /* Second factor? A confirmed TOTP enrollment (with MFA enabled) means we issue
@@ -353,7 +352,6 @@ int cel_auth_register(const char *email, const char *password, const char *role,
         snprintf(out_user->id,    sizeof out_user->id,    "%s", uid);
         snprintf(out_user->email, sizeof out_user->email, "%s", email);
         snprintf(out_user->role,  sizeof out_user->role,  "%s", role);
-        out_user->tenant_id[0] = '\0';
         out_user->email_verified = false;
     }
 
@@ -388,8 +386,7 @@ out:
 }
 
 int cel_auth_create_user(const char *email, const char *password, const char *role,
-                         const char *tenant_id, char *out_id, size_t out_id_size) {
-    (void)tenant_id;   /* isolation is the app's file boundary — no tenant column */
+                         char *out_id, size_t out_id_size) {
     char hash[256];
     if (cel_password_hash(password, hash, sizeof hash) != 0) return CEL_AUTH_DBERR;
 
@@ -459,7 +456,6 @@ int cel_auth_verify(const char *token, cel_user_t *out_user) {
         snprintf(out_user->id,    sizeof out_user->id,    "%s", (const char *)sqlite3_column_text(st, 0));
         snprintf(out_user->email, sizeof out_user->email, "%s", (const char *)sqlite3_column_text(st, 1));
         snprintf(out_user->role,  sizeof out_user->role,  "%s", (const char *)sqlite3_column_text(st, 2));
-        out_user->tenant_id[0] = '\0';
         out_user->email_verified = sqlite3_column_int(st, 3) != 0;
         rc = CEL_AUTH_OK;
     } else if (step == SQLITE_DONE) {
