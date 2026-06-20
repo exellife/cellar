@@ -228,6 +228,19 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
       tombstone-filter) — expose a sync-aware hook helper (`cellar.delete`) or stamp inside
       `cellar.exec` for syncable tables (see design note §6, last bullet).
 
+- [ ] **Cascade soft-delete for syncable relations (found dogfooding ClerkHalls — a real
+      offline-first Flutter booking app).** A syncable schema with `FOREIGN KEY ... ON DELETE
+      CASCADE` (bookings → booking_items/payments) is **broken under sync**: soft-delete is an
+      `UPDATE deleted=1`, so SQLite's CASCADE never fires → deleting a parent orphans its
+      children (they stay `deleted=0`). On other devices the parent vanishes but the children
+      linger → corrupt totals + dangling FKs. A hook cascade via `cellar.exec` doesn't fix it
+      (those writes bypass the rev stamp, so the children's tombstones never sync — the gap
+      above). _Fix:_ when the engine soft-deletes a row on a syncable table, also soft-delete +
+      rev-stamp the rows that a real `ON DELETE CASCADE` would have removed (walk
+      `pragma_foreign_key_list` for inbound CASCADE FKs). _Touches:_ `api.c` (soft-delete path),
+      `schema_catalog` (FK graph), `cel_sync`. Until then: apps must cascade client-side and push
+      child deletes explicitly in the same batch.
+
 - [ ] **MFA: per-app mode + expose `required`.** TOTP 2FA is fully live (enroll/confirm/
       disable/recovery-codes/verify routes, per-user lockout, `mfa-reset` CLI, `mfa_sqlite`
       test) but two gaps: (1) **mode is process-wide.** `CEL_MFA` is read once at boot →
