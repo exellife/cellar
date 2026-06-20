@@ -504,6 +504,7 @@ int main(int argc, char **argv) {
     LOG_INFO("registered %u/%zu handlers", reg, HANDLER_COUNT);
 
     cel_realtime_init(rt_push, cel_api_rt_recheck_member);   /* push framer + VIA re-authz (M-5) */
+    cel_realtime_set_filter(cel_api_rt_filter);              /* the on_realtime() delivery hook */
 
     /* WebSocket listener. */
     ws_config_t cfg = {0};

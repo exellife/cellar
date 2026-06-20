@@ -62,4 +62,9 @@ void cel_hooks_after(cel_lua_t *L, const char *op, const char *table,
 cel_val_t *cel_hooks_rpc(cel_lua_t *L, const char *name, const cel_val_t *args,
                          const cel_val_t *who, char *errbuf, size_t errlen);
 
+/* on_realtime(change, subscriber): a delivery filter for realtime change events.
+ * Returns 1 to deliver this change to this subscriber, 0 to drop it. Absent hook →
+ * deliver; a fault → drop (fail closed). A pure filter — no db is bound. */
+int cel_hooks_on_realtime(cel_lua_t *L, const cel_val_t *change, const cel_val_t *subscriber);
+
 #endif /* CEL_HOOKS_H */

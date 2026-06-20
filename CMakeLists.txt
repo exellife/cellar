@@ -444,6 +444,10 @@ if(CELLAR_BUILD_TESTS)
         # before/authorize/after bundle (CEL_HOOKS_FILE=tests/hooks_crud.lua).
         add_test(NAME hooks_crud
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/hooks_crud_test.sh $<TARGET_FILE:cellar>)
+        # on_realtime hook (Phase 2 §8): a delivery filter drops SILENT-titled notes
+        # while normal notes still push (CEL_HOOKS_FILE=tests/hooks_realtime.lua).
+        add_test(NAME realtime_filter
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/realtime_filter_test.sh $<TARGET_FILE:cellar>)
         # Self-service registration (#51): boots with the taxi example policy
         # (rider/driver self-registerable, admin not) and exercises /auth/register.
         add_test(NAME register

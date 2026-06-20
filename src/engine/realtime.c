@@ -22,10 +22,13 @@ static pthread_mutex_t  g_lock   = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int       g_count  = 0;
 static cel_rt_send_fn   g_send   = NULL;
 static cel_rt_member_fn g_member = NULL;
+static cel_rt_filter_fn g_filter = NULL;
 
 void cel_realtime_init(cel_rt_send_fn send, cel_rt_member_fn member) {
     g_send = send; g_member = member;
 }
+
+void cel_realtime_set_filter(cel_rt_filter_fn filter) { g_filter = filter; }
 
 void cel_realtime_cleanup(void) {
     pthread_mutex_lock(&g_lock);
@@ -125,51 +128,43 @@ void cel_realtime_publish(const void *app, const char *table, const char *op, co
     if (atomic_load(&g_count) == 0 || !g_send || !row) return;
     cel_metric_inc(CEL_M_RT_EVENTS);
 
-    /* Collect matching subscribers under the lock, then send outside it (sends may
-     * buffer / do I/O — don't hold the registry mutex across them). A VIA
-     * (membership) subscription is NOT delivered on the flat predicate alone: its
-     * membership is re-verified against the DB after the lock is released (M-5), so
-     * a participant removed after subscribe stops receiving. EQ/OR subscriptions
-     * deliver directly (no per-publish query). */
+    /* Collect predicate-matching subscribers (with a copy of each sub) under the
+     * lock, then do membership re-check, the on_realtime filter, and the sends
+     * OUTSIDE it — those run Lua / do I/O and must not hold the registry mutex. */
     pthread_mutex_lock(&g_lock);
     int cap = atomic_load(&g_count);             /* upper bound on matches */
-    int *fds = cap > 0 ? malloc((size_t)cap * sizeof *fds) : NULL;
-    cel_subscription_t *via = cap > 0 ? malloc((size_t)cap * sizeof *via) : NULL;
-    int *via_fd = cap > 0 ? malloc((size_t)cap * sizeof *via_fd) : NULL;
-    int nf = 0, nv = 0;
-    if (fds && via && via_fd) {
-        for (rt_node_t *n = g_list; n; n = n->next) {
+    typedef struct { int fd; cel_subscription_t sub; } cand_t;
+    cand_t *cand = cap > 0 ? malloc((size_t)cap * sizeof *cand) : NULL;
+    int nc = 0;
+    if (cand) {
+        for (rt_node_t *n = g_list; n && nc < cap; n = n->next) {
             if (n->sub.app != app) continue;        /* isolation: only the writing app's subscribers */
             if (strcmp(n->sub.table, table) != 0 ||
                 !cel_rt_row_matches(n->sub.preds, n->sub.npreds, row)) continue;
-            if (n->sub.via) {            /* copy out for an out-of-lock re-check */
-                if (nv < cap) { via[nv] = n->sub; via_fd[nv] = n->fd; nv++; }
-            } else if (nf < cap) {
-                fds[nf++] = n->fd;
-            }
+            cand[nc].fd = n->fd; cand[nc].sub = n->sub; nc++;
         }
     }
     pthread_mutex_unlock(&g_lock);
+    if (nc == 0) { free(cand); return; }
 
-    /* Re-authorize VIA subscribers against current membership, outside the lock.
-     * Fail closed if no member callback is wired. */
-    for (int i = 0; i < nv && nf < cap; i++)
-        if (g_member && g_member(&via[i])) fds[nf++] = via_fd[i];
-    free(via); free(via_fd);
-
-    if (nf == 0) { free(fds); return; }
-
-    /* Serialize the event once — every matching subscriber gets the same row. */
+    /* Serialize the event once — every delivered subscriber gets the same row. */
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "table", table);
     cJSON_AddStringToObject(o, "op", op);
     cJSON_AddItemReferenceToObject(o, "row", (cJSON *)row);   /* reference: row not owned */
     char *json = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
-    if (json) {
-        size_t len = strlen(json);
-        for (int i = 0; i < nf; i++) g_send(fds[i], json, len);
-        free(json);
+    if (!json) { free(cand); return; }
+    size_t len = strlen(json);
+
+    for (int i = 0; i < nc; i++) {
+        const cel_subscription_t *s = &cand[i].sub;
+        /* VIA: re-verify membership (M-5); fail closed if no member callback. */
+        if (s->via && !(g_member && g_member(s))) continue;
+        /* on_realtime: an optional per-subscriber delivery filter (the hook). */
+        if (g_filter && !g_filter(s, table, op, row)) continue;
+        g_send(cand[i].fd, json, len);
     }
-    free(fds);
+    free(json);
+    free(cand);
 }

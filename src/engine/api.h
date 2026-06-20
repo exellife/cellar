@@ -112,4 +112,9 @@ int cel_api_authorize_subscription(const cel_identity_t *who, const cJSON *req,
  * the subscriber is still a member (M-5). Register with cel_realtime_init. */
 bool cel_api_rt_recheck_member(const cel_subscription_t *sub);
 
+/* The on_realtime() per-subscriber delivery filter. Register with
+ * cel_realtime_set_filter. Returns true to deliver this change to this subscriber. */
+bool cel_api_rt_filter(const cel_subscription_t *sub, const char *table,
+                       const char *op, const cJSON *row);
+
 #endif /* CEL_API_H */

@@ -247,6 +247,10 @@ static const char *PRELUDE =
 "function __cel_after(op, tbl, row_ptr, who_ptr)\n"
 "  if type(after) == 'function' then after(op, tbl, box(row_ptr, false), box(who_ptr, false)) end\n"
 "end\n"
+"function __cel_on_realtime(change_ptr, sub_ptr)\n"
+"  if type(on_realtime) ~= 'function' then return true end\n"
+"  return on_realtime(box(change_ptr, false), box(sub_ptr, false)) and true or false\n"
+"end\n"
 "function __cel_rpc(name, args_ptr, who_ptr)\n"
 "  if type(rpc) ~= 'function' then return nil, 'no rpc handler for ' .. tostring(name) end\n"
 "  local res, errm = rpc(name, box(args_ptr, false), box(who_ptr, false))\n"
@@ -403,4 +407,20 @@ void cel_hooks_after(cel_lua_t *Lh, const char *op, const char *table,
         LOG_ERROR("[hook] after fault (ignored; write already committed): %s", lua_tostring(L, -1));
         lua_pop(L, 1);
     }
+}
+
+int cel_hooks_on_realtime(cel_lua_t *Lh, const cel_val_t *change, const cel_val_t *subscriber) {
+    lua_State *L = (lua_State *)cel_lua_state(Lh);
+    if (!L) return 1;   /* no VM → deliver */
+    lua_getglobal(L, "__cel_on_realtime");
+    lua_pushlightuserdata(L, (void *)change);
+    lua_pushlightuserdata(L, (void *)subscriber);
+    if (lua_pcall(L, 2, 1, 0) != 0) {
+        LOG_ERROR("[hook] on_realtime fault (dropping subscriber): %s", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return 0;       /* fault → fail closed (don't deliver) */
+    }
+    int deliver = lua_toboolean(L, -1);
+    lua_pop(L, 1);
+    return deliver ? 1 : 0;
 }

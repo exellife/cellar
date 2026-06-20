@@ -1134,6 +1134,30 @@ bool cel_api_rt_recheck_member(const cel_subscription_t *sub) {
                          sub->via_key, sub->user_id);
 }
 
+/* The on_realtime() delivery filter (registered with cel_realtime_set_filter).
+ * Runs on the publishing app's worker thread, which has the app bound, so it
+ * reaches that app's hooks. on_realtime is a PURE filter: no db is bound (a
+ * cellar.query inside it errors → the dispatch fails closed → drop). */
+bool cel_api_rt_filter(const cel_subscription_t *sub, const char *table,
+                       const char *op, const cJSON *row) {
+    cel_lua_t *hooks = cel_hook_app_state(cel_apps_current_hooks());
+    if (!hooks) return true;   /* no hooks → deliver */
+
+    cJSON *change = cJSON_CreateObject();
+    cJSON_AddStringToObject(change, "table", table);
+    cJSON_AddStringToObject(change, "op", op);
+    cJSON_AddItemReferenceToObject(change, "row", (cJSON *)row);   /* row not owned */
+    cJSON *subscriber = cJSON_CreateObject();
+    cJSON_AddStringToObject(subscriber, "user_id", sub->user_id);
+    cJSON_AddStringToObject(subscriber, "role", sub->role);
+
+    int deliver = cel_hooks_on_realtime(hooks, (const cel_val_t *)change,
+                                        (const cel_val_t *)subscriber);
+    cJSON_Delete(change);
+    cJSON_Delete(subscriber);
+    return deliver != 0;
+}
+
 int cel_api_authorize_subscription(const cel_identity_t *who, const cJSON *req,
                                    cel_subscription_t *sub, char *errbuf, size_t errlen) {
     memset(sub, 0, sizeof *sub);
@@ -1148,6 +1172,9 @@ int cel_api_authorize_subscription(const cel_identity_t *who, const cJSON *req,
         snprintf(errbuf, errlen, "realtime not enabled for table"); return 403;
     }
     snprintf(sub->table, sizeof sub->table, "%s", t->name);
+    /* the subscriber identity the on_realtime hook sees (and VIA re-check uses) */
+    snprintf(sub->user_id, sizeof sub->user_id, "%s", who->user_id);
+    snprintf(sub->role,    sizeof sub->role,    "%s", who->role);
 
     cel_scope_t scope;
     if (make_scope(t, CEL_ACT_LIST, who, &scope) != 0) {

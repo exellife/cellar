@@ -63,6 +63,11 @@ static const char *HOOKS =
     "  end\n"
     "  if name == 'bad_query' then return cellar.query('SELECT * FROM nope') end\n"
     "  return nil, 'unknown rpc: ' .. name\n"
+    "end\n"
+    "function on_realtime(change, subscriber)\n"
+    "  if change.op == 'DELETE' then return false end          -- never push deletes\n"
+    "  if subscriber.role == 'muted' then return false end     -- role-gated\n"
+    "  return true\n"
     "end\n";
 
 int main(void) {
@@ -175,6 +180,21 @@ int main(void) {
 
     cel_hooks_set_db(NULL);
     sqlite3_close(db);
+
+    /* ---- on_realtime: per-subscriber delivery filter ---- */
+    cJSON *chg_ins = cJSON_Parse("{\"table\":\"notes\",\"op\":\"INSERT\",\"row\":{\"id\":1}}");
+    cJSON *chg_del = cJSON_Parse("{\"table\":\"notes\",\"op\":\"DELETE\",\"row\":{\"id\":1}}");
+    cJSON *sub_norm = cJSON_Parse("{\"user_id\":\"u1\",\"role\":\"viewer\"}");
+    cJSON *sub_muted = cJSON_Parse("{\"user_id\":\"u9\",\"role\":\"muted\"}");
+    check("on_realtime deliver INSERT to normal sub",
+          cel_hooks_on_realtime(L, (cel_val_t *)chg_ins, (cel_val_t *)sub_norm) == 1, "");
+    check("on_realtime drops DELETE",
+          cel_hooks_on_realtime(L, (cel_val_t *)chg_del, (cel_val_t *)sub_norm) == 0, "");
+    check("on_realtime drops muted subscriber",
+          cel_hooks_on_realtime(L, (cel_val_t *)chg_ins, (cel_val_t *)sub_muted) == 0, "");
+    check("on_realtime absent -> deliver",
+          cel_hooks_on_realtime(bare, (cel_val_t *)chg_ins, (cel_val_t *)sub_norm) == 1, "");
+    cJSON_Delete(chg_ins); cJSON_Delete(chg_del); cJSON_Delete(sub_norm); cJSON_Delete(sub_muted);
 
     cJSON_Delete(admin); cJSON_Delete(viewer); cJSON_Delete(row);
     cJSON_Delete(in); cJSON_Delete(empty); cJSON_Delete(other); cJSON_Delete(add_args);

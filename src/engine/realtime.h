@@ -58,7 +58,8 @@ typedef struct {
     char via_ref[CEL_RT_IDENT];
     char via_user[CEL_RT_IDENT];
     char via_key[CEL_RT_VALUE];   /* the ref value subscribed to (e.g. conversation id) */
-    char user_id[CEL_RT_VALUE];   /* the membership subject (the caller) */
+    char user_id[CEL_RT_VALUE];   /* the subscriber's user id (set for every sub) */
+    char role[CEL_RT_IDENT];      /* the subscriber's role (passed to on_realtime) */
     char tenant[CEL_RT_VALUE];    /* tenant context for the re-check (L-4); "" = none */
 } cel_subscription_t;
 
@@ -67,8 +68,16 @@ typedef void (*cel_rt_send_fn)(int fd, const char *json, size_t len);
 /* Re-authorize a VIA subscription at publish time: true iff the subscriber is
  * STILL a member (a fresh membership query). NULL => VIA subs never deliver. */
 typedef bool (*cel_rt_member_fn)(const cel_subscription_t *sub);
+/* Optional per-subscriber delivery filter (the on_realtime hook): true to deliver
+ * this change to this subscriber, false to drop it. NULL => deliver all. Runs
+ * outside the registry lock. */
+typedef bool (*cel_rt_filter_fn)(const cel_subscription_t *sub, const char *table,
+                                 const char *op, const cJSON *row);
 
 void cel_realtime_init(cel_rt_send_fn send, cel_rt_member_fn member);
+/* Install (or clear, with NULL) the delivery filter applied to every matched
+ * subscriber after the predicate + membership checks. */
+void cel_realtime_set_filter(cel_rt_filter_fn filter);
 void cel_realtime_cleanup(void);
 
 /* Register (or replace) the subscription for (fd, sub->table). Returns 0 on ok. */
