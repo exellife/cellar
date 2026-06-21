@@ -41,7 +41,7 @@ class DB {
     // a reactive projection the petite-vue views bind to: state[table] = live rows.
     // Rebuilt on every change (app-scale data → cheap); keeps sync internals (Maps)
     // separate from reactivity.
-    this.state = window.PetiteVue.reactive({ online: this.online, pending: 0, log: "" });
+    this.state = window.Vue.reactive({ online: this.online, pending: 0, log: "" });
     for (const t of SYNCABLE) this.state[t] = [];
     this._refresh();
   }

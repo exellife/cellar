@@ -32,17 +32,28 @@ Toggle **online → off** in the sidebar to queue edits offline; flip back on to
 
 ## Architecture
 
+Front-end is **Vue 3 + vue-router**, loaded as vendored global builds — **no build step**;
+ES-module components served straight from `public/`. (Swap the `vendor/*.global.js` dev
+builds for the `*.global.prod.js` ones in production.)
+
 - `public/db.js` — the multi-table offline sync engine: a local mirror of every syncable
   table, a pending-mutation queue (`mutation_id` + `device_id`), `sync()` = push→pull,
   and realtime CHANGE applied live. Views read/write through it; it owns all network I/O.
-- `public/app.js` — shell: auth, nav, hash router, sync status bar.
-- `public/views/*.js` — one module per screen.
+  `db.state` is a Vue-reactive projection the views bind to.
+- `public/store.js` — app-level reactive state + actions (auth flag, the generic modal,
+  the sync lifecycle).
+- `public/app.js` — root component: the shell (nav + sync bar + `<router-view>`), the
+  router, and the auth gate.
+- `public/views/*.js` — one component per screen (`auth`, `venues`, `bookings`, stubs).
+- `public/components/*.js` — shared components (`syncbar`, the generic `modal`).
+- `public/util.js` — shared helpers + domain enums (sessions, event types, statuses).
 - `schema.sql` / `policies.json` / `hooks.lua` — the org bundle (data model, authz,
   server-set timestamps + a `resolve()` most-recent-edit-wins conflict rule).
 
 ## Status (iterative)
 
 - [x] Foundation: bundle, multi-table sync engine, shell, auth, live/offline sync
+      (Vue 3 + vue-router, build-less, component/view modules)
 - [x] **Venues & Halls** — full CRUD (org → venue → hall), cascade delete
 - [x] **Bookings** — list + create/edit form (hall · session · date · event · guests · price ·
       status), with **offline conflict detection** (one live booking per hall+session+date)
