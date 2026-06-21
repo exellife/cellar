@@ -13,7 +13,6 @@ export const BookingsView = {
         <div class="head-left">
           <h1>Bookings</h1>
           <select class="venue-select" v-model="venue" v-if="venueOptions.length">
-            <option value="">All venues</option>
             <option v-for="v in venueOptions" :value="v.id">{{ v.name }}</option>
           </select>
         </div>
@@ -46,7 +45,15 @@ export const BookingsView = {
       </template>
     </div>
   `,
-  data() { return { view: "calendar", venue: "" }; },   // venue: "" = all venues
+  data() { return { view: "calendar", venue: "" }; },
+  watch: {
+    // a single calendar is per-venue; default to the first venue once they load
+    // (and re-pick the first if the selected venue is deleted). Venues arrive async.
+    venueOptions: {
+      immediate: true,
+      handler(opts) { if (opts.length && !opts.some(v => v.id === this.venue)) this.venue = opts[0].id; },
+    },
+  },
   computed: {
     venueOptions() { return [...db.state.venues].sort(byOrder); },
     bookings() {
