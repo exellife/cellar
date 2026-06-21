@@ -70,6 +70,7 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .pill.st-completed { color:var(--accent); border-color:var(--accent); }
 .pill.st-cancelled { color:var(--danger); border-color:var(--danger); text-decoration:line-through; }
 
+.head-left { display:flex; align-items:center; gap:14px; }
 .venue-select { width:auto; padding:7px 12px; }
 
 /* segmented toggle (calendar / list) */
