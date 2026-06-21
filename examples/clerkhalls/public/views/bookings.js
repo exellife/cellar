@@ -76,8 +76,9 @@ export const BookingsView = {
     },
   },
   methods: {
-    onDay(date) { if (this.hallOptions.length) this.newBooking(date); },
+    onDay(date) { if (this.hallOptsFor(this.venue).length) this.newBooking(date); },
     onEvent(ev) { this.editBooking(ev.data); },
+    hallOptsFor(venueId) { return db.state.halls.filter(h => h.venue_id === venueId).sort(byOrder).map(h => opt(h.id, h.name)); },
     hallVenueId(id) { return (db.state.halls.find(h => h.id === id) || {}).venue_id; },
     hallShort(id) { return (db.state.halls.find(h => h.id === id) || {}).name || "?"; },
     sessionShort(s) { return ({ morning: "M", afternoon: "A", evening: "E" })[s] || "?"; },
@@ -94,8 +95,12 @@ export const BookingsView = {
     },
 
     bookingFields(b, presetDate) {
+      // scope the hall picker to one venue: the booking's venue when editing,
+      // else the currently-selected venue. Default to its first hall.
+      const venueId = (b && this.hallVenueId(b.hall_id)) || this.venue;
+      const halls = this.hallOptsFor(venueId);
       return [
-        field("hall_id", "Hall", true, b?.hall_id, "select", this.hallOptions),
+        field("hall_id", "Hall", true, b?.hall_id || halls[0]?.value, "select", halls),
         field("event_type", "Event type", true, b?.event_type || "wedding", "select", EVENT_TYPES),
         field("session", "Session", true, b?.session || "evening", "select", SESSIONS),
         field("start_date", "Date", true, b?.start_date || presetDate, "date"),
