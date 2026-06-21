@@ -2,7 +2,7 @@
 // (Menu categorized, Wholesale + Extras flat) + grand-total card + payments.
 // Every line/category/payment change persists through db (offline-first).
 import { db } from "/db.js";
-import { byOrder, opt, labelOf, som, prettyDate, SESSIONS, EVENT_TYPES } from "/util.js";
+import { byOrder, opt, labelOf, som, prettyDate, SESSIONS, EVENT_TYPES, STATUS_ACTIONS } from "/util.js";
 import { ItemizedTable } from "/components/itemized-table.js";
 import { GrandTotalCard } from "/components/grand-total-card.js";
 import { PaymentSection } from "/components/payment-section.js";
@@ -28,6 +28,7 @@ export const BookingDetailView = {
     extrasSubtotal() { return sumRows(this.extrasRows); },
     totalPaid() { return this.payments.reduce((s, p) => s + (+p.amount_kgs || 0), 0); },
     menuSuggestions() { return db.state.menu_items.map((i) => ({ name: i.name, price: i.price_kgs })); },
+    statusActions() { return STATUS_ACTIONS[this.booking?.status] || []; },
     bookingVenueId() { const h = db.state.halls.find((x) => x.id === this.booking?.hall_id); return h?.venue_id; },
     formHalls() { return db.state.halls.filter((h) => h.venue_id === this.bookingVenueId).sort(byOrder).map((h) => opt(h.id, h.name)); },
   },
@@ -62,7 +63,9 @@ export const BookingDetailView = {
     addPayment(p) { db.save("payments", { booking_id: this.id, ...p }); },
     removePayment(pid) { db.remove("payments", pid); },
 
-    // ---- header edit / delete ----
+    // ---- status lifecycle / edit / delete ----
+    setStatus(to) { db.save("bookings", { id: this.id, status: to }); },
+    btnClass(kind) { return kind === "primary" ? "primary" : (kind === "danger" ? "ghost danger" : "ghost"); },
     edit() { this.form = { booking: this.booking, date: this.booking.start_date }; },
     delBooking() { if (confirm(`Delete this booking for ${this.booking.customer_name}?`)) { db.remove("bookings", this.id); this.back(); } },
     onEditSubmit(v) {
@@ -87,6 +90,8 @@ export const BookingDetailView = {
             <span class="pill" :class="'st-'+booking.status">{{ booking.status }}</span>
           </div>
           <div class="row-actions">
+            <button v-for="a in statusActions" :key="a.to" :class="btnClass(a.kind)" @click="setStatus(a.to)">{{ a.label }}</button>
+            <span class="sep"></span>
             <button class="ghost" @click="edit">Edit</button>
             <button class="ghost danger" @click="delBooking">Delete</button>
           </div>

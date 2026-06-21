@@ -19,6 +19,25 @@ export const EVENT_TYPES = [
 
 export const labelOf = (list, v) => (list.find(o => o.value === v) || {}).label || v || "";
 
+// ---- booking status lifecycle ----
+// Guided transitions: the buttons offered from each status (kind = button style).
+export const STATUS_ACTIONS = {
+  tentative: [{ to: "confirmed", label: "Confirm", kind: "primary" }, { to: "cancelled", label: "Cancel", kind: "danger" }],
+  confirmed: [{ to: "completed", label: "Mark completed", kind: "primary" }, { to: "tentative", label: "Revert", kind: "ghost" }, { to: "cancelled", label: "Cancel", kind: "danger" }],
+  completed: [{ to: "confirmed", label: "Reopen", kind: "ghost" }],
+  cancelled: [{ to: "tentative", label: "Reopen", kind: "ghost" }],
+};
+
+// Derived calendar color (separate from raw status), per the Flutter app's
+// booking_workflow_state: amber = unpriced, green = priced/ready, gray = done+paid,
+// red = done but still owing. (Cancelled bookings are filtered out before this.)
+export const workflowState = (booking, itemsSubtotal, totalPaid) => {
+  if (booking.status === "completed") {
+    return itemsSubtotal - (+booking.discount || 0) - totalPaid > 0 ? "red" : "gray";
+  }
+  return itemsSubtotal > 0 ? "green" : "amber";
+};
+
 // ---- dates (local-safe: never round-trip through UTC, so no off-by-one-day) ----
 export const pad2 = (n) => String(n).padStart(2, "0");
 export const ymd = (y, m, d) => `${y}-${pad2(m + 1)}-${pad2(d)}`;   // m is 0-11

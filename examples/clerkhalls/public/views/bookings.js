@@ -2,7 +2,7 @@
 // BookingForm modal, and offline conflict detection (one live booking per
 // hall + session + date).
 import { db } from "/db.js";
-import { byOrder, opt, labelOf, SESSIONS, EVENT_TYPES } from "/util.js";
+import { byOrder, opt, labelOf, workflowState, SESSIONS, EVENT_TYPES } from "/util.js";
 import { Calendar } from "/components/calendar.js";
 import { BookingForm } from "/components/booking-form.js";
 
@@ -24,7 +24,15 @@ export const BookingsView = {
       </div>
       <p class="muted" v-if="!venueOptions.length">Add a venue with at least one hall first.</p>
 
-      <calendar v-else-if="view==='calendar'" :events="events" @day-click="onDay" @event-click="onEvent"></calendar>
+      <template v-else-if="view==='calendar'">
+        <calendar :events="events" @day-click="onDay" @event-click="onEvent"></calendar>
+        <div class="wf-legend">
+          <span><i class="dot st-amber"></i> unpriced</span>
+          <span><i class="dot st-green"></i> ready</span>
+          <span><i class="dot st-gray"></i> done · paid</span>
+          <span><i class="dot st-red"></i> done · owing</span>
+        </div>
+      </template>
 
       <template v-else>
         <p class="empty" v-if="!bookings.length">No bookings yet — click a day on the calendar to add one.</p>
@@ -72,8 +80,10 @@ export const BookingsView = {
       return [...db.state.halls].sort(byOrder).map(h => opt(h.id, `${vname(h.venue_id)} · ${h.name}`));
     },
     events() {
-      return this.bookings.map(b => ({
-        id: b.id, start: b.start_date, end: b.end_date || b.start_date, color: b.status,
+      // cancelled bookings don't block a slot → keep them off the calendar (still in List).
+      return this.bookings.filter(b => b.status !== "cancelled").map(b => ({
+        id: b.id, start: b.start_date, end: b.end_date || b.start_date,
+        color: workflowState(b, this.itemsSubtotal(b.id), this.paidFor(b.id)),
         title: `${this.sessionShort(b.session)} · ${this.hallShort(b.hall_id)} · ${b.customer_name}`,
         data: b,
       }));
@@ -113,6 +123,8 @@ export const BookingsView = {
         String(b.end_date) >= startDate && String(b.start_date) <= endDate);
     },
     hallOptsFor(venueId) { return db.state.halls.filter(h => h.venue_id === venueId).sort(byOrder).map(h => opt(h.id, h.name)); },
+    itemsSubtotal(bid) { return db.state.booking_items.filter(r => r.booking_id === bid).reduce((s, r) => s + (+r.quantity || 0) * (+r.unit_price || 0), 0); },
+    paidFor(bid) { return db.state.payments.filter(p => p.booking_id === bid).reduce((s, p) => s + (+p.amount_kgs || 0), 0); },
     hallVenueId(id) { return (db.state.halls.find(h => h.id === id) || {}).venue_id; },
     hallShort(id) { return (db.state.halls.find(h => h.id === id) || {}).name || "?"; },
     sessionShort(s) { return ({ morning: "M", afternoon: "A", evening: "E" })[s] || "?"; },
