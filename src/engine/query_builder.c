@@ -255,11 +255,19 @@ static int append_scope_predicate(const cel_table_t *t, cel_query_t *q, sb_t *sq
     return append_eq_param(q, sql, r->column, r->value);   /* EQ */
 }
 
+/* Cap where-tree recursion. Real predicates are a handful of levels deep; this is
+ * far above any legitimate query but well below a stack-overflow, so a pathological
+ * nest is a clean 400 instead of a crash. */
+#define CEL_WHERE_MAX_DEPTH 32
+
 /* Build a where node: the AND of its keys. A key is a logical operator (and/or/
  * not — recursed, parenthesized) or a column name (its operator conditions, AND-ed).
- * The flat all-column form is byte-for-byte unchanged from before. */
+ * The flat all-column form is byte-for-byte unchanged from before. A node that emits
+ * nothing (an empty object, anywhere) is rejected rather than producing empty parens
+ * (`()` / `NOT ()`) — malformed SQL that would surface as a 500. */
 static int build_node(const cel_table_t *t, cel_query_t *q, sb_t *sql,
-                      const cJSON *node, char *errbuf, size_t errlen) {
+                      const cJSON *node, int depth, char *errbuf, size_t errlen) {
+    if (depth > CEL_WHERE_MAX_DEPTH) FAIL("'where' is nested too deeply (max %d)", CEL_WHERE_MAX_DEPTH);
     int n = 0;
     const cJSON *child;
     cJSON_ArrayForEach(child, node) {
@@ -274,14 +282,14 @@ static int build_node(const cel_table_t *t, cel_query_t *q, sb_t *sql,
             cJSON_ArrayForEach(el, child) {
                 if (!cJSON_IsObject(el)) FAIL("'%s' entries must be objects", key);
                 if (m++ && sb_puts(sql, join)) return -1;
-                if (build_node(t, q, sql, el, errbuf, errlen)) return -1;
+                if (build_node(t, q, sql, el, depth + 1, errbuf, errlen)) return -1;
             }
             if (sb_puts(sql, ")")) return -1;
         } else if (!strcmp(key, "not")) {
             if (!cJSON_IsObject(child)) FAIL("'not' must be an object");
             if (n++ && sb_puts(sql, " AND ")) return -1;
             if (sb_puts(sql, "NOT (")) return -1;
-            if (build_node(t, q, sql, child, errbuf, errlen)) return -1;
+            if (build_node(t, q, sql, child, depth + 1, errbuf, errlen)) return -1;
             if (sb_puts(sql, ")")) return -1;
         } else {
             const char *col = key;
@@ -296,6 +304,7 @@ static int build_node(const cel_table_t *t, cel_query_t *q, sb_t *sql,
             }
         }
     }
+    if (n == 0) FAIL("'where' has an empty condition group");   /* else: () / NOT () -> bad SQL */
     return 0;
 }
 
@@ -310,7 +319,7 @@ static int build_where(const cel_table_t *t, const cJSON *req, const cel_scope_t
     if (sb_puts(sql, " WHERE ")) return -1;
     int n = 0;
     if (have_where) {
-        if (build_node(t, q, sql, where, errbuf, errlen)) return -1;
+        if (build_node(t, q, sql, where, 0, errbuf, errlen)) return -1;
         n = 1;
     }
     for (int i = 0; i < nscope; i++) {

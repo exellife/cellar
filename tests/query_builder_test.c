@@ -252,6 +252,38 @@ int main(void) {
     expect_reject("create rejects VIA", cel_build_create(&mt, req, &via, &q, err, sizeof err));
     cel_query_free(&q); cJSON_Delete(req);
 
+    /* ---- where-tree edge cases: a node that emits no condition must be REJECTED
+     * (an empty object -> `()` / `NOT ()` is malformed SQL -> a 500), and the tree
+     * depth is capped (a pathological nest is a clean 400, not a stack overflow). ---- */
+
+    /* positive control: a valid nested where builds correctly */
+    req = cJSON_CreateObject();
+    cJSON *wtree = cJSON_AddObjectToObject(req, "where");
+    cJSON_AddStringToObject(cJSON_AddObjectToObject(cJSON_AddObjectToObject(wtree, "not"), "title"), "eq", "x");
+    expect("where not(eq)", cel_build_list(&t, req, &none, NULL, &q, err, sizeof err), &q,
+           "SELECT \"id\", \"owner_id\", \"title\" FROM \"notes\" WHERE NOT (\"title\" = ?1) LIMIT 100 OFFSET 0", 1);
+    cel_query_free(&q); cJSON_Delete(req);
+
+    /* empty `not` object -> reject (was: NOT () -> SQLite syntax error -> 500) */
+    req = cJSON_CreateObject();
+    cJSON_AddObjectToObject(cJSON_AddObjectToObject(req, "where"), "not");
+    expect_reject("where not{} rejected", cel_build_list(&t, req, &none, NULL, &q, err, sizeof err));
+    cel_query_free(&q); cJSON_Delete(req);
+
+    /* `and` with an empty-object entry -> reject (was: () -> 500) */
+    req = cJSON_CreateObject();
+    cJSON_AddItemToArray(cJSON_AddArrayToObject(cJSON_AddObjectToObject(req, "where"), "and"), cJSON_CreateObject());
+    expect_reject("where and[{}] rejected", cel_build_list(&t, req, &none, NULL, &q, err, sizeof err));
+    cel_query_free(&q); cJSON_Delete(req);
+
+    /* over-deep nesting (>32) -> reject, not a stack overflow */
+    req = cJSON_CreateObject();
+    cJSON *wnode = cJSON_AddObjectToObject(req, "where");
+    for (int i = 0; i < 40; i++) wnode = cJSON_AddObjectToObject(wnode, "not");
+    cJSON_AddStringToObject(cJSON_AddObjectToObject(wnode, "title"), "eq", "x");
+    expect_reject("where over-deep rejected", cel_build_list(&t, req, &none, NULL, &q, err, sizeof err));
+    cel_query_free(&q); cJSON_Delete(req);
+
     /* ---- #54 RPC builder ---- */
     {
         cel_query_t qq; char e[256];
