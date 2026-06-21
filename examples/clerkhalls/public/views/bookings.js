@@ -11,12 +11,9 @@ export const BookingsView = {
     <div>
       <div class="page-head">
         <h1>Bookings</h1>
-        <div class="row-actions">
-          <div class="seg">
-            <button :class="{ active: view==='calendar' }" @click="view='calendar'">Calendar</button>
-            <button :class="{ active: view==='list' }" @click="view='list'">List</button>
-          </div>
-          <button class="primary" @click="newBooking()" :disabled="!hallOptions.length">+ Booking</button>
+        <div class="seg">
+          <button :class="{ active: view==='calendar' }" @click="view='calendar'">Calendar</button>
+          <button :class="{ active: view==='list' }" @click="view='list'">List</button>
         </div>
       </div>
       <p class="muted" v-if="!hallOptions.length">Add a venue with at least one hall first.</p>
