@@ -10,6 +10,7 @@ import { VenuesView } from "/views/venues.js";
 import { BookingsView } from "/views/bookings.js";
 import { BookingDetailView } from "/views/booking-detail.js";
 import { MenuView } from "/views/menu.js";
+import { ReportsView } from "/views/reports.js";
 import { SettingsView } from "/views/stubs.js";
 
 const { createApp } = window.Vue;
@@ -24,6 +25,7 @@ const router = createRouter({
     { path: "/bookings", component: BookingsView },
     { path: "/bookings/:id", component: BookingDetailView, props: true },
     { path: "/menu", component: MenuView },
+    { path: "/reports", component: ReportsView },
     { path: "/settings", component: SettingsView },
   ],
 });
@@ -38,6 +40,7 @@ const App = {
         <router-link class="navlink" to="/venues">Venues &amp; Halls</router-link>
         <router-link class="navlink" to="/bookings">Bookings</router-link>
         <router-link class="navlink" to="/menu">Menu</router-link>
+        <router-link class="navlink" to="/reports">Reports</router-link>
         <router-link class="navlink" to="/settings">Settings</router-link>
         <div class="nav-foot">
           <sync-bar></sync-bar>
