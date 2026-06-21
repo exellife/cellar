@@ -23,3 +23,10 @@ export const labelOf = (list, v) => (list.find(o => o.value === v) || {}).label 
 export const pad2 = (n) => String(n).padStart(2, "0");
 export const ymd = (y, m, d) => `${y}-${pad2(m + 1)}-${pad2(d)}`;   // m is 0-11
 export const todayStr = () => { const t = new Date(); return ymd(t.getFullYear(), t.getMonth(), t.getDate()); };
+
+export const som = (n) => Math.round(+n || 0).toLocaleString() + " som";
+export const prettyDate = (s) => {
+  if (!s) return "";
+  const [y, m, d] = String(s).slice(0, 10).split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+};

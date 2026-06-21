@@ -122,6 +122,33 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .itable .link { background:none; border:none; color:var(--accent); padding:0; }
 .itable-foot { display:flex; justify-content:space-between; padding:10px 14px; font-weight:600; }
 
+/* booking detail */
+.bdetail .back, .link { background:none; border:none; color:var(--accent); padding:0; cursor:pointer; font:inherit; }
+.bdetail .back { margin-bottom:12px; }
+.factrow { display:flex; flex-wrap:wrap; gap:14px; margin:2px 0 18px; font-size:14px; }
+.factrow span:not(:last-child)::after { content:"·"; margin-left:14px; color:var(--line); }
+.sec { margin:18px 0; }
+.sec > h3 { margin-bottom:8px; }
+.sec-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+
+/* bill card */
+.bill { display:flex; flex-direction:column; gap:2px; }
+.bline { display:flex; justify-content:space-between; align-items:center; padding:5px 0; font-size:14px; }
+.bline > span:first-child { color:var(--dim); font-size:11px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; }
+.bline.grand > span:first-child, .bline.balance > span:first-child { color:var(--ink); }
+.bline.grand { font-weight:600; }
+.bline.balance { font-size:20px; font-weight:700; padding-top:8px; }
+.bdiv { height:1px; background:var(--line); margin:6px 0; }
+.disc { width:110px; text-align:right; padding:4px 8px; }
+.bpay { display:flex; justify-content:space-between; padding:1px 0 1px 14px; }
+
+/* payments */
+.pay-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line); }
+.pay-amt { display:flex; align-items:center; gap:8px; font-weight:500; }
+.pay-add { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0; }
+.pay-add input, .pay-add select { width:auto; flex:0 0 auto; }
+.pay-add input[type=number] { width:110px; }
+
 /* modal */
 .modal-backdrop { position:fixed; inset:0; background:rgba(255,255,255,.18);
   backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px);

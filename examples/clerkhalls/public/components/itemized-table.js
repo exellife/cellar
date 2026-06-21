@@ -70,7 +70,7 @@ export const ItemizedTable = {
     saveRename(c) { const n = this.catDraft.trim(); if (n) this.$emit("category-rename", { id: c.id, name: n }); this.renamingId = null; },
     removeCategory(c) {
       const n = this.rowsOf(c.id).length;
-      if (confirm(`Remove category "${c.name}"${n ? ` and its ${n} item(s)` : ""}?`)) this.$emit("category-remove", c.id);
+      if (confirm(`Remove category "${c.name}"?${n ? ` Its ${n} item(s) move to Uncategorized.` : ""}`)) this.$emit("category-remove", c.id);
     },
     submitCat() { const n = this.newCatName.trim(); if (n) this.$emit("category-add", n); this.newCatName = ""; this.addingCat = false; },
   },

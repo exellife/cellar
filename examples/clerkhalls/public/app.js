@@ -8,6 +8,7 @@ import { AppModal } from "/components/modal.js";
 import { AuthView } from "/views/auth.js";
 import { VenuesView } from "/views/venues.js";
 import { BookingsView } from "/views/bookings.js";
+import { BookingDetailView } from "/views/booking-detail.js";
 import { MenuView, SettingsView } from "/views/stubs.js";
 
 const { createApp } = window.Vue;
@@ -20,6 +21,7 @@ const router = createRouter({
     { path: "/", redirect: "/venues" },
     { path: "/venues", component: VenuesView },
     { path: "/bookings", component: BookingsView },
+    { path: "/bookings/:id", component: BookingDetailView, props: true },
     { path: "/menu", component: MenuView },
     { path: "/settings", component: SettingsView },
   ],

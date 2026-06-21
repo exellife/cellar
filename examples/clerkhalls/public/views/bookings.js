@@ -31,7 +31,7 @@ export const BookingsView = {
         <table class="grid" v-else>
           <thead><tr><th>Date</th><th>Session</th><th>Hall</th><th>Event</th><th>Customer</th><th>Guests</th><th>Status</th><th></th></tr></thead>
           <tbody>
-            <tr v-for="b in bookings" :key="b.id" class="brow" @click="editBooking(b)">
+            <tr v-for="b in bookings" :key="b.id" class="brow" @click="open(b)">
               <td class="nowrap">{{ b.start_date }}<template v-if="b.end_date && b.end_date !== b.start_date"> → {{ b.end_date }}</template></td>
               <td>{{ sessionLabel(b.session) }}</td>
               <td>{{ hallLabel(b.hall_id) }}</td>
@@ -86,8 +86,8 @@ export const BookingsView = {
   },
   methods: {
     onDay(date) { if (this.hallOptsFor(this.venue).length) this.form = { booking: null, date }; },
-    onEvent(ev) { this.editBooking(ev.data); },
-    editBooking(b) { this.form = { booking: b, date: b.start_date }; },
+    onEvent(ev) { this.open(ev.data); },
+    open(b) { this.$router.push(`/bookings/${b.id}`); },
     delBooking(b) { if (confirm(`Delete booking for ${b.customer_name}?`)) db.remove("bookings", b.id); },
     onSubmit(v) {
       const ex = this.form.booking;
