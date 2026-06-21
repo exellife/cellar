@@ -104,4 +104,10 @@ button:disabled { opacity:.45; cursor:not-allowed; }
   backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px);
   display:flex; align-items:center; justify-content:center; padding:20px; }
 .modal { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px; width:360px; max-width:100%; max-height:88vh; overflow-y:auto; }
+.modal.modal-wide { width:600px; }
+.form-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:0 14px; margin-top:4px; }
+.form-grid .field { margin-bottom:12px; }
+.col-2 { grid-column:span 2; }
+.col-3 { grid-column:span 3; }
+@media (max-width:560px) { .col-2, .col-3 { grid-column:span 6; } }
 .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }

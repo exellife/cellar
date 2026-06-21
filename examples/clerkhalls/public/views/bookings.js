@@ -1,12 +1,13 @@
-// views/bookings.js — Bookings list + create/edit form with offline conflict
-// detection (one live booking per hall + session + date).
+// views/bookings.js — Bookings: venue-scoped calendar (+ list view), the dedicated
+// BookingForm modal, and offline conflict detection (one live booking per
+// hall + session + date).
 import { db } from "/db.js";
-import { openModal } from "/store.js";
-import { field, byOrder, opt, labelOf, SESSIONS, STATUSES, EVENT_TYPES } from "/util.js";
+import { byOrder, opt, labelOf, SESSIONS, EVENT_TYPES } from "/util.js";
 import { Calendar } from "/components/calendar.js";
+import { BookingForm } from "/components/booking-form.js";
 
 export const BookingsView = {
-  components: { Calendar },
+  components: { Calendar, BookingForm },
   template: `
     <div>
       <div class="page-head">
@@ -21,12 +22,12 @@ export const BookingsView = {
           <button :class="{ active: view==='list' }" @click="view='list'">List</button>
         </div>
       </div>
-      <p class="muted" v-if="!hallOptions.length">Add a venue with at least one hall first.</p>
+      <p class="muted" v-if="!venueOptions.length">Add a venue with at least one hall first.</p>
 
       <calendar v-else-if="view==='calendar'" :events="events" @day-click="onDay" @event-click="onEvent"></calendar>
 
       <template v-else>
-        <p class="empty" v-if="!bookings.length">No bookings yet — add one.</p>
+        <p class="empty" v-if="!bookings.length">No bookings yet — click a day on the calendar to add one.</p>
         <table class="grid" v-else>
           <thead><tr><th>Date</th><th>Session</th><th>Hall</th><th>Event</th><th>Customer</th><th>Guests</th><th>Status</th><th></th></tr></thead>
           <tbody>
@@ -43,9 +44,12 @@ export const BookingsView = {
           </tbody>
         </table>
       </template>
+
+      <booking-form v-if="form" :booking="form.booking" :date="form.date" :halls="formHalls"
+                    @submit="onSubmit" @cancel="form=null"></booking-form>
     </div>
   `,
-  data() { return { view: "calendar", venue: "" }; },
+  data() { return { view: "calendar", venue: "", form: null }; },
   watch: {
     // a single calendar is per-venue; default to the first venue once they load
     // (and re-pick the first if the selected venue is deleted). Venues arrive async.
@@ -74,10 +78,41 @@ export const BookingsView = {
         data: b,
       }));
     },
+    formHalls() {
+      if (!this.form) return [];
+      const vid = (this.form.booking && this.hallVenueId(this.form.booking.hall_id)) || this.venue;
+      return this.hallOptsFor(vid);
+    },
   },
   methods: {
-    onDay(date) { if (this.hallOptsFor(this.venue).length) this.newBooking(date); },
+    onDay(date) { if (this.hallOptsFor(this.venue).length) this.form = { booking: null, date }; },
     onEvent(ev) { this.editBooking(ev.data); },
+    editBooking(b) { this.form = { booking: b, date: b.start_date }; },
+    delBooking(b) { if (confirm(`Delete booking for ${b.customer_name}?`)) db.remove("bookings", b.id); },
+    onSubmit(v) {
+      const ex = this.form.booking;
+      const end = ex?.end_date || v.start_date;
+      const c = this.conflicts(v.hall_id, v.session, v.start_date, end, ex?.id);
+      if (c.length && !confirm(
+        `"${this.hallLabel(v.hall_id)}" is already booked for ${this.sessionLabel(v.session)} on ${v.start_date} (${c[0].customer_name}). Book anyway?`))
+        return;
+      db.save("bookings", {
+        id: ex?.id, hall_id: v.hall_id, session: v.session, event_type: v.event_type,
+        start_date: v.start_date, end_date: end, start_time: v.start_time,
+        customer_name: v.customer_name, customer_phone: v.customer_phone,
+        guest_count_min: v.guest_count_min, guest_count_max: v.guest_count_max,
+        price_per_person: v.price_per_person, deposit: v.deposit,
+        discount: ex?.discount || 0, status: ex?.status || "tentative", notes: ex?.notes || null,
+      });
+      this.form = null;
+    },
+
+    conflicts(hallId, session, startDate, endDate, excludeId) {
+      return db.state.bookings.filter(b =>
+        b.id !== excludeId && b.hall_id === hallId && b.session === session &&
+        b.status !== "cancelled" && b.status !== "completed" &&
+        String(b.end_date) >= startDate && String(b.start_date) <= endDate);
+    },
     hallOptsFor(venueId) { return db.state.halls.filter(h => h.venue_id === venueId).sort(byOrder).map(h => opt(h.id, h.name)); },
     hallVenueId(id) { return (db.state.halls.find(h => h.id === id) || {}).venue_id; },
     hallShort(id) { return (db.state.halls.find(h => h.id === id) || {}).name || "?"; },
@@ -86,53 +121,5 @@ export const BookingsView = {
     sessionLabel(v) { return labelOf(SESSIONS, v); },
     eventLabel(v) { return labelOf(EVENT_TYPES, v); },
     guests(b) { return b.guest_count_max > b.guest_count_min ? `${b.guest_count_min}–${b.guest_count_max}` : `${b.guest_count_max || b.guest_count_min || 0}`; },
-
-    conflicts(hallId, session, startDate, endDate, excludeId) {
-      return db.state.bookings.filter(b =>
-        b.id !== excludeId && b.hall_id === hallId && b.session === session &&
-        b.status !== "cancelled" && b.status !== "completed" &&
-        String(b.end_date) >= startDate && String(b.start_date) <= endDate);
-    },
-
-    bookingFields(b, presetDate) {
-      // scope the hall picker to one venue: the booking's venue when editing,
-      // else the currently-selected venue. Default to its first hall.
-      const venueId = (b && this.hallVenueId(b.hall_id)) || this.venue;
-      const halls = this.hallOptsFor(venueId);
-      return [
-        field("hall_id", "Hall", true, b?.hall_id || halls[0]?.value, "select", halls),
-        field("event_type", "Event type", true, b?.event_type || "wedding", "select", EVENT_TYPES),
-        field("session", "Session", true, b?.session || "evening", "select", SESSIONS),
-        field("start_date", "Date", true, b?.start_date || presetDate, "date"),
-        field("end_date", "End date (multi-day)", false, b?.end_date, "date"),
-        field("customer_name", "Customer", true, b?.customer_name),
-        field("customer_phone", "Phone", false, b?.customer_phone),
-        field("guest_count_min", "Guests (min)", false, b?.guest_count_min, "number"),
-        field("guest_count_max", "Guests (max)", false, b?.guest_count_max, "number"),
-        field("price_per_person", "Price / guest (som)", false, b?.price_per_person, "number"),
-        field("status", "Status", false, b?.status || "tentative", "select", STATUSES),
-        field("notes", "Notes", false, b?.notes, "textarea"),
-      ];
-    },
-    newBooking(date) { openModal("New booking", this.bookingFields(null, date), this._saveBooking(null)); },
-    editBooking(b) { openModal("Edit booking", this.bookingFields(b), this._saveBooking(b)); },
-    delBooking(b) { if (confirm(`Delete booking for ${b.customer_name}?`)) db.remove("bookings", b.id); },
-    _saveBooking(existing) {
-      return (v) => {
-        const end = v.end_date || v.start_date;
-        const c = this.conflicts(v.hall_id, v.session, v.start_date, end, existing?.id);
-        if (c.length && !confirm(
-          `"${this.hallLabel(v.hall_id)}" is already booked for ${this.sessionLabel(v.session)} on ${v.start_date} (${c[0].customer_name}). Book anyway?`))
-          return false;
-        db.save("bookings", {
-          id: existing?.id, hall_id: v.hall_id, session: v.session, event_type: v.event_type,
-          start_date: v.start_date, end_date: end,
-          customer_name: v.customer_name, customer_phone: v.customer_phone || null,
-          guest_count_min: +v.guest_count_min || 0, guest_count_max: +v.guest_count_max || 0,
-          price_per_person: +v.price_per_person || 0, status: v.status || "tentative",
-          notes: v.notes || null,
-        });
-      };
-    },
   },
 };
