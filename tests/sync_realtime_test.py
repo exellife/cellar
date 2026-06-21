@@ -111,6 +111,24 @@ def main():
         {"mutations": [{"op": "del", "table": "items", "id": pid, "base_rev": 1}]})
     chk("push delete -> DELETE event delivered", wait_change(s, "DELETE", pid) is not None)
 
+    # cascade soft-delete must ALSO emit realtime for its tombstoned children.
+    # Subscribe to the child table item_lines (ON DELETE CASCADE -> items), create a
+    # parent item + a child line, then delete the parent: the cascade tombstones the
+    # line and must fire a live DELETE for it (not just reach other devices via pull).
+    s2 = connect(host, port)
+    send(s2, OP_SUBSCRIBE, 2, {"token": tok, "table": "item_lines"})
+    _op, b = recv(s2, 3)
+    chk("subscribe item_lines -> ok", b.get("status") == "ok", str(b))
+    parent = api(host, port, "POST", "/api/items", tok, {"name": "cascade-parent"})["row"]["id"]
+    line = api(host, port, "POST", "/api/item_lines", tok, {"item_id": parent, "label": "child"})["row"]["id"]
+    chk("child line created -> INSERT event", wait_change(s2, "INSERT", line) is not None)
+    api(host, port, "DELETE", f"/api/items/{parent}", tok)   # cascades to item_lines
+    ev = wait_change(s2, "DELETE", line)
+    chk("cascade -> child DELETE event delivered", ev is not None)
+    chk("cascade child event carries tombstone (deleted=1)",
+        ev is not None and (ev.get("row") or {}).get("deleted") == 1, str(ev))
+    s2.close()
+
     s.close()
     print(f"\n{'PASS' if fail == 0 else 'FAIL'}  ({ok} ok, {fail} failed)")
     return 1 if fail else 0

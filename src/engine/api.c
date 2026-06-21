@@ -283,15 +283,44 @@ static void rt_emit(const char *table, cel_action_t action, const cJSON *row) {
 typedef int (*build_fn)(const cel_table_t *, const cJSON *, const cel_scope_t *,
                         cel_query_t *, char *, size_t);
 
+/* Child rows tombstoned by a cascade soft-delete, held for post-commit realtime
+ * fan-out. `table` points into the process-stable catalog (safe to keep). */
+typedef struct { const char *table; cJSON *row; } cascade_emit_t;
+typedef struct { cascade_emit_t *items; int n, cap; } cascade_emits_t;
+
+static void cascade_emit_push(cascade_emits_t *e, const char *table, cJSON *row) {
+    if (!e || !row) { cJSON_Delete(row); return; }
+    if (e->n == e->cap) {
+        int cap = e->cap ? e->cap * 2 : 8;
+        cascade_emit_t *g = realloc(e->items, (size_t)cap * sizeof *g);
+        if (!g) { cJSON_Delete(row); return; }
+        e->items = g; e->cap = cap;
+    }
+    e->items[e->n].table = table; e->items[e->n].row = row; e->n++;
+}
+
+/* Free the collector; if `emit`, fire a realtime DELETE for each cascaded child
+ * first (post-commit; demand-gated inside rt_emit). */
+static void cascade_emits_drain(cascade_emits_t *e, int emit) {
+    for (int i = 0; i < e->n; i++) {
+        if (emit) rt_emit(e->items[i].table, CEL_ACT_DELETE, e->items[i].row);
+        cJSON_Delete(e->items[i].row);
+    }
+    free(e->items); e->items = NULL; e->n = e->cap = 0;
+}
+
 /* Sync cascade soft-delete. A soft-delete is an UPDATE, so SQLite's ON DELETE
  * CASCADE never fires; replicate it here so a parent's deletion propagates to its
  * children across devices. For each syncable child table with an `ON DELETE CASCADE`
  * FK to `parent`, soft-delete (deleted=1) + rev-stamp the rows pointing at `parent_id`,
  * and recurse into THEIR children. Runs on the txn conn `c` (rolls back with the
  * batch). `AND deleted=0` makes it idempotent and bounds cycles; `depth` is a backstop.
- * Identifiers come from the catalog (the app's own schema); values are bound. */
+ * Identifiers come from the catalog (the app's own schema); values are bound. The
+ * tombstoned rows are handed to `out` (when non-NULL) so the caller can emit a realtime
+ * DELETE for each after commit — otherwise the cascade reaches other devices only via
+ * pull, never as a live change event. */
 static void cascade_soft_delete(sqlite3 *c, const cel_table_t *parent,
-                                const char *parent_id, int depth) {
+                                const char *parent_id, int depth, cascade_emits_t *out) {
     const cel_catalog_t *cat = cel_catalog_active();
     if (!cat || depth >= 8 || !parent_id) return;
 
@@ -308,28 +337,31 @@ static void cascade_soft_delete(sqlite3 *c, const cel_table_t *parent,
             char sql[512];
             snprintf(sql, sizeof sql,
                      "UPDATE \"%s\" SET deleted = 1, rev = %lld "
-                     "WHERE \"%s\" = ?1 AND deleted = 0 RETURNING \"%s\"",
-                     child->name, rev, col->name, pk);
+                     "WHERE \"%s\" = ?1 AND deleted = 0 RETURNING *",
+                     child->name, rev, col->name);
             sqlite3_stmt *st = NULL;
             if (sqlite3_prepare_v2(c, sql, -1, &st, NULL) != SQLITE_OK) continue;
             sqlite3_bind_text(st, 1, parent_id, -1, SQLITE_TRANSIENT);
-
-            /* collect affected child ids (can't recurse while the stmt is live) */
-            char **ids = NULL; int nids = 0, cap = 0;
-            while (sqlite3_step(st) == SQLITE_ROW) {
-                const char *cid = (const char *)sqlite3_column_text(st, 0);
-                if (!cid) continue;
-                if (nids == cap) { cap = cap ? cap * 2 : 8;
-                                   char **g = realloc(ids, (size_t)cap * sizeof *g);
-                                   if (!g) break; ids = g; }
-                ids[nids++] = strdup(cid);
-            }
+            cJSON *rows = cel_stmt_rows_to_json(st, child);   /* steps the UPDATE...RETURNING */
             sqlite3_finalize(st);
-            for (int k = 0; k < nids; k++) {
-                if (ids[k]) cascade_soft_delete(c, child, ids[k], depth + 1);
-                free(ids[k]);
+            if (!rows) continue;
+
+            /* recurse into each affected child (the rows are materialized, so the stmt
+             * is no longer live), then hand the tombstoned rows to the emit collector. */
+            cJSON *r;
+            cJSON_ArrayForEach(r, rows) {
+                const cJSON *idj = cJSON_GetObjectItemCaseSensitive(r, pk);
+                if (cJSON_IsString(idj)) cascade_soft_delete(c, child, idj->valuestring, depth + 1, out);
             }
-            free(ids);
+            if (out) {
+                cJSON *next;
+                for (r = rows->child; r; r = next) {
+                    next = r->next;
+                    cJSON_DetachItemViaPointer(rows, r);
+                    cascade_emit_push(out, child->name, r);   /* takes ownership */
+                }
+            }
+            cJSON_Delete(rows);
         }
     }
 }
@@ -342,7 +374,8 @@ static void cascade_soft_delete(sqlite3 *c, const cel_table_t *parent,
 static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *req,
                           const cel_table_t *t, build_fn build, cel_action_t action,
                           int require_row, cel_lua_t *hooks, const cJSON *who_v,
-                          const char *opn, cJSON **out_row, char *msg, size_t msglen) {
+                          const char *opn, cJSON **out_row, char *msg, size_t msglen,
+                          cascade_emits_t *cascade) {
     *out_row = NULL;
 
     if (hooks) {
@@ -405,7 +438,7 @@ static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *re
      * CASCADE would have removed, so the deletion propagates to every device. */
     if (soft_delete && found) {
         const cJSON *idj = cJSON_GetObjectItemCaseSensitive(req, "id");
-        if (cJSON_IsString(idj)) cascade_soft_delete(c, t, idj->valuestring, 0);
+        if (cJSON_IsString(idj)) cascade_soft_delete(c, t, idj->valuestring, 0, cascade);
     }
     return 0;
 }
@@ -441,28 +474,30 @@ static cel_api_result_t run_write(const cel_identity_t *who, const cJSON *req,
     }
 
     cJSON *row = NULL;
+    cascade_emits_t casc = { 0 };   /* child rows tombstoned by a cascade soft-delete */
     char msg[256] = {0};
     int rc = write_txn_body(c, who, req, t, build, action, require_row, hooks, who_v, opn,
-                            &row, msg, sizeof msg);
+                            &row, msg, sizeof msg, &casc);
 
     if (rc != 0) {                                  /* reject / deny / build / query error → roll back */
         sqlite3_exec(c, "ROLLBACK", NULL, NULL, NULL);
         cel_hooks_set_db(NULL);
         app_db_conn_release(adb, c); app_db_write_unlock(adb);
-        cJSON_Delete(row); cJSON_Delete(who_v);
+        cascade_emits_drain(&casc, 0); cJSON_Delete(row); cJSON_Delete(who_v);
         return result_error(rc, msg[0] ? msg : "request failed");
     }
     if (sqlite3_exec(c, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
         LOG_ERROR("commit failed: %s", sqlite3_errmsg(c));
         sqlite3_exec(c, "ROLLBACK", NULL, NULL, NULL);
         app_db_conn_release(adb, c); app_db_write_unlock(adb);
-        cJSON_Delete(row); cJSON_Delete(who_v);
+        cascade_emits_drain(&casc, 0); cJSON_Delete(row); cJSON_Delete(who_v);
         return result_error(500, "commit failed");
     }
     app_db_conn_release(adb, c);
     app_db_write_unlock(adb);
 
     if (row) rt_emit(t->name, action, row);   /* realtime fan-out, post-commit */
+    cascade_emits_drain(&casc, 1);            /* + a DELETE for each cascaded child */
 
     /* after(): post-commit side effects on the committed row, on a separate pooled
      * connection (its writes are NOT part of the committed txn — §14). A fault is
@@ -1030,6 +1065,7 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
     struct { const char *table; cel_action_t action; cJSON *row; } *emits =
         maxmut > 0 ? calloc((size_t)maxmut, sizeof *emits) : NULL;
     int nemit = 0;
+    cascade_emits_t casc = { 0 };   /* child rows tombstoned by cascade soft-deletes in the batch */
 
     const cJSON *m;
     cJSON_ArrayForEach(m, muts) {
@@ -1092,7 +1128,7 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
             else {
                 cJSON *mreq = cJSON_CreateObject();
                 cJSON_AddItemReferenceToObject(mreq, "id", (cJSON *)jid);
-                rc = write_txn_body(c, who, mreq, t, cel_build_delete, CEL_ACT_DELETE, 1, hooks, who_v, "delete", &outrow, err, sizeof err);
+                rc = write_txn_body(c, who, mreq, t, cel_build_delete, CEL_ACT_DELETE, 1, hooks, who_v, "delete", &outrow, err, sizeof err, &casc);
                 cJSON_Delete(mreq);
                 if (rc == 0 && outrow) { out_rev = sync_row_rev(outrow); emit_action = CEL_ACT_DELETE; applied = true; }
                 status = conflict ? "conflict" : "applied";
@@ -1105,7 +1141,7 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
                 cJSON_AddItemToObject(vals, "id", cJSON_Duplicate((cJSON *)jid, 1));
                 cJSON *mreq = cJSON_CreateObject();
                 cJSON_AddItemToObject(mreq, "values", vals);
-                rc = write_txn_body(c, who, mreq, t, cel_build_create, CEL_ACT_CREATE, 0, hooks, who_v, "create", &outrow, err, sizeof err);
+                rc = write_txn_body(c, who, mreq, t, cel_build_create, CEL_ACT_CREATE, 0, hooks, who_v, "create", &outrow, err, sizeof err, &casc);
                 cJSON_Delete(mreq);
                 if (rc == 0 && outrow) { out_rev = sync_row_rev(outrow); emit_action = CEL_ACT_CREATE; applied = true; }
                 status = "applied";
@@ -1123,7 +1159,7 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
                 cJSON *mreq = cJSON_CreateObject();
                 cJSON_AddItemReferenceToObject(mreq, "id", (cJSON *)jid);
                 cJSON_AddItemToObject(mreq, "values", vals);
-                rc = write_txn_body(c, who, mreq, t, cel_build_update, CEL_ACT_UPDATE, 1, hooks, who_v, "update", &outrow, err, sizeof err);
+                rc = write_txn_body(c, who, mreq, t, cel_build_update, CEL_ACT_UPDATE, 1, hooks, who_v, "update", &outrow, err, sizeof err, &casc);
                 cJSON_Delete(mreq);
                 if (rc == 0 && outrow) { out_rev = sync_row_rev(outrow); emit_action = CEL_ACT_UPDATE; applied = true; }
                 status = conflict ? "conflict" : "applied";
@@ -1152,6 +1188,7 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
         cel_hooks_set_db(NULL);
         app_db_conn_release(adb, c); app_db_write_unlock(adb);
         for (int i = 0; i < nemit; i++) cJSON_Delete(emits[i].row);
+        cascade_emits_drain(&casc, 0);
         free(emits); cJSON_Delete(results); cJSON_Delete(who_v);
         return result_error(err_code, err[0] ? err : "push failed");
     }
@@ -1159,6 +1196,7 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
         sqlite3_exec(c, "ROLLBACK", NULL, NULL, NULL);
         app_db_conn_release(adb, c); app_db_write_unlock(adb);
         for (int i = 0; i < nemit; i++) cJSON_Delete(emits[i].row);
+        cascade_emits_drain(&casc, 0);
         free(emits); cJSON_Delete(results); cJSON_Delete(who_v);
         return result_error(500, "commit failed");
     }
@@ -1179,6 +1217,7 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
         }
         if (hc) { cel_hooks_set_db(NULL); app_db_conn_release(adb, hc); }
     }
+    cascade_emits_drain(&casc, 1);   /* + a DELETE for each cascaded child, post-commit */
     free(emits);
     cJSON_Delete(who_v);
 

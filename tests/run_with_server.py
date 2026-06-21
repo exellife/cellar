@@ -55,6 +55,15 @@ def make_app_db():
             rev      INTEGER NOT NULL DEFAULT 0,
             deleted  INTEGER NOT NULL DEFAULT 0
         );
+        -- A syncable CHILD of items with ON DELETE CASCADE — exercises cascade
+        -- soft-delete and its realtime fan-out (sync_realtime_test). Inert elsewhere.
+        CREATE TABLE item_lines (
+            id       UUID PRIMARY KEY DEFAULT ({UUID4_DEFAULT}),
+            item_id  UUID NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+            label    TEXT,
+            rev      INTEGER NOT NULL DEFAULT 0,
+            deleted  INTEGER NOT NULL DEFAULT 0
+        );
         -- Two categories (smoke/rest assert categories count == 2).
         INSERT INTO categories (name, description) VALUES
             ('Drinks', 'Beverages'),

@@ -13,6 +13,10 @@
     "realtime": true
   },
 
+  "item_lines": {
+    "realtime": true
+  },
+
   "notes": {
     "realtime": true,
     "list":   { "roles": ["admin", "editor", "viewer"], "owner_column": "owner_id" },
