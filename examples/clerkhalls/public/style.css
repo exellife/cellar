@@ -27,7 +27,7 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .navlink:hover { background:var(--panel2); color:var(--ink); }
 .navlink.active { background:var(--panel2); color:var(--ink); border-left:2px solid var(--accent); }
 .nav-foot { margin-top:auto; display:flex; flex-direction:column; gap:10px; padding-top:14px; }
-.content { padding:26px 30px; max-width:900px; }
+.content { padding:26px 30px; max-width:1200px; }
 
 .page-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin:14px 0; }
