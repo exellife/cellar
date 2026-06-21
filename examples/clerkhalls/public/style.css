@@ -87,8 +87,8 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .cal-week { display:grid; grid-template-columns:repeat(7,1fr); }
 .cal-cell { min-height:100px; border:1px solid var(--line); margin:-1px 0 0 -1px; padding:4px; cursor:pointer;
   display:flex; flex-direction:column; gap:2px; overflow:hidden; }
-.cal-cell:hover { background:var(--panel); }
-.cal-cell.out { opacity:.4; }
+.cal-cell:not(.out):hover { background:var(--panel); }
+.cal-cell.out { opacity:.4; cursor:default; }
 .cal-daynum { align-self:flex-end; font-size:12px; color:var(--dim); min-width:22px; text-align:center; padding:1px 4px; line-height:1.4; }
 .cal-cell.today .cal-daynum { background:var(--accent); color:#0b1020; border-radius:6px; font-weight:600; }
 .cal-ev { font-size:11px; padding:1px 6px; border-radius:5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;

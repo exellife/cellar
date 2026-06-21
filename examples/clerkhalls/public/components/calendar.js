@@ -83,7 +83,8 @@ export const Calendar = {
       </div>
       <div class="cal-week" v-for="(week, wi) in weeks" :key="wi">
         <div class="cal-cell" v-for="cell in week" :key="cell.date"
-             :class="{ out: !cell.inMonth, today: cell.today }" @click="$emit('day-click', cell.date)">
+             :class="{ out: !cell.inMonth, today: cell.today }"
+             @click="cell.inMonth && $emit('day-click', cell.date)">
           <div class="cal-daynum">{{ cell.d }}</div>
           <div class="cal-ev" v-for="ev in cell.events" :key="ev.id"
                :class="ev.color ? 'st-'+ev.color : ''" :title="ev.title"
