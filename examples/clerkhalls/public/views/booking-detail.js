@@ -27,6 +27,7 @@ export const BookingDetailView = {
     wholesaleSubtotal() { return sumRows(this.wholesaleRows); },
     extrasSubtotal() { return sumRows(this.extrasRows); },
     totalPaid() { return this.payments.reduce((s, p) => s + (+p.amount_kgs || 0), 0); },
+    menuSuggestions() { return db.state.menu_items.map((i) => ({ name: i.name, price: i.price_kgs })); },
     bookingVenueId() { const h = db.state.halls.find((x) => x.id === this.booking?.hall_id); return h?.venue_id; },
     formHalls() { return db.state.halls.filter((h) => h.venue_id === this.bookingVenueId).sort(byOrder).map((h) => opt(h.id, h.name)); },
   },
@@ -99,7 +100,7 @@ export const BookingDetailView = {
         </div>
 
         <div class="sec"><h3>Menu</h3>
-          <itemized-table :rows="menuRows" :categories="menuCats" :money="som" :new-id="uuid"
+          <itemized-table :rows="menuRows" :categories="menuCats" :suggestions="menuSuggestions" :money="som" :new-id="uuid"
             @row-add="r=>addItem('menu',r)" @row-edit="editItem" @row-remove="removeItem"
             @category-add="n=>addCat('menu',n)" @category-rename="renameCat" @category-remove="removeCat"></itemized-table>
         </div>

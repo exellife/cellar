@@ -9,7 +9,8 @@ import { AuthView } from "/views/auth.js";
 import { VenuesView } from "/views/venues.js";
 import { BookingsView } from "/views/bookings.js";
 import { BookingDetailView } from "/views/booking-detail.js";
-import { MenuView, SettingsView } from "/views/stubs.js";
+import { MenuView } from "/views/menu.js";
+import { SettingsView } from "/views/stubs.js";
 
 const { createApp } = window.Vue;
 const { createRouter, createWebHashHistory } = window.VueRouter;
