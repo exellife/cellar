@@ -1,0 +1,71 @@
+# Engine feedback — frontend → cellar
+
+The channel for the **frontend** effort (a separate workspace, e.g. the ClerkHalls SPA)
+to report what it needs from the **cellar** engine. cellar is the product; the frontend
+is a consumer of cellar's contract (REST + `/sync` + WS, and the bundle format:
+`schema.sql` / `policies.json` / `hooks.lua`). When the frontend hits a bug, a missing
+capability, an ergonomic rough edge, a doc gap, or a confusing behavior, **file it here
+instead of working around it silently** — engine problems get fixed in the engine.
+
+## Workflow
+
+- **Frontend agent / dev** → *writes* entries under **Open** (append; don't edit others').
+  Don't change cellar's C code — describe the need and a repro; let the engine owner fix it.
+- **Cellar agent (engine owner)** → *triages*, fixes in `src/` with a ctest, then moves the
+  entry to **Resolved** with the commit hash + a one-line resolution. If it's working as
+  intended, move it to Resolved with an explanation (or to **Won't fix** with the reason).
+- Keep `docs/frontend-guide.md` + `docs/policy-guide.md` as the published contract — if a
+  fix changes behavior, the engine owner updates those too.
+
+## How to file (copy this template)
+
+```
+### [OPEN] <short title>
+- **kind:** bug | gap | ergonomics | docs | question
+- **severity:** blocker | high | medium | low
+- **what I was doing:** <the feature / call you were building>
+- **expected:** <what you expected cellar to do>
+- **actual:** <what it did — include status code + message>
+- **repro:** <curl / request body + response, or the exact API call>
+- **filed:** YYYY-MM-DD by <who>
+```
+
+`kind`: **bug** = wrong/broken behavior · **gap** = capability that doesn't exist ·
+**ergonomics** = works but awkward/verbose · **docs** = contract unclear/wrong ·
+**question** = "is X possible / intended?"
+
+---
+
+## Open
+
+### [OPEN] `/sync/push` dedup replay omits the `winner` field
+- **kind:** ergonomics
+- **severity:** low
+- **what I was doing:** reconciling conflict outcomes from a push response without a follow-up pull.
+- **expected:** a deduped retry of a conflicting mutation returns the same shape as the first
+  response, including `winner` (`"incoming"` / `"server"`).
+- **actual:** the idempotent-retry path returns `{status, rev, deduped:true}` but no `winner`,
+  so a retried conflict loses the who-won signal. (A pull reconciles regardless, so it's minor.)
+- **repro:** push a mutation that resolves as a conflict, then push it again with the same
+  `mutation_id` → second response has no `winner`.
+- **filed:** 2026-06-22 by cellar-agent (seed example — known backlog item)
+
+---
+
+## Resolved
+
+_Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
+
+- **Cascade soft-delete didn't emit realtime** — a parent delete tombstoned children but
+  subscribers to child tables only saw it on the next pull. Now fires a live `DELETE` per
+  cascaded child. `016737a` (+ rev-waste follow-up `ef196c0`).
+- **`realtime`-only policy entry silently denied all CRUD** — adding `{ "realtime": true }`
+  to a table fail-closed its CRUD for non-superusers. A metadata-only entry now falls through
+  to `_default`. `a06d964`.
+- **Malformed `where`-tree returned 500** — `{"not":{}}` / `{"and":[{}]}` emitted bad SQL.
+  Now a clean 400, plus a nesting-depth cap. `1d28d2b`.
+
+## Won't fix / by design
+
+- **`del` with a stale `base_rev` returns `status:"conflict"` but still deletes** — this is
+  correct LWW: read `winner` (`"incoming"` ⇒ your delete won). Not a bug.
