@@ -34,6 +34,29 @@ CEL_APPS_DIR=./apps cellar provision shop.example admin@shop.example 's3cret-pw'
 Then define your tables in `apps/shop.example/data.db` with any SQLite tool — a
 table called `products` immediately becomes `/api/products`.
 
+### Running it locally (and testing several apps at once)
+
+In multi-app mode the **Host header picks the app**, so you can test against a local
+cellar with no DNS setup:
+
+```sh
+CEL_APPS_DIR=./apps cellar provision shop.local admin@shop 's3cret-pw'
+CEL_APPS_DIR=./apps CEL_PORT=8090 cellar          # one process serves every app
+```
+
+- **From code / curl / an agent** — just override the Host; nothing else changes
+  between apps:
+  ```sh
+  curl -H "Host: shop.local" http://127.0.0.1:8090/api/products
+  ```
+- **In a browser** the name must resolve. Either add `127.0.0.1  shop.local` to
+  `/etc/hosts`, or use a wildcard-localhost domain like **`*.lvh.me`** (it publicly
+  resolves to `127.0.0.1`) — provision apps as `shop.lvh.me` / `blog.lvh.me` and open
+  `http://shop.lvh.me:8090/` directly. Run several apps side by side, one Host each.
+
+Each app is **fully isolated**: separate users, sessions, data, and authz — a
+token from one Host is rejected on another.
+
 ---
 
 ## 2. The HTTP API
