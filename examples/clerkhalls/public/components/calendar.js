@@ -71,12 +71,12 @@ export const Calendar = {
   template: `
     <div class="cal">
       <div class="cal-head">
-        <h2 class="cal-title">{{ title }}</h2>
         <div class="cal-nav">
           <button class="mini" @click="shift(-1)" aria-label="Previous month">‹</button>
-          <button class="ghost small" @click="goToday">Today</button>
+          <h2 class="cal-title">{{ title }}</h2>
           <button class="mini" @click="shift(1)" aria-label="Next month">›</button>
         </div>
+        <button class="ghost small" @click="goToday">Today</button>
       </div>
       <div class="cal-dow">
         <div class="cal-dow-cell" v-for="d in dows" :key="d">{{ d }}</div>

@@ -80,7 +80,7 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 
 /* calendar */
 .cal-head { display:flex; align-items:center; justify-content:space-between; margin:14px 0 10px; }
-.cal-title { font-size:18px; }
+.cal-title { font-size:18px; min-width:130px; text-align:center; }
 .cal-nav { display:flex; align-items:center; gap:6px; }
 .cal-dow { display:grid; grid-template-columns:repeat(7,1fr); }
 .cal-dow-cell { padding:4px 6px; text-align:right; color:var(--dim); font-size:12px; }
