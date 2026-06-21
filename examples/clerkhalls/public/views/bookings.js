@@ -11,9 +11,15 @@ export const BookingsView = {
     <div>
       <div class="page-head">
         <h1>Bookings</h1>
-        <div class="seg">
-          <button :class="{ active: view==='calendar' }" @click="view='calendar'">Calendar</button>
-          <button :class="{ active: view==='list' }" @click="view='list'">List</button>
+        <div class="row-actions">
+          <select class="venue-select" v-model="venue" v-if="venueOptions.length">
+            <option value="">All venues</option>
+            <option v-for="v in venueOptions" :value="v.id">{{ v.name }}</option>
+          </select>
+          <div class="seg">
+            <button :class="{ active: view==='calendar' }" @click="view='calendar'">Calendar</button>
+            <button :class="{ active: view==='list' }" @click="view='list'">List</button>
+          </div>
         </div>
       </div>
       <p class="muted" v-if="!hallOptions.length">Add a venue with at least one hall first.</p>
@@ -40,10 +46,14 @@ export const BookingsView = {
       </template>
     </div>
   `,
-  data() { return { view: "calendar" }; },
+  data() { return { view: "calendar", venue: "" }; },   // venue: "" = all venues
   computed: {
+    venueOptions() { return [...db.state.venues].sort(byOrder); },
     bookings() {
-      return [...db.state.bookings].sort((a, b) =>
+      const rows = this.venue
+        ? db.state.bookings.filter(b => this.hallVenueId(b.hall_id) === this.venue)
+        : [...db.state.bookings];
+      return rows.sort((a, b) =>
         String(a.start_date).localeCompare(b.start_date) || String(a.session).localeCompare(b.session));
     },
     hallOptions() {
@@ -61,6 +71,7 @@ export const BookingsView = {
   methods: {
     onDay(date) { if (this.hallOptions.length) this.newBooking(date); },
     onEvent(ev) { this.editBooking(ev.data); },
+    hallVenueId(id) { return (db.state.halls.find(h => h.id === id) || {}).venue_id; },
     hallShort(id) { return (db.state.halls.find(h => h.id === id) || {}).name || "?"; },
     sessionShort(s) { return ({ morning: "M", afternoon: "A", evening: "E" })[s] || "?"; },
     hallLabel(id) { return labelOf(this.hallOptions, id); },

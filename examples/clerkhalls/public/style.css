@@ -70,6 +70,8 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .pill.st-completed { color:var(--accent); border-color:var(--accent); }
 .pill.st-cancelled { color:var(--danger); border-color:var(--danger); text-decoration:line-through; }
 
+.venue-select { width:auto; padding:7px 12px; }
+
 /* segmented toggle (calendar / list) */
 .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
 .seg button { border:none; border-radius:0; background:transparent; color:var(--dim); padding:7px 12px; }
