@@ -3,30 +3,47 @@
 import { db } from "/db.js";
 import { openModal } from "/store.js";
 import { field, byOrder, opt, labelOf, SESSIONS, STATUSES, EVENT_TYPES } from "/util.js";
+import { Calendar } from "/components/calendar.js";
 
 export const BookingsView = {
+  components: { Calendar },
   template: `
     <div>
-      <div class="page-head"><h1>Bookings</h1><button class="primary" @click="newBooking" :disabled="!hallOptions.length">+ Booking</button></div>
+      <div class="page-head">
+        <h1>Bookings</h1>
+        <div class="row-actions">
+          <div class="seg">
+            <button :class="{ active: view==='calendar' }" @click="view='calendar'">Calendar</button>
+            <button :class="{ active: view==='list' }" @click="view='list'">List</button>
+          </div>
+          <button class="primary" @click="newBooking()" :disabled="!hallOptions.length">+ Booking</button>
+        </div>
+      </div>
       <p class="muted" v-if="!hallOptions.length">Add a venue with at least one hall first.</p>
-      <p class="empty" v-else-if="!bookings.length">No bookings yet — add one.</p>
-      <table class="grid" v-else>
-        <thead><tr><th>Date</th><th>Session</th><th>Hall</th><th>Event</th><th>Customer</th><th>Guests</th><th>Status</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="b in bookings" :key="b.id" class="brow" @click="editBooking(b)">
-            <td class="nowrap">{{ b.start_date }}<template v-if="b.end_date && b.end_date !== b.start_date"> → {{ b.end_date }}</template></td>
-            <td>{{ sessionLabel(b.session) }}</td>
-            <td>{{ hallLabel(b.hall_id) }}</td>
-            <td>{{ eventLabel(b.event_type) }}</td>
-            <td>{{ b.customer_name }}<div class="muted small" v-if="b.customer_phone">{{ b.customer_phone }}</div></td>
-            <td>{{ guests(b) }}</td>
-            <td><span class="pill" :class="'st-'+b.status">{{ b.status }}</span></td>
-            <td class="nowrap" @click.stop><button class="mini danger" @click="delBooking(b)">✕</button></td>
-          </tr>
-        </tbody>
-      </table>
+
+      <calendar v-else-if="view==='calendar'" :events="events" @day-click="onDay" @event-click="onEvent"></calendar>
+
+      <template v-else>
+        <p class="empty" v-if="!bookings.length">No bookings yet — add one.</p>
+        <table class="grid" v-else>
+          <thead><tr><th>Date</th><th>Session</th><th>Hall</th><th>Event</th><th>Customer</th><th>Guests</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="b in bookings" :key="b.id" class="brow" @click="editBooking(b)">
+              <td class="nowrap">{{ b.start_date }}<template v-if="b.end_date && b.end_date !== b.start_date"> → {{ b.end_date }}</template></td>
+              <td>{{ sessionLabel(b.session) }}</td>
+              <td>{{ hallLabel(b.hall_id) }}</td>
+              <td>{{ eventLabel(b.event_type) }}</td>
+              <td>{{ b.customer_name }}<div class="muted small" v-if="b.customer_phone">{{ b.customer_phone }}</div></td>
+              <td>{{ guests(b) }}</td>
+              <td><span class="pill" :class="'st-'+b.status">{{ b.status }}</span></td>
+              <td class="nowrap" @click.stop><button class="mini danger" @click="delBooking(b)">✕</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
     </div>
   `,
+  data() { return { view: "calendar" }; },
   computed: {
     bookings() {
       return [...db.state.bookings].sort((a, b) =>
@@ -36,8 +53,19 @@ export const BookingsView = {
       const vname = (id) => (db.state.venues.find(v => v.id === id) || {}).name || "?";
       return [...db.state.halls].sort(byOrder).map(h => opt(h.id, `${vname(h.venue_id)} · ${h.name}`));
     },
+    events() {
+      return this.bookings.map(b => ({
+        id: b.id, start: b.start_date, end: b.end_date || b.start_date, color: b.status,
+        title: `${this.sessionShort(b.session)} · ${this.hallShort(b.hall_id)} · ${b.customer_name}`,
+        data: b,
+      }));
+    },
   },
   methods: {
+    onDay(date) { if (this.hallOptions.length) this.newBooking(date); },
+    onEvent(ev) { this.editBooking(ev.data); },
+    hallShort(id) { return (db.state.halls.find(h => h.id === id) || {}).name || "?"; },
+    sessionShort(s) { return ({ morning: "M", afternoon: "A", evening: "E" })[s] || "?"; },
     hallLabel(id) { return labelOf(this.hallOptions, id); },
     sessionLabel(v) { return labelOf(SESSIONS, v); },
     eventLabel(v) { return labelOf(EVENT_TYPES, v); },
@@ -50,12 +78,12 @@ export const BookingsView = {
         String(b.end_date) >= startDate && String(b.start_date) <= endDate);
     },
 
-    bookingFields(b) {
+    bookingFields(b, presetDate) {
       return [
         field("hall_id", "Hall", true, b?.hall_id, "select", this.hallOptions),
         field("event_type", "Event type", true, b?.event_type || "wedding", "select", EVENT_TYPES),
         field("session", "Session", true, b?.session || "evening", "select", SESSIONS),
-        field("start_date", "Date", true, b?.start_date, "date"),
+        field("start_date", "Date", true, b?.start_date || presetDate, "date"),
         field("end_date", "End date (multi-day)", false, b?.end_date, "date"),
         field("customer_name", "Customer", true, b?.customer_name),
         field("customer_phone", "Phone", false, b?.customer_phone),
@@ -66,7 +94,7 @@ export const BookingsView = {
         field("notes", "Notes", false, b?.notes, "textarea"),
       ];
     },
-    newBooking() { openModal("New booking", this.bookingFields(), this._saveBooking(null)); },
+    newBooking(date) { openModal("New booking", this.bookingFields(null, date), this._saveBooking(null)); },
     editBooking(b) { openModal("Edit booking", this.bookingFields(b), this._saveBooking(b)); },
     delBooking(b) { if (confirm(`Delete booking for ${b.customer_name}?`)) db.remove("bookings", b.id); },
     _saveBooking(existing) {

@@ -18,3 +18,8 @@ export const EVENT_TYPES = [
 ].map(s => { const [v, l] = s.split(":"); return opt(v, l); });
 
 export const labelOf = (list, v) => (list.find(o => o.value === v) || {}).label || v || "";
+
+// ---- dates (local-safe: never round-trip through UTC, so no off-by-one-day) ----
+export const pad2 = (n) => String(n).padStart(2, "0");
+export const ymd = (y, m, d) => `${y}-${pad2(m + 1)}-${pad2(d)}`;   // m is 0-11
+export const todayStr = () => { const t = new Date(); return ymd(t.getFullYear(), t.getMonth(), t.getDate()); };
