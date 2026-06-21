@@ -331,9 +331,24 @@ static void cascade_soft_delete(sqlite3 *c, const cel_table_t *parent,
             const cel_column_t *col = &child->cols[j];
             if (!col->is_fk || !col->fk_cascade || strcmp(col->fk_table, parent->name) != 0) continue;
 
+            /* Don't burn a monotonic rev when this child table has nothing to
+             * tombstone: probe first. Otherwise deleting a parent with no rows in a
+             * cascade-child table still advances the sync sequence with no row to
+             * show for it. Runs on the same txn conn under the write lock, so it
+             * can't race the UPDATE below. */
+            const char *pk = child->pk_index >= 0 ? child->cols[child->pk_index].name : "id";
+            char chk[256];
+            snprintf(chk, sizeof chk, "SELECT 1 FROM \"%s\" WHERE \"%s\" = ?1 AND deleted = 0 LIMIT 1",
+                     child->name, col->name);
+            sqlite3_stmt *cst = NULL;
+            if (sqlite3_prepare_v2(c, chk, -1, &cst, NULL) != SQLITE_OK) continue;
+            sqlite3_bind_text(cst, 1, parent_id, -1, SQLITE_TRANSIENT);
+            int has_rows = (sqlite3_step(cst) == SQLITE_ROW);
+            sqlite3_finalize(cst);
+            if (!has_rows) continue;
+
             long long rev = cel_sync_next_rev(c);
             if (rev < 0) continue;
-            const char *pk = child->pk_index >= 0 ? child->cols[child->pk_index].name : "id";
             char sql[512];
             snprintf(sql, sizeof sql,
                      "UPDATE \"%s\" SET deleted = 1, rev = %lld "
