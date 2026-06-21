@@ -55,10 +55,20 @@ builds for the `*.global.prod.js` ones in production.)
 - [x] Foundation: bundle, multi-table sync engine, shell, auth, live/offline sync
       (Vue 3 + vue-router, build-less, component/view modules)
 - [x] **Venues & Halls** — full CRUD (org → venue → hall), cascade delete
-- [x] **Bookings** — list + create/edit form (hall · session · date · event · guests · price ·
-      status), with **offline conflict detection** (one live booking per hall+session+date)
-- [ ] Booking detail (itemized lines + payments + grand total)
-- [ ] Menu catalog
-- [ ] Reports (revenue, outstanding balances)
+- [x] **Bookings** — calendar (per-venue, workflow coloring) + list, create/edit form,
+      **offline conflict detection** (one live booking per hall+session+date)
+- [x] **Booking detail** — itemized sections (Menu categorized · Wholesale · Extras) +
+      payments + grand-total card (Σ items − discount − payments = balance due)
+- [x] **Status lifecycle** — guided tentative→confirmed→completed→cancelled transitions
+- [x] **Menu catalog** — `menu_categories`/`menu_items`, catalog-backed item picker
+- [x] **Reports** — revenue (contracted/collected) + outstanding balances, by venue/month
+
+## Sync-integrity test
+
+`python3 test_sync.py` (against a running `run.sh`) exercises the offline-first sync
+substrate end-to-end: cascade soft-delete, idempotent retry, LWW conflict resolution,
+delete semantics, device cursors + delta pull, tombstone visibility, and batch
+atomicity. Self-contained + re-runnable (unique per-run id prefix; cleans up after
+itself). 22/22 checks; also cross-checked against cellar's `?aggregate=` endpoint.
 
 Reset: delete `examples/clerkhalls/.run/` and the browser's localStorage.
