@@ -101,7 +101,6 @@ export const BookingsView = {
         start_date: v.start_date, end_date: end, start_time: v.start_time,
         customer_name: v.customer_name, customer_phone: v.customer_phone,
         guest_count_min: v.guest_count_min, guest_count_max: v.guest_count_max,
-        price_per_person: v.price_per_person, deposit: v.deposit,
         discount: ex?.discount || 0, status: ex?.status || "tentative", notes: ex?.notes || null,
       });
       this.form = null;

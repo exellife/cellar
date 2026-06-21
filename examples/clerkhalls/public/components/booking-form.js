@@ -23,8 +23,6 @@ export const BookingForm = {
         hall_id: b.hall_id || (this.halls[0]?.value || ""),
         session: b.session || "evening",
         start_time: b.start_time || "",
-        price_per_person: b.price_per_person ?? "",
-        deposit: b.deposit ?? "",
       },
     };
   },
@@ -50,8 +48,6 @@ export const BookingForm = {
         hall_id: m.hall_id,
         session: m.session,
         start_time: m.start_time || null,
-        price_per_person: +m.price_per_person || 0,
-        deposit: +m.deposit || 0,
         start_date: this.booking ? this.booking.start_date : this.date,
       });
     },
@@ -74,9 +70,6 @@ export const BookingForm = {
           <label class="field col-2"><span>Session *</span>
             <select v-model="m.session"><option v-for="o in SESSIONS" :value="o.value">{{ o.label }}</option></select></label>
           <label class="field col-2"><span>Time</span><input type="time" v-model="m.start_time"></label>
-
-          <label class="field col-3"><span>Price / guest (som)</span><input type="number" v-model="m.price_per_person"></label>
-          <label class="field col-3"><span>Deposit (som)</span><input type="number" v-model="m.deposit"></label>
         </div>
         <div class="modal-actions">
           <button class="ghost" @click="$emit('cancel')">Cancel</button>
