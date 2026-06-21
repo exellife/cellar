@@ -120,6 +120,21 @@ static bool policy_default_is_allow(void) {
     return false;   /* fail closed */
 }
 
+/* True if the table entry explicitly lists at least one CRUD action
+ * (list/get/create/update/delete). A meta-only entry — e.g. just
+ * {"realtime": true} — lists none, so it must NOT fail-close CRUD: it should
+ * behave like an unlisted table and fall through to "_default". Only once an
+ * entry lists SOME action is it an explicit allow-list whose unlisted actions
+ * deny (the H-1 guarantee). This removes the footgun where adding "realtime":
+ * true to opt a table into change events silently denied all of its CRUD. */
+static bool table_lists_any_action(const cJSON *tbl) {
+    static const cel_action_t acts[] = {
+        CEL_ACT_LIST, CEL_ACT_GET, CEL_ACT_CREATE, CEL_ACT_UPDATE, CEL_ACT_DELETE };
+    for (size_t i = 0; i < sizeof acts / sizeof acts[0]; i++)
+        if (cJSON_GetObjectItemCaseSensitive(tbl, action_name(acts[i]))) return true;
+    return false;
+}
+
 bool cel_policy_allows(const char *table, cel_action_t action, const char *role) {
     if (is_superuser_role(role)) return true;
 
@@ -135,7 +150,15 @@ bool cel_policy_allows(const char *table, cel_action_t action, const char *role)
         const cJSON *roles = cJSON_IsArray(act) ? act
                            : (cJSON_IsObject(act) ? cJSON_GetObjectItemCaseSensitive(act, "roles")
                                                   : NULL);
-        if (!cJSON_IsArray(roles)) return false;    /* action not listed => deny */
+        if (!cJSON_IsArray(roles)) {
+            /* This action isn't listed. If the entry lists NO action at all it's
+             * metadata-only (e.g. {"realtime": true}) — treat it like an unlisted
+             * table and consult "_default" rather than silently denying every CRUD
+             * action. If it lists some actions, it's an explicit allow-list and the
+             * unlisted action stays denied (H-1). */
+            if (table_lists_any_action(tbl)) return false;
+            return policy_default_is_allow() ? default_allows(action, role) : false;
+        }
         return role_in_array(roles, role);
     }
     return default_allows(action, role);

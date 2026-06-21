@@ -189,18 +189,18 @@ A table entry lists, per action, the roles allowed:
 }
 ```
 
-> 🔴 **The #1 gotcha: a listed table fail-closes its *unlisted* actions.**
-> Once a table has an entry, any action you **don't** spell out is **denied** for
-> non-superusers. There is no "and everything else is allowed." So:
+> ⚠️ **The gotcha: once a table lists *any* action, its *unlisted* actions are denied.**
+> An entry that spells out even one action becomes an explicit allow-list — there is no
+> "and everything else is allowed." So `"bookings": { "list": ["staff"] }` lets staff
+> **read** but denies create/update/delete. List every action × role you want.
 >
-> ```json
-> "bookings": { "realtime": true }
-> ```
->
-> means **staff can't read, create, update, or delete `bookings` at all** — the entry
-> exists, so every unlisted action (which is all of them) is denied. This bites people
-> who add a table just to turn on `realtime`. **If a table needs realtime, it must also
-> spell out its action→role grants**, or nobody (except superusers) can touch it.
+> **Meta-only entries are exempt (fixed).** A table entry that lists **no action at all**
+> — e.g. just `{ "realtime": true }` — is treated like an *unlisted* table: it falls
+> through to `_default` instead of denying every CRUD action. So adding `realtime` to opt
+> a table into change events **no longer silently locks it.** (Earlier this was the #1
+> footgun; the engine now distinguishes a metadata-only entry from an explicit allow-list
+> — see `policy.c: table_lists_any_action`.) The moment you add *one* action key, the
+> table is back in explicit-allow-list mode and unlisted actions deny.
 
 The corollary is the clean part: **you only ever write grants, never denials.** Leaving
 a role out of an action array *is* the denial. A tightly-scoped role is often *less*
@@ -382,8 +382,9 @@ When writing or reviewing a `policies.json`:
 
 - [ ] Every table you intend to expose has an entry (or `_default: "allow"` is set
       deliberately and you understand un-listed tables fall back to role defaults).
-- [ ] Every table with `"realtime": true` **also** lists its action→role grants
-      (else it's fully denied — the §5 gotcha).
+- [ ] A table that lists **any** action lists **every** action × role you mean to allow
+      (unlisted actions deny). A `realtime`-only entry is fine on its own — it falls
+      through to `_default` (§5).
 - [ ] Each custom role is declared in `_roles`; roles you want scoped have **no `allow`**.
 - [ ] Self-registerable roles are intentional (`self_register: true`), and no superuser
       role is self-registerable.

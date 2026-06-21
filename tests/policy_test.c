@@ -212,6 +212,36 @@ int main(void) {
     load_policy("{ \"_default\": { \"allow\": true }, \"_roles\": { \"viewer\": { \"allow\": [\"get\"] } } }");
     chk("_default {allow:true} (object)",    cel_policy_allows("other", CEL_ACT_GET, "viewer"), true);
 
+    /* ---- 8. meta-only table entry (realtime) must NOT fail-close CRUD ----
+     * Footgun fix: a table entry that lists NO action (just metadata like
+     * "realtime": true) falls through to "_default" like an unlisted table,
+     * instead of silently denying every action. Once it lists any action it's an
+     * explicit allow-list again (unlisted actions deny — H-1 preserved). */
+    printf("[meta-only table entry (realtime) does not fail-close]\n");
+    load_policy(
+        "{ \"_default\": \"allow\","
+        "  \"_roles\": { \"staff\": { \"allow\": [\"list\",\"get\",\"create\",\"update\",\"delete\"] } },"
+        "  \"live\": { \"realtime\": true } }");
+    chk("realtime-only: staff list (-> default)",   cel_policy_allows("live", CEL_ACT_LIST,   "staff"), true);
+    chk("realtime-only: staff create (-> default)", cel_policy_allows("live", CEL_ACT_CREATE, "staff"), true);
+    chk("realtime-only: staff delete (-> default)", cel_policy_allows("live", CEL_ACT_DELETE, "staff"), true);
+    chk("realtime-only: realtime still enabled",    cel_policy_realtime_enabled("live"), true);
+
+    /* once it lists an action, unlisted actions deny again (explicit allow-list) */
+    load_policy(
+        "{ \"_default\": \"allow\","
+        "  \"_roles\": { \"staff\": { \"allow\": [\"list\",\"get\",\"create\",\"update\",\"delete\"] } },"
+        "  \"live\": { \"realtime\": true, \"list\": [\"staff\"] } }");
+    chk("realtime+list: list allowed",              cel_policy_allows("live", CEL_ACT_LIST,   "staff"), true);
+    chk("realtime+list: create denied (explicit)",  cel_policy_allows("live", CEL_ACT_CREATE, "staff"), false);
+
+    /* meta-only under a fail-closed default (no "_default") still denies — safe */
+    load_policy(
+        "{ \"_roles\": { \"staff\": { \"allow\": [\"list\"] } },"
+        "  \"live\": { \"realtime\": true } }");
+    chk("realtime-only, no _default: deny",         cel_policy_allows("live", CEL_ACT_LIST, "staff"), false);
+    chk("realtime-only, no _default: superuser ok", cel_policy_allows("live", CEL_ACT_LIST, "platform_admin"), true);
+
     cel_policy_cleanup();
     printf(failures ? "\nFAILED (%d)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;
