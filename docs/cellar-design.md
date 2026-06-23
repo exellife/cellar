@@ -61,6 +61,56 @@ self-hosted backend with a public face the host can't read.
                                           └ :80 → ACME ───────┘                    └─ apps/*.db ──┘
 ```
 
+### 3.1 Multi-tenant subdomains & TLS
+
+Routing is by the **full Host header**, normalized and used verbatim as a bundle
+directory name — there is no special "subdomain" parsing and no wildcard *matching* in
+the engine (`cel_apps_resolve`):
+
+```
+app1.example.com → $CEL_APPS_DIR/app1.example.com/data.db
+app2.example.com → $CEL_APPS_DIR/app2.example.com/data.db
+```
+
+- **Normalization** (`cel_apps_norm_host`): lowercase, strip `:port`, allow only
+  `[a-z0-9.-]`, reject a leading dot/dash and any `..`. The host doubles as a path, so
+  it's validated tightly — no traversal.
+- **No auto-create.** Resolve `stat()`s `$CEL_APPS_DIR/<host>/`; a missing directory →
+  no app (request 404s). Each FQDN is provisioned explicitly (`cellar provision <host>
+  …`) → default-deny by construction. There is **no `*.example.com` wildcard match**.
+- **Optional registry gate** (`CEL_CONTROL_DB`, §11): when set, only registered+active
+  hosts route; `suspend`/`resume` take effect live (read per request).
+- Apps open lazily and are **pinned** in a cache up to `CEL_APPS_MAX` (1024) distinct hosts.
+
+Full isolation per host: separate `data.db`, catalog, `hooks.lua`, `policies.json`,
+`public/`, and **users**. Sharing a parent domain is a DNS fact only — cellar keys on the
+whole FQDN. This is the **multi-tenant-by-subdomain** model: one tenant = one bundle =
+one FQDN, with zero crosstalk.
+
+**TLS is the part to plan, not routing.** cellar loads a **single** static cert
+(`CEL_TLS_CERT` / `CEL_TLS_KEY`) — no SNI-based multi-cert selection, no built-in ACME.
+To serve many subdomains over HTTPS, give it one cert that covers them all:
+
+- **Wildcard `*.example.com` (recommended for dynamic tenancy).** One cert covers all
+  current + future single-level subdomains, so adding a tenant is just `provision` +
+  DNS — no cert work. Pair it with a **wildcard DNS** record (`*.example.com → IP`) and
+  provisioning becomes a purely cellar-side action.
+  - Requires **DNS-01** ACME (a wildcard can't use HTTP-01) → needs DNS-provider API access.
+  - Covers **one label only**: not the apex `example.com` (add it as a SAN:
+    `-d '*.example.com' -d example.com`) and not `a.b.example.com` (needs `*.b.example.com`).
+- **Multi-SAN cert** — lists each host; works with HTTP-01 but must be reissued on every
+  new tenant → only for a small/fixed set.
+- **TLS-at-the-edge** — terminate upstream and run cellar as a plaintext origin. The
+  portico relay's SNI passthrough already does this; a proxy like Caddy with on-demand
+  TLS is the other form. This is the path for **custom tenant domains**
+  (`bookings.theirhotel.com`), which a wildcard cannot cover.
+
+**Engine gaps this surfaces (backlog).** cellar reads its cert once at boot, so a
+wildcard **renewal currently needs a restart** — a `SIGHUP`/file-watch cert
+**hot-reload** would make renewals zero-downtime (mirroring the `hooks.lua` reload in
+§9). And there is no built-in ACME — issuance/renewal is external (e.g. `certbot
+--dns-<provider>`). Until those land: wildcard renewal = re-point the PEMs + restart.
+
 ## 4. The app as a bundle
 
 ```
@@ -222,9 +272,9 @@ bundle tooling (provision/export/hot-reload).
 - **`after` transactionality** — run inside the write txn (atomic, but side-effects can't
   do external I/O safely) vs just after commit (side-effects safe, but not atomic).
   Likely: `before` in-txn, `after` post-commit.
-- **Per-app routing** — subdomain (`app.example.com`, one SNI forward each) vs path
-  prefix (`/app/…`, one forward). Subdomain is cleaner with the tunnel + DuckDNS
-  wildcards; path is fewer forwards.
+- **Per-app routing** — DECIDED: **subdomain** (full Host → bundle dir; see §3.1). Path
+  prefix (`/app/…`, fewer tunnel forwards) was the alternative but loses clean per-app
+  TLS/cert scoping and the one-FQDN-one-bundle isolation. Subdomain + wildcard cert/DNS.
 - **Backups** — the durability story is now the host's (data is at home): Litestream to
   cloud, or scheduled rsync of `apps/`.
 - **Offline-first device sync** — clients (esp. Flutter) that hold a local SQLite mirror
