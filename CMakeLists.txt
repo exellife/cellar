@@ -515,6 +515,10 @@ if(CELLAR_BUILD_TESTS)
         # while normal notes still push (CEL_HOOKS_FILE=tests/hooks_realtime.lua).
         add_test(NAME realtime_filter
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/realtime_filter_test.sh $<TARGET_FILE:cellar>)
+        # WS keepalive: portico pings idle sockets + reaps silent peers, while
+        # PONGing peers survive (CEL_WS_PING_INTERVAL=1 / CEL_WS_PONG_TIMEOUT=2).
+        add_test(NAME ws_keepalive
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/ws_keepalive_test.sh $<TARGET_FILE:cellar>)
         # Self-service registration (#51): boots with the taxi example policy
         # (rider/driver self-registerable, admin not) and exercises /auth/register.
         add_test(NAME register

@@ -902,6 +902,15 @@ int main(int argc, char **argv) {
     /* Slowloris guard: portico reaps connections still mid-handshake / mid-headers
      * after this many seconds (CEL_HEADER_TIMEOUT, default 15). */
     cfg.handshake_timeout   = (uint32_t)env_int("CEL_HEADER_TIMEOUT", 15);
+    /* WebSocket keepalive: once a connection has been idle for ping_interval seconds,
+     * portico sends a PING; if no PONG (or any frame) arrives within pong_timeout it
+     * reaps the connection. Keeps idle realtime sockets warm through proxies/NAT and,
+     * more importantly, detects half-open/dead peers (a slept/backgrounded browser)
+     * instead of leaking zombie connections — and surfaces the close so the client
+     * reconnects. Browsers auto-reply to PINGs, so healthy clients are never reaped.
+     * Set CEL_WS_PING_INTERVAL=0 to disable. */
+    cfg.ping_interval       = (uint32_t)env_int("CEL_WS_PING_INTERVAL", 30);
+    cfg.pong_timeout        = (uint32_t)env_int("CEL_WS_PONG_TIMEOUT", 10);
 
     /* TLS: set CEL_TLS_CERT + CEL_TLS_KEY (PEM paths) to serve HTTPS/WSS directly
      * — no nginx needed. Both must be set; portico fails closed otherwise. */
