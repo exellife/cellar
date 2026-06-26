@@ -18,6 +18,20 @@
   "listing_contact": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
   "contact_event":   { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
 
+  "_comment_chat": "Chat: conversations are created via the start_conversation rpc (raw inserts, bypass policy), so create/update/delete here are admin-only; list/get scope to the user's own conversations via owner_any. conversation_member is the internal VIA membership table (admin only; the engine reads it via raw SQL). message: create is allowed for users but before() enforces conversation membership (VIA can't gate inserts); list/get use owner_via so /api reads AND realtime subscribe are scoped to the caller's conversations; messages are immutable (no update/delete).",
+  "conversation": {
+    "list": { "roles": ["user"], "owner_any": ["buyer_id", "seller_id"] },
+    "get":  { "roles": ["user"], "owner_any": ["buyer_id", "seller_id"] },
+    "create": ["admin"], "update": ["admin"], "delete": ["admin"]
+  },
+  "conversation_member": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+  "message": {
+    "realtime": true,
+    "create": ["user"],
+    "list": { "roles": ["user"], "owner_via": { "table": "conversation_member", "ref": "conversation_id", "local": "conversation_id", "user": "user_id" } },
+    "get":  { "roles": ["user"], "owner_via": { "table": "conversation_member", "ref": "conversation_id", "local": "conversation_id", "user": "user_id" } }
+  },
+
   "_comment_rpc": "NOTE: the engine does not currently enforce this _rpc whitelist (rpc has no authorization layer) — it documents intent, and sensitive rpcs self-guard in hooks.lua (rebuild_facets checks role=admin). search/category_form/listing are intentionally public.",
   "_rpc": {
     "search": { "roles": ["anon", "user"] },
@@ -25,6 +39,8 @@
     "listing": { "roles": ["anon", "user"] },
     "set_listing_contact": { "roles": ["user"] },
     "reveal_contact": { "roles": ["user"] },
+    "start_conversation": { "roles": ["user"] },
+    "inbox": { "roles": ["user"] },
     "rebuild_facets": { "roles": ["admin"] }
   }
 }

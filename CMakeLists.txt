@@ -421,6 +421,11 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME classifieds_phase0
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/apps/classifieds/test_phase0.py
                     $<TARGET_FILE:cellar>)
+        # classifieds chat realtime (A1.6): WS subscribe (VIA membership) +
+        # live message delivery + non-participant subscribe denied.
+        add_test(NAME classifieds_chat_ws
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/apps/classifieds/test_chat_ws.py
+                    $<TARGET_FILE:cellar>)
         # Mailer (no DB): send via the send-test-mail CLI to a local mock SMTP sink
         # and assert the captured message is well-formed RFC 5322.
         add_test(NAME mailer

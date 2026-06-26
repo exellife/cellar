@@ -24,6 +24,14 @@ local MAX_PHOTOS  = 12
 local function now_iso()        return os.date('!%Y-%m-%dT%H:%M:%SZ', os.time()) end
 local function iso_in(days)     return os.date('!%Y-%m-%dT%H:%M:%SZ', os.time() + days * 86400) end
 
+-- Mint a uuid4 server-side via SQLite (for rows whose id we need before insert).
+local function server_uuid()
+  return cellar.query(
+    "SELECT lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||" ..
+    "substr(lower(hex(randomblob(2))),2)||'-'||substr('89ab',abs(random())%4+1,1)||" ..
+    "substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))) AS id")[1].id
+end
+
 -- A1.1: validate the photos array (ordered media ids from POST /media). `photos`
 -- is the inbound array proxy or nil. Each id is a 32-hex media id; cap the count.
 -- NB: iterate by index until nil — LuaJIT's `#` does not honor the proxy's __len
@@ -81,7 +89,26 @@ local function validate_attrs(category_id, attrs)
   return true
 end
 
+-- A1.6 chat: a message create — sender must be a participant of the conversation
+-- (owner_via scopes reads/subscribe, but VIA can't gate inserts, so we check here).
+local function before_message(op, input, who)
+  if op ~= 'create' then return false, 'messages are immutable' end
+  if not (who and who.authenticated) then return false, 'authentication required' end
+  local conv = input.conversation_id
+  if not conv or conv == '' then return false, 'conversation_id required' end
+  local body = input.body
+  if not body or tostring(body):gsub('%s', '') == '' then return false, 'message body required' end
+  local m = cellar.query(
+    'SELECT 1 AS ok FROM conversation_member WHERE conversation_id = ? AND user_id = ?',
+    { conv, who.user_id })
+  if #m == 0 then return false, 'not a participant' end
+  input.sender_id = who.user_id            -- server-owned (anti-spoof)
+  if not input.created_at or input.created_at == '' then input.created_at = now_iso() end
+  return true
+end
+
 function before(op, tbl, input, who)
+  if tbl == 'message' then return before_message(op, input, who) end
   if tbl ~= 'listings' then return true end
 
   if op == 'create' then
@@ -135,6 +162,13 @@ local function sync_facets(listing_id)
 end
 
 function after(op, tbl, row, who)
+  if tbl == 'message' then
+    if op == 'create' then       -- surface the conversation in both inboxes
+      cellar.exec('UPDATE conversation SET last_message_at = ? WHERE id = ?',
+                  { row.created_at, row.conversation_id })
+    end
+    return
+  end
   if tbl ~= 'listings' then return end
   if op == 'create' or op == 'update' then
     sync_facets(row.id)
@@ -394,6 +428,58 @@ local function reveal_contact(args, who)
   return out
 end
 
+-- ── A1.6 chat: start a conversation + inbox ─────────────────────────────────
+-- POST /rpc/start_conversation {"listing_id": "..."} → create-or-get the buyer's
+-- conversation about a listing (login-gated; can't chat with yourself; the
+-- listing must be active + allow_chat). Idempotent: dedups on (listing, buyer)
+-- and ensures both membership rows exist (self-heals a partial prior run). Logs
+-- chat_started once, on first creation. Membership rows are what gate message
+-- reads + realtime subscribe.
+local function start_conversation(args, who)
+  if not (who and who.authenticated) then return nil end
+  local lid = args and args.listing_id
+  if not lid then return nil end
+  local l = cellar.query('SELECT seller_id, status, allow_chat FROM listings WHERE id = ?', { lid })[1]
+  if not l or l.status ~= 'active' or tonumber(l.allow_chat) ~= 1 then return nil end
+  local buyer, seller = who.user_id, l.seller_id
+  if buyer == seller then return nil end
+
+  local existing = cellar.query('SELECT id FROM conversation WHERE listing_id = ? AND buyer_id = ?', { lid, buyer })[1]
+  local cid, is_new
+  if existing then
+    cid, is_new = existing.id, false
+  else
+    cid, is_new = server_uuid(), true
+    local ts = now_iso()
+    cellar.exec('INSERT INTO conversation(id, listing_id, buyer_id, seller_id, created_at, last_message_at) VALUES (?,?,?,?,?,?)',
+                { cid, lid, buyer, seller, ts, ts })
+  end
+  -- membership: idempotent, so this also repairs a conversation left memberless
+  cellar.exec('INSERT OR IGNORE INTO conversation_member(conversation_id, user_id) VALUES (?,?)', { cid, buyer })
+  cellar.exec('INSERT OR IGNORE INTO conversation_member(conversation_id, user_id) VALUES (?,?)', { cid, seller })
+  if is_new then
+    cellar.exec('INSERT INTO contact_event(listing_id, actor_id, seller_id, kind, created_at) VALUES (?,?,?,?,?)',
+                { lid, buyer, seller, 'chat_started', now_iso() })
+  end
+  return { conversation_id = cid, existing = not is_new }
+end
+
+-- POST /rpc/inbox → the caller's conversations (as buyer or seller), newest
+-- first, with the listing title, the counterpart, and a last-message preview.
+local function inbox(args, who)
+  if not (who and who.authenticated) then return nil end
+  local me = who.user_id
+  local rows = cellar.query(
+    'SELECT c.id, c.listing_id, c.buyer_id, c.seller_id, c.last_message_at, ' ..
+    'l.title AS listing_title, ' ..
+    'CASE WHEN c.buyer_id = ? THEN c.seller_id ELSE c.buyer_id END AS counterpart, ' ..
+    '(SELECT body FROM message WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) AS last_message ' ..
+    'FROM conversation c JOIN listings l ON l.id = c.listing_id ' ..
+    'WHERE c.buyer_id = ? OR c.seller_id = ? ORDER BY c.last_message_at DESC LIMIT 100',
+    { me, me, me })
+  return { conversations = rows }
+end
+
 -- ── repair / ops primitive ──────────────────────────────────────────────────
 -- POST /rpc/rebuild_facets {"id": "<listing-id>"}  (admin) — reconcile one
 -- listing's facets if an after() fault ever left them stale.
@@ -417,6 +503,12 @@ function rpc(name, args, who)
   end
   if name == 'reveal_contact' then
     return reveal_contact(args, who)
+  end
+  if name == 'start_conversation' then
+    return start_conversation(args, who)
+  end
+  if name == 'inbox' then
+    return inbox(args, who)
   end
   if name == 'category_form' then
     return category_form(args and args.category)

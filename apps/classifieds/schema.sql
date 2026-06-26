@@ -212,3 +212,44 @@ CREATE TABLE contact_event (
 );
 CREATE INDEX idx_contact_event_listing ON contact_event (listing_id, created_at);
 CREATE INDEX idx_contact_event_seller  ON contact_event (seller_id, created_at);
+
+-- ── Chat (A1.6 part 2) ──────────────────────────────────────────────────────
+-- A buyer↔seller conversation about a listing (one per listing+buyer).
+CREATE TABLE conversation (
+  id         TEXT PRIMARY KEY DEFAULT (
+               lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
+               substr(lower(hex(randomblob(2))),2)||'-'||
+               substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||
+               '-'||lower(hex(randomblob(6)))),
+  listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  buyer_id   TEXT NOT NULL,
+  seller_id  TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT '',
+  last_message_at TEXT NOT NULL DEFAULT '',
+  UNIQUE (listing_id, buyer_id)
+);
+CREATE INDEX idx_conversation_buyer  ON conversation (buyer_id, last_message_at);
+CREATE INDEX idx_conversation_seller ON conversation (seller_id, last_message_at);
+
+-- Membership table for the realtime VIA rule + read scoping: one row per
+-- participant. The engine's owner_via scope (message list/get) and the realtime
+-- subscribe membership check both query this — so a user can only read/subscribe
+-- to messages of conversations they belong to (no /api or WS leak).
+CREATE TABLE conversation_member (
+  conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+  user_id         TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, user_id)
+);
+
+CREATE TABLE message (
+  id         TEXT PRIMARY KEY DEFAULT (
+               lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
+               substr(lower(hex(randomblob(2))),2)||'-'||
+               substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||
+               '-'||lower(hex(randomblob(6)))),
+  conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+  sender_id  TEXT NOT NULL,
+  body       TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_message_conv ON message (conversation_id, created_at);

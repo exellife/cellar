@@ -64,10 +64,11 @@
   array (proxy has no enumerable keys). Promote to an engine data/search port if it gets hot.*
 - ✓ **A1.5** Browse (= `search` with empty q + category/city) + listing detail rpc `listing`
   (anon-readable; engine /api reads require auth — see below).
-- ◑ **A1.6** **Contact** — ✓ phone-reveal (login-gated, number in a separate gated table so it can't
-  leak via public reads) + channel flags + `contact_event` log + `set_listing_contact`/`reveal_contact`
-  rpcs. ◻ **chat** (conversations/messages/inbox) — uses cellar's realtime **VIA membership** mechanism
-  (`rt_membership` + `on_realtime`); a distinct piece, design carefully to avoid `/api` message leaks.
+- ✓ **A1.6** **Contact** — phone-reveal (login-gated; number in a separate gated table, no public leak)
+  + channel flags + `contact_event` log + `set_listing_contact`/`reveal_contact` rpcs. **Chat**:
+  conversation + `conversation_member` (VIA membership table) + message; `owner_via` scopes message
+  reads AND realtime subscribe to participants (no `/api`/WS leak); `before()` gates message create
+  on membership; rpcs `start_conversation`/`inbox`. WS e2e proves live delivery + non-member denied.
 - ◻ **A1.7** Favorites.
 - ◻ **A1.8** Auth wiring — OAuth + email magic-link (existing) + optional TOTP; login gate on contact/post.
 - ◻ **A1.UI** *(PARKED on client decision)* — the web/mobile client consuming the above APIs.

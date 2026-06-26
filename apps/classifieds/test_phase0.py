@@ -15,11 +15,13 @@ Usage: test_phase0.py <cellar-binary>
 Facets are read back with a separate sqlite3 connection (WAL: committed reads).
 """
 import os, sys, json, time, socket, sqlite3, subprocess, tempfile, shutil
-import http.client
+import http.client, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADMIN = ("admin@cls.dev", "adminpw01")
 BUYER = ("buyer@cls.dev", "buyerpw01")
+SELLER = ("seller@cls.dev", "sellerpw01")
+STRANGER = ("stranger@cls.dev", "strangerpw1")
 
 ok = 0; fail = 0
 def chk(name, cond, detail=""):
@@ -65,7 +67,8 @@ def main():
                    CEL_PORT=str(port), CEL_DATA_DB=db, CEL_LOG_LEVEL="warn",
                    CEL_POLICY_FILE=os.path.join(d, "policies.json"),
                    CEL_AUTH_RATELIMIT="0", CEL_API_RATELIMIT="0",
-                   CEL_SEED_USERS=f"{ADMIN[0]}:{ADMIN[1]}:admin;{BUYER[0]}:{BUYER[1]}:user")
+                   CEL_SEED_USERS=(f"{ADMIN[0]}:{ADMIN[1]}:admin;{BUYER[0]}:{BUYER[1]}:user;"
+                                   f"{SELLER[0]}:{SELLER[1]}:user;{STRANGER[0]}:{STRANGER[1]}:user"))
         log = open(os.path.join(d, "server.log"), "w")
         proc = subprocess.Popen([binary], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
@@ -404,6 +407,76 @@ def run_checks(port, db):
     chk("event: number_revealed logged", "number_revealed" in kinds, str(kinds))
     chk("event: whatsapp_clicked logged", "whatsapp_clicked" in kinds, str(kinds))
     chk("seller self-view not logged (2 events)", len(rows) == 2, str(rows))
+
+    # ---- A1.6 part 2: chat (conversations + messages, VIA-scoped) ----
+    def login_tok(creds):
+        return (req("POST", "/auth/login", {"email": creds[0], "password": creds[1]})[1] or {}).get("token")
+    seller, stranger = login_tok(SELLER), login_tok(STRANGER)
+    chk("login seller + stranger", bool(seller) and bool(stranger))
+
+    # seller (a normal user, so VIA scoping applies) posts a chat-enabled listing
+    s, b = req("POST", "/api/listings",
+               {"category_id": "cat-cars", "title": "Chat Car", "price": 7000, "city_id": "ci-bishkek",
+                "allow_chat": 1, "attributes": {"make": "Toyota", "year": 2017}}, token=seller)
+    chat_lid = (b or {}).get("row", {}).get("id")
+    seller_id = (b or {}).get("row", {}).get("seller_id")
+    chk("seller posts chat listing -> 201", s == 201, f"status={s}")
+
+    # buyer starts a conversation
+    s, b = req("POST", "/rpc/start_conversation", {"listing_id": chat_lid}, token=buyer)
+    res = (b or {}).get("result") or {}
+    conv = res.get("conversation_id")
+    chk("start_conversation -> 200", s == 200 and bool(conv), f"status={s} {b}")
+    chk("conversation is new", res.get("existing") is False, str(res))
+
+    # dedup: second start returns the same conversation
+    s, b = req("POST", "/rpc/start_conversation", {"listing_id": chat_lid}, token=buyer)
+    res = (b or {}).get("result") or {}
+    chk("start dedups", res.get("conversation_id") == conv and res.get("existing") is True, str(res))
+
+    # can't chat with yourself
+    s, b = req("POST", "/rpc/start_conversation", {"listing_id": chat_lid}, token=seller)
+    chk("seller self-chat -> 400", s == 400, f"status={s}")
+
+    # buyer + seller exchange messages via /api/message (realtime fires on create)
+    s, b = req("POST", "/api/message", {"conversation_id": conv, "body": "Hello, still available?"}, token=buyer)
+    buyer_id = (b or {}).get("row", {}).get("sender_id")
+    chk("buyer message -> 201", s == 201, f"status={s} {b}")
+    chk("sender_id set server-side", bool(buyer_id) and buyer_id != seller_id, str(buyer_id))
+    s, b = req("POST", "/api/message", {"conversation_id": conv, "body": "Yes!"}, token=seller)
+    chk("seller message -> 201", s == 201, f"status={s}")
+
+    # a non-participant cannot post into the conversation (before() membership check)
+    s, b = req("POST", "/api/message", {"conversation_id": conv, "body": "intruding"}, token=stranger)
+    chk("non-participant message -> 400", s == 400, f"status={s}")
+    # empty body rejected
+    s, b = req("POST", "/api/message", {"conversation_id": conv, "body": "   "}, token=buyer)
+    chk("empty body -> 400", s == 400, f"status={s}")
+
+    # VIA read scoping (same membership SQL as realtime subscribe): a participant
+    # sees the messages; a non-participant sees NONE even querying the conv id.
+    wq = "/api/message?order=created_at&where=" + urllib.parse.quote(json.dumps({"conversation_id": {"eq": conv}}))
+    s, b = req("GET", wq, token=buyer)
+    chk("participant reads 2 messages", s == 200 and (b or {}).get("count") == 2, f"status={s} {b}")
+    s, b = req("GET", wq, token=stranger)
+    chk("non-participant reads 0 (VIA scoped)", s == 200 and (b or {}).get("count") == 0, f"status={s} {(b or {}).get('count')}")
+
+    # inbox: the conversation surfaces for buyer with last message + counterpart
+    s, b = req("POST", "/rpc/inbox", {}, token=buyer)
+    convs = ((b or {}).get("result") or {}).get("conversations") or []
+    mine = [c for c in convs if c.get("id") == conv]
+    chk("inbox lists the conversation", len(mine) == 1, str([c.get("id") for c in convs]))
+    chk("inbox last_message preview", mine and mine[0].get("last_message") == "Yes!", str(mine[:1]))
+    chk("inbox counterpart = seller", mine and mine[0].get("counterpart") == seller_id, str(mine[:1]))
+    chk("inbox listing title", mine and mine[0].get("listing_title") == "Chat Car", str(mine[:1]))
+
+    # a chat-disabled listing can't start a conversation
+    s, b = req("POST", "/api/listings",
+               {"category_id": "cat-cars", "title": "No Chat Car", "price": 1, "city_id": "ci-bishkek",
+                "allow_chat": 0, "attributes": {"make": "Honda", "year": 2010}}, token=seller)
+    nochat = (b or {}).get("row", {}).get("id")
+    s, b = req("POST", "/rpc/start_conversation", {"listing_id": nochat}, token=buyer)
+    chk("start on chat-disabled -> 400", s == 400, f"status={s}")
 
 if __name__ == "__main__":
     sys.exit(main())
