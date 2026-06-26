@@ -105,7 +105,10 @@
 
 ### Track A
 - ◻ **A2.1** Listing lifecycle — auto-expiry / renew / sold via `JobQueue` (cron sweep).
-- ◻ **A2.2** Notifications — "new message" / "expiring" / saved-search match → `NotifChannel` via jobs.
+- ◑ **A2.2** Notifications — ✓ **in-app feed** (the bell): `notification` table (owner-scoped, realtime),
+  `notify()` helper (persist + `cellar.rt_emit` live push), wired into new-message + listing-expired;
+  rpcs `notifications`/`unread_count`/`mark_read`. ◻ saved-search match (needs A2.3); ◻ off-site
+  delivery via `NotifChannel` (Web Push / email) — see E2.4.
 - ◻ **A2.3** Saved searches + alerts (jobs match new listings).
 - ◻ **A2.4** **Event instrumentation** — emit view/click/favorite/contact/search via `EventSink`
   (*start collecting now* — recs need history).
