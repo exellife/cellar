@@ -409,6 +409,12 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME smoke
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/scripts/smoke_test.py)
+        # classifieds Phase-0 bundle: validation (A0.4) + facet-sync (A0.5) hooks
+        # on the real write path (self-contained: builds an app db from the
+        # bundle schema, boots cellar, drives the REST API + rpc).
+        add_test(NAME classifieds_phase0
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/apps/classifieds/test_phase0.py
+                    $<TARGET_FILE:cellar>)
         # Mailer (no DB): send via the send-test-mail CLI to a local mock SMTP sink
         # and assert the captured message is well-formed RFC 5322.
         add_test(NAME mailer

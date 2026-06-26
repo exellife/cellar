@@ -1,0 +1,22 @@
+{
+  "_comment": "classifieds authorization. A public catalog: anyone (role 'anon') may browse (list/get) the taxonomy, geo, and listings; posting/editing needs a logged-in 'user'; the catalog (category/category_attribute/geo) is admin-curated. Roles are matched exactly (no wildcard), so read actions list both 'anon' and 'user' (admin is a superuser and bypasses). listing_facet is an internal derived index — no direct client access (queries read it server-side). self_register is on for early testing; gate it for production.",
+
+  "_default": "deny",
+  "_roles": {
+    "admin": { "superuser": true },
+    "user":  { "self_register": true }
+  },
+
+  "category":           { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+  "category_attribute": { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+  "geo_oblast":         { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+  "geo_city":           { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+  "geo_district":       { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+
+  "listings":      { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["user"], "update": ["user"], "delete": ["user"] },
+  "listing_facet": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+
+  "_rpc": {
+    "rebuild_facets": { "roles": ["admin"] }
+  }
+}

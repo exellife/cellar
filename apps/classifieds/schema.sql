@@ -99,7 +99,13 @@ CREATE INDEX idx_geo_district_city ON geo_district (city_id, sort_order);
 -- no float). `region` is the shard/country tag baked in now. `locale` is the
 -- language of title/description.
 CREATE TABLE listings (
-  id          TEXT PRIMARY KEY,
+  -- id is minted server-side by SQLite (uuid4), the gen_random_uuid() analogue —
+  -- clients never supply it (no trusted ids on a public catalog).
+  id          TEXT PRIMARY KEY DEFAULT (
+                lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
+                substr(lower(hex(randomblob(2))),2)||'-'||
+                substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||
+                '-'||lower(hex(randomblob(6)))),
   region      TEXT NOT NULL DEFAULT 'kg',
   seller_id   TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,
   category_id TEXT NOT NULL REFERENCES category(id),
@@ -127,6 +133,8 @@ CREATE INDEX idx_listings_expiry       ON listings (status, expires_at);  -- exp
 -- Derived "typed EAV, but only for filterable attrs": one row per filterable
 -- attribute per listing, populated by the facet-sync hook (A0.5) from the JSON.
 -- A numeric attr uses num_value (range queries); enum/text uses text_value.
+-- Derived index, rebuilt idempotently by the facet-sync hook (A0.5, after()).
+-- ON DELETE CASCADE cleans facets when a listing is removed.
 CREATE TABLE listing_facet (
   listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   key        TEXT NOT NULL,
