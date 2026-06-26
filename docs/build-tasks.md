@@ -21,10 +21,12 @@
 - ✓ **E0.1 `BlobStore` port + local-disk adapter + tests** — port (`put/get/exists/del/url/destroy`,
   content-type, opaque `ctx`); disk adapter (blobs/ + meta/ trees, atomic temp+fsync+rename, key
   traversal guard); 45-check test (roundtrip, missing, overwrite, large, concurrent), ASan-clean.
-- ◻ **E0.2 Image-processing lib (pure) + tests** — sniff/validate format; **size+dimension caps *before*
-  full decode** (decompression-bomb guard); resize + canonical thumbnail set; **re-encode** (JPEG/WebP);
-  EXIF strip; reject/sanitize SVG; HEIC decode. Tests: golden images, bomb, malformed, oversized.
-  *Decision: lib = **libvips** (fast, low-mem) vs **stb_image(+resize)** (vendorable, simpler).*
+- ✓ **E0.2 Image-processing lib (pure) + tests** — *Decision: **stb_image** (vendored, zero deps;
+  client handles HEIC→JPEG, so server rejects non-JPEG/PNG).* sniff by magic bytes; **dimension/area
+  caps *before* full decode** (bomb guard, + stb's own backstop); decode→downscale-to-box→strip
+  metadata→canonical **JPEG** re-encode; SVG/HEIC rejected. Tests: in-mem fixtures, bomb headers,
+  malformed/oversized, thumbnail fit-box; ASan-clean. *Deferred: WebP/HEIC encode (libwebp/libheif
+  behind same iface, measured need); EXIF-orientation re-apply (clients bake it in).*
 
 ### Track A — data model (client-agnostic backend)
 - ◻ **A0.1** Schema: `category` + `category_attribute` (metadata layer, §6).
