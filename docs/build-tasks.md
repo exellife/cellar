@@ -71,7 +71,11 @@
   on membership; rpcs `start_conversation`/`inbox`. WS e2e proves live delivery + non-member denied.
 - ✓ **A1.7** Favorites — `favorite` table + toggle rpcs (`favorite`/`unfavorite`/`favorites`);
   `favorited` + `favorite_count` (social proof) on listing detail.
-- ◻ **A1.8** Auth wiring — OAuth + email magic-link (existing) + optional TOTP; login gate on contact/post.
+- ◑ **A1.8** Auth wiring — ✓ **gate audit** (caught + fixed: listings update/delete now `owner_column`
+  seller_id → users edit/delete only their own; verified non-owner→404, forged seller_id ignored, anon
+  write→401). ✓ **OAuth** is config-only (federated user → role `user`; `CEL_OAUTH_GOOGLE_*` documented
+  in run.sh). ✓ password+session confirmed. ◻ **email magic-link** deferred to ops (needs domain +
+  transactional provider + SPF/DKIM/DMARC — never direct-send).
 - ◻ **A1.UI** *(PARKED on client decision)* — the web/mobile client consuming the above APIs.
 
 > **Milestone:** a usable classifieds (backend + minimal client).

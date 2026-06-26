@@ -25,6 +25,22 @@ fi
 cp "$HERE/hooks.lua" "$BUNDLE/hooks.lua"
 cp "$HERE/policies.json" "$BUNDLE/policies.json"
 
+# --- Auth (A1.8) -----------------------------------------------------------
+# Password + session login works out of the box (self_register=user). The engine
+# also supports OAuth/OIDC and email magic-link — both CONFIG-ONLY (no bundle
+# code); a federated/new user lands as role `user` (the first self_register role).
+#
+# Google sign-in: export these before running (the client sends Google's ID token
+# to POST /auth/oauth; cellar verifies it against the JWKS, no email send needed):
+#   export CEL_OAUTH_GOOGLE_ISSUER=https://accounts.google.com
+#   export CEL_OAUTH_GOOGLE_JWKS=https://www.googleapis.com/oauth2/v3/certs
+#   export CEL_OAUTH_GOOGLE_CLIENT_ID=<your-google-client-id>
+#
+# Email magic-link / verify-email: DEFERRED — needs a domain + a transactional
+# provider (SES/Postmark/Resend…) + SPF/DKIM/DMARC; do NOT direct-send from this
+# box (Gmail/Outlook reject it). See dist/cellar.env.example (DELIVERABILITY).
+# Inherited CEL_OAUTH_* / CEL_SMTP_* from the environment pass through below.
+
 env CEL_PORT="$PORT" CEL_APPS_DIR="$APPS" CEL_LOG_LEVEL=info "$BIN" >/tmp/classifieds.log 2>&1 &
 SRV=$!
 trap 'kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null' EXIT

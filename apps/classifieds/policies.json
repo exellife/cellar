@@ -13,7 +13,11 @@
   "geo_city":           { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
   "geo_district":       { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
 
-  "listings":      { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["user"], "update": ["user"], "delete": ["user"] },
+  "listings": {
+    "list": ["anon", "user"], "get": ["anon", "user"], "create": ["user"],
+    "update": { "roles": ["user"], "owner_column": "seller_id" },
+    "delete": { "roles": ["user"], "owner_column": "seller_id" }
+  },
   "listing_facet": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
   "listing_contact": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
   "contact_event":   { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },

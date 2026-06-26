@@ -37,9 +37,23 @@ keep common fields as first-class indexed columns and category-specific values i
 an `attributes` JSON column; the filterable subset is mirrored into
 `listing_facet` for fast faceted filtering. (Full rationale: design doc §6.)
 
+## Auth
+
+Password + session login works out of the box (`self_register` = `user`).
+OAuth/OIDC (e.g. Google) and email magic-link are **config-only** engine
+features — a federated/new user lands as role `user`. OAuth needs only the
+`CEL_OAUTH_GOOGLE_*` env (no email send); email magic-link is **deferred** until
+there's a domain + a transactional provider + SPF/DKIM/DMARC (never direct-send
+from the origin — it gets rejected). See `run.sh` and `dist/cellar.env.example`.
+
+Authorization is enforced by `policies.json` + hooks: anon may browse; a logged-in
+`user` may post and edits/deletes only **their own** listings (`owner_column` on
+`seller_id`); contact/chat/favorites are login-gated; the catalog is admin-curated.
+
 ## Status
 
-**Phase 0 complete** (foundations): schema, validation + facet-sync hooks,
-policies, KG seed, e2e test. Next (Phase 1): media upload/serve, listing CRUD
-API surface, FTS5 search, faceted filtering, browse, contact. See
+**Phase 1 (MVP loop) backend complete**: media upload/serve, listing CRUD +
+photos, metadata-driven post form, FTS5 search, faceted filtering, browse +
+detail, contact (phone-reveal + realtime chat), favorites, auth gates. The web/
+mobile client (A1.UI) is parked on the client-stack decision. See
 [`docs/build-tasks.md`](../../docs/build-tasks.md).

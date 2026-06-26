@@ -516,5 +516,44 @@ def run_checks(port, db):
     s, b = req("POST", "/rpc/favorite", {"listing_id": clid})   # anon
     chk("favorite anon -> 400 (login-gated)", s == 400, f"status={s}")
 
+    # ---- A1.8 auth-gate audit: ownership on listing edit/delete ----
+    # seller posts a listing; a DIFFERENT user must not be able to edit or delete it
+    s, b = req("POST", "/api/listings",
+               {"category_id": "cat-cars", "title": "Owned by seller", "price": 3000,
+                "city_id": "ci-bishkek", "attributes": {"make": "Toyota", "year": 2014}}, token=seller)
+    own = (b or {}).get("row", {})
+    own_id = own.get("id")
+    chk("seller posts -> 201", s == 201, f"status={s}")
+    chk("create forces seller_id (anti-spoof)", own.get("seller_id") == seller_id, str(own.get("seller_id")))
+
+    # forged seller_id on create is overwritten by the hook
+    s, b = req("POST", "/api/listings",
+               {"category_id": "cat-cars", "title": "Spoof attempt", "price": 1, "city_id": "ci-bishkek",
+                "seller_id": buyer_id, "attributes": {"make": "Honda", "year": 2014}}, token=seller)
+    chk("forged seller_id ignored", (b or {}).get("row", {}).get("seller_id") == seller_id, str((b or {}).get("row", {}).get("seller_id")))
+
+    # a non-owner cannot edit (owner_column scopes the UPDATE to zero rows -> 404)
+    s, b = req("PATCH", f"/api/listings/{own_id}", {"title": "HACKED"}, token=buyer)
+    chk("non-owner edit -> 404 (owner-scoped)", s == 404, f"status={s}")
+    # ...and the title is unchanged
+    s, b = req("POST", "/rpc/listing", {"id": own_id})
+    chk("title unchanged after failed edit", ((b or {}).get("result") or {}).get("listing", {}).get("title") == "Owned by seller", str(b)[:80])
+    # a non-owner cannot delete
+    s, b = req("DELETE", f"/api/listings/{own_id}", token=buyer)
+    chk("non-owner delete -> 404", s == 404, f"status={s}")
+    s, b = req("POST", "/rpc/listing", {"id": own_id})
+    chk("listing survives non-owner delete", s == 200, f"status={s}")
+
+    # the owner CAN edit + delete their own
+    s, b = req("PATCH", f"/api/listings/{own_id}", {"title": "Updated by owner"}, token=seller)
+    chk("owner edit -> 200", s == 200, f"status={s}")
+    s, b = req("DELETE", f"/api/listings/{own_id}", token=seller)
+    chk("owner delete -> 200", s == 200, f"status={s}")
+
+    # anon cannot create / edit / delete (write path requires auth)
+    s, b = req("POST", "/api/listings",
+               {"category_id": "cat-cars", "title": "anon post", "attributes": {"make": "Toyota", "year": 2014}})
+    chk("anon create -> 401", s == 401, f"status={s}")
+
 if __name__ == "__main__":
     sys.exit(main())
