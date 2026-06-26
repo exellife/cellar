@@ -6,6 +6,7 @@
 #include "core/rate_limit.h"
 #include "core/metrics.h"
 #include "core/cors.h"
+#include "media.h"
 #include "web_assets.h"
 
 #include <cjson/cJSON.h>
@@ -455,6 +456,34 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         return st;
     }
 
+    /* Media: POST /media (upload, raw image body) | GET /media/<id>/<variant>
+     * (serve). Generic engine endpoint — image lib + BlobStore glue (E1.1/E1.2). */
+    if (req->path_len >= 6 && memcmp(req->path, "/media", 6) == 0 &&
+        (req->path_len == 6 || req->path[6] == '/')) {
+        if (portico_req_method_is(req, "POST") && req->path_len == 6) {
+            cel_identity_t who;
+            identity_from_request(req, &who);
+            if (!cel_ratelimit_allow(g_api_rl, who.user_id[0] ? who.user_id : portico_req_client_ip(req)))
+                return send_error(res, 429, "too many requests");
+            return cel_media_upload(req, res, &who);
+        }
+        if (portico_req_method_is(req, "GET") && req->path_len > 7) {
+            const char *rest = req->path + 7;            /* after "/media/" */
+            size_t rest_len = req->path_len - 7;
+            const char *slash = memchr(rest, '/', rest_len);
+            if (!slash) return send_error(res, 404, "not found");
+            char id[64], variant[32];
+            size_t idl = (size_t)(slash - rest);
+            size_t vl  = rest_len - idl - 1;
+            if (idl == 0 || vl == 0 ||
+                copy_str(id, sizeof id, rest, idl) != 0 ||
+                copy_str(variant, sizeof variant, slash + 1, vl) != 0)
+                return send_error(res, 404, "not found");
+            return cel_media_serve(req, res, id, variant);
+        }
+        return send_error(res, 405, "method not allowed");
+    }
+
     /* /api/<table>[/<id>] */
     if (req->path_len > 5 && memcmp(req->path, "/api/", 5) == 0) {
         cel_identity_t who;
@@ -598,8 +627,11 @@ int cel_http_router(const portico_request_t *req, portico_response_t *res, void 
         return 0;
     }
 
-    /* Reject an oversized body before it reaches the JSON parser (CPU/memory DoS). */
-    if (g_max_body && req->body_len > g_max_body) {
+    /* Reject an oversized body before it reaches the JSON parser (CPU/memory DoS).
+     * A media upload (POST /media) is exempt from this small JSON-sized cap — it
+     * carries image bytes and enforces its own (larger) cap in the handler. */
+    int is_media_upload = portico_req_method_is(req, "POST") && portico_req_path_is(req, "/media");
+    if (g_max_body && !is_media_upload && req->body_len > g_max_body) {
         send_error(res, 413, "request body too large");
         if (allow_origin) add_cors_headers(res, allow_origin, false);
         cel_metric_inc(CEL_M_HTTP_4XX);

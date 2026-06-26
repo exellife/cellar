@@ -37,6 +37,7 @@
 #include "handlers/data_handlers.h"
 #include "handlers/realtime_handlers.h"
 #include "handlers/http_routes.h"
+#include "handlers/media.h"
 #include "engine/realtime.h"
 
 #include <stdio.h>
@@ -845,6 +846,9 @@ int main(int argc, char **argv) {
     if (cel_cors_enabled()) LOG_INFO("CORS enabled for %s", env_str("CEL_CORS_ORIGINS", ""));
     /* Cap request bodies before the JSON parser sees them (CPU/memory DoS guard). */
     cel_http_set_max_body((size_t)env_int("CEL_MAX_BODY", 1024 * 1024));
+    /* Media uploads carry image bytes and are exempt from the JSON cap; they
+     * enforce this larger cap in the handler (stays under portico's 16 MiB). */
+    cel_media_set_max((size_t)env_int("CEL_MEDIA_MAX", 8 * 1024 * 1024));
 
     cel_policy_init(getenv("CEL_POLICY_FILE"));   /* NULL -> built-in role defaults */
 

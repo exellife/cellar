@@ -409,6 +409,11 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME smoke
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/scripts/smoke_test.py)
+        # Media upload/serve (E1.1/E1.2): image lib + BlobStore over the request
+        # loop — upload re-encodes to JPEG variants, serve streams them back.
+        add_test(NAME media
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
+                    $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/media_test.py)
         # classifieds Phase-0 bundle: validation (A0.4) + facet-sync (A0.5) hooks
         # on the real write path (self-contained: builds an app db from the
         # bundle schema, boots cellar, drives the REST API + rpc).
