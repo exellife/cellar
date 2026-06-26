@@ -1,7 +1,7 @@
 # cellar engine modules & ports
 
 > **Intent:** the new engine primitives cellar needs (first surfaced by the classifieds design —
-> see [`classifieds-design.md`](classifieds-design.md) §5 + roadmap), framed as **independent,
+> see [`classifieds-design.md`](../apps/classifieds/classifieds-design.md) §5 + roadmap), framed as **independent,
 > swappable modules behind interfaces**. This is reusable engine work, not classifieds-specific.
 
 ## Core vs addon boundary

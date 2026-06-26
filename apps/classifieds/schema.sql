@@ -5,7 +5,7 @@
 -- app — so tables here carry NO rev/deleted sync columns (unlike clerkhalls).
 -- Auth/users come from the engine (cel_users); this file adds the domain tables.
 --
--- Design: docs/classifieds-design.md §6 (category/attribute model) + the
+-- Design: classifieds-design.md §6 (category/attribute model) + the
 -- "bake in now" rules (global UUID ids, region tag, currency+locale).
 --
 -- Two layers (do not conflate):

@@ -5,9 +5,8 @@ A Kyrgyzstan-focused online classifieds platform — **discovery + connection**
 generic engine primitives composed by this bundle's schema + hooks + policies.
 cellar itself never learns the word "listing".
 
-See the design + plan in the repo root:
-[`docs/classifieds-design.md`](../../docs/classifieds-design.md) ·
-[`build-tasks.md`](build-tasks.md) ·
+Design + plan (this dir): [`classifieds-design.md`](classifieds-design.md) ·
+[`build-tasks.md`](build-tasks.md). Generic engine ports:
 [`docs/engine-modules.md`](../../docs/engine-modules.md).
 
 ## Bundle contents
