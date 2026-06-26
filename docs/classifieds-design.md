@@ -88,6 +88,10 @@ The catalog is **one app**; storefronts are tiered presentation on top of it.
 1. **Media / image pipeline** — *foundational; every listing is photos.* Upload, validate, size
    limits, resize + thumbnails, storage (local now, S3-like later), cache-friendly serving.
    cellar has only static *bundle* serving, no user uploads. **(engine)**
+   - **Client-side pre-resize is a complementary front-end optimization, not a replacement:** the
+     app should downscale/compress/HEIC→JPEG/strip-EXIF before upload (bandwidth + UX), but the
+     server-side module stays mandatory — validate (caps before decode = bomb guard), **re-encode**
+     (kills embedded exploits; never serve user SVG raw), canonical variants, moderate (NSFW + pHash).
 2. **Search + faceted filtering + geo** — *the primary discovery surface.* FTS5 over listings +
    facets (category / price / location / attributes) + ranking. Geo: oblast → city → district.
    **(engine + app)**

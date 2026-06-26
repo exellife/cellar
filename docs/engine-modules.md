@@ -66,6 +66,15 @@ Split it — only the last part is coupled:
 - **Upload + serve HTTP handlers** → the *only* coupled part (multipart, range requests, cache
   headers tie to the request loop) — thin glue over the two modular pieces.
 
+> **Client-side pre-resize is a complementary *front-end* optimization, not a replacement.** The
+> app (web/mobile) should downscale / compress / HEIC→JPEG / strip-EXIF *before upload* (saves
+> bandwidth + UX, esp. mobile). But the client is untrusted, so the server-side image module stays
+> **mandatory**: validate (size/dimension caps *before decode* → decompression-bomb guard), **re-encode**
+> (neutralizes embedded exploits/polyglots; never serve user SVG as-is), generate the canonical
+> variant set, and moderate (NSFW + pHash). Client optimizes; server validates and re-derives the
+> source of truth. *(On-the-fly edge resize — Cloudflare Images / imgproxy — is a later serve-side
+> swap; upload-time validate + re-encode is non-negotiable either way.)*
+
 ## Build order
 
 `BlobStore` + image lib (P1) → `JobQueue` (P2) → `EventSink` (P2) → `CaptchaVerifier` (+ passkeys) (P2)
