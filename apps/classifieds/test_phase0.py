@@ -614,6 +614,23 @@ def run_checks(port, db):
     s, b = req("GET", "/api/notification")                       # anon
     chk("notif: anon /api denied -> 401", s == 401, f"status={s}")
 
+    # ---- A2.1 lifecycle: renew + recurring-job dedup ----
+    s, b = req("POST", "/rpc/renew_listing", {"listing_id": exp_id}, token=seller)   # exp_id is 'expired'
+    chk("A2.1 renew_listing -> 200", s == 200 and bool(((b or {}).get("result") or {}).get("expires_at")), str(b))
+    st = rows_of("SELECT status FROM listings WHERE id=?", (exp_id,))
+    chk("A2.1 renew reactivated listing", st and st[0][0] == "active", str(st))
+    s, _ = req("POST", "/rpc/renew_listing", {"listing_id": exp_id}, token=buyer)     # non-owner
+    chk("A2.1 non-owner renew -> 400", s == 400, f"status={s}")
+    s, b = req("POST", "/rpc/enqueue_job", {"type": "dedup_test", "repeat_every": 3600}, token=tok)
+    id1 = ((b or {}).get("result") or {}).get("id")
+    s, b = req("POST", "/rpc/enqueue_job", {"type": "dedup_test", "repeat_every": 3600}, token=tok)
+    res = (b or {}).get("result") or {}
+    chk("A2.1 recurring job dedups by type", res.get("id") == id1 and res.get("existing") is True, str(res))
+
+    # ---- A2.4 event instrumentation: favorite + contact emitted ----
+    chk("A2.4 favorite event emitted", len(rows_of("SELECT 1 FROM event WHERE type='favorite'") or []) >= 1, "")
+    chk("A2.4 contact event emitted", len(rows_of("SELECT 1 FROM event WHERE type='contact'") or []) >= 1, "")
+
     # ---- review hardening (security-review follow-ups) ----
     base_ok = {"category_id": "cat-cars", "title": "Hardening", "city_id": "ci-bishkek",
                "attributes": {"make": "Toyota", "year": 2016}}

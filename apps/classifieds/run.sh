@@ -46,6 +46,15 @@ SRV=$!
 trap 'kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null' EXIT
 for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/health" && break; sleep 0.1; done
 
+# Seed the autonomous daily expiry sweep (idempotent — enqueue_job dedups
+# recurring jobs by type, so re-running this never piles up duplicates).
+ADMIN_TOK=$(curl -s -X POST -H "Host: $APP" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PW\"}" \
+  "http://127.0.0.1:$PORT/auth/login" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+[ -n "$ADMIN_TOK" ] && curl -s -o /dev/null -X POST -H "Host: $APP" -H "Authorization: Bearer $ADMIN_TOK" \
+  -H 'Content-Type: application/json' -d '{"type":"expire_listings","repeat_every":86400}' \
+  "http://127.0.0.1:$PORT/rpc/enqueue_job"
+
 cat <<EOF
 
   classifieds is live →  http://localhost:$PORT/

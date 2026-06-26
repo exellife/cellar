@@ -465,6 +465,7 @@ local function favorite(args, who)
   if not cellar.query('SELECT 1 AS ok FROM listings WHERE id = ?', { lid })[1] then return nil end
   cellar.exec('INSERT OR IGNORE INTO favorite(user_id, listing_id, created_at) VALUES (?,?,?)',
               { who.user_id, lid, now_iso() })
+  cellar.emit('favorite', { actor = who.user_id, subject = lid })   -- telemetry (recs)
   return { favorited = true, listing_id = lid }
 end
 
@@ -531,6 +532,8 @@ local function reveal_contact(args, who)
     cellar.exec(
       'INSERT INTO contact_event(listing_id, actor_id, seller_id, kind, created_at) VALUES (?,?,?,?,?)',
       { id, who.user_id, l.seller_id, kind, now_iso() })
+    cellar.emit('contact', { actor = who.user_id, subject = id,         -- generic telemetry
+                             props = '{"kind":"' .. kind .. '"}' })
   end
   return out
 end
@@ -586,6 +589,23 @@ local function inbox(args, who)
     'WHERE c.buyer_id = ? OR c.seller_id = ? ORDER BY c.last_message_at DESC LIMIT 100',
     { me, me, me })
   return { conversations = rows }
+end
+
+-- ── A2.1: listing lifecycle — renew ─────────────────────────────────────────
+-- POST /rpc/renew_listing {listing_id} (owner): reset the expiry window and
+-- reactivate (e.g. after it expired). Mark-sold/withdrawn is a normal owner PATCH
+-- of status; auto-expiry is the recurring expire_listings job.
+local function renew_listing(args, who)
+  if not (who and who.authenticated) then return nil end
+  local lid = args and args.listing_id
+  if not lid then return nil end
+  local l = cellar.query('SELECT seller_id, status FROM listings WHERE id = ?', { lid })[1]
+  if not l then return nil end
+  if l.seller_id ~= who.user_id and who.role ~= 'admin' then return nil end
+  if l.status == 'removed' or l.status == 'sold' then return nil end   -- nothing to renew
+  cellar.exec("UPDATE listings SET status='active', expires_at=?, updated_at=? WHERE id=?",
+              { iso_in(EXPIRY_DAYS), now_iso(), lid })
+  return { listing_id = lid, expires_at = iso_in(EXPIRY_DAYS) }
 end
 
 -- ── A2.2: notification feed rpcs ────────────────────────────────────────────
@@ -677,9 +697,18 @@ function rpc(name, args, who)
     if who.role ~= 'admin' then return nil end
     local t = args and args.type
     if not t then return nil end
+    -- dedup recurring jobs by type so re-seeding (e.g. the daily expire sweep on
+    -- every deploy) never piles up duplicates.
+    if args.repeat_every and tonumber(args.repeat_every) and tonumber(args.repeat_every) > 0 then
+      local ex = cellar.query("SELECT id FROM job WHERE type = ? AND repeat_every > 0 LIMIT 1", { t })[1]
+      if ex then return { id = ex.id, existing = true } end
+    end
     local id = cellar.enqueue_job(t, args.payload,
                                   { run_at = args.run_at, repeat_every = args.repeat_every })
     return { id = id }
+  end
+  if name == 'renew_listing' then
+    return renew_listing(args, who)
   end
   if name == 'rebuild_facets' then
     if who.role ~= 'admin' then return nil end

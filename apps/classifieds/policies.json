@@ -57,6 +57,7 @@
     "favorite": { "roles": ["user"] },
     "unfavorite": { "roles": ["user"] },
     "favorites": { "roles": ["user"] },
+    "renew_listing": { "roles": ["user"] },
     "notifications": { "roles": ["user"] },
     "unread_count": { "roles": ["user"] },
     "mark_read": { "roles": ["user"] },
