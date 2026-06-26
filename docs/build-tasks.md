@@ -93,7 +93,11 @@
 - ✓ **E2.2 `EventSink`** — module (`emit` + cursor `read`, 19-check test) **+ WIRED**: per-app sink on a
   dedicated connection, `cellar.emit` Lua API. Bundle emits `listing_viewed` (anon incl.) + `search`.
   e2e-proven (data collecting from day one). ◻ *later: cursor `read` consumed by a rollup job (recs).*
-- ◻ **E2.3 `CaptchaVerifier` port + adapter + tests** — Turnstile / hCaptcha.
+- ⊘ **E2.3 `CaptchaVerifier`** — **DEFERRED (measured need).** Not built: the high-value defenses
+  (login-gated contact reveal kills number-scraping; rate-limit + lockout; OAuth signup; progressive
+  trust A2.5; moderation) cover launch, and captcha is weak (AI/solver-farms) + adds signup/post
+  friction. Keep the *seam*: when real bot abuse appears, a Turnstile adapter behind a small port is a
+  ~½-day add gating signup/post. Don't pre-build.
 - ◻ **E2.4 `NotifChannel` port + push adapter + tests** — Web-Push/VAPID (or FCM); fold existing
   `mailer.c` (email) + optional SMS behind the same port.
 - ◻ **E2.5 Verify TOTP/MFA in a live app** — tests cover it; exercise enroll→challenge→recovery end-to-end.
@@ -105,8 +109,11 @@
 - ◻ **A2.3** Saved searches + alerts (jobs match new listings).
 - ◻ **A2.4** **Event instrumentation** — emit view/click/favorite/contact/search via `EventSink`
   (*start collecting now* — recs need history).
-- ◻ **A2.5** **Progressive-trust** posting gates + captcha on signup/post (compose `CaptchaVerifier` +
-  rate-limit + generic trust/status fields).
+- ◻ **A2.5** **Progressive trust + rate-limit** (the real anti-abuse for a marketplace). New accounts
+  are post-limited until they age/verify: generic trust/status fields on the user (account_age,
+  verified, trust_level) + **velocity limits** (posts/contacts per window via the rate-limiter +
+  `EventSink` history) that loosen as trust rises. Stops the spam-posting funnel far better than a
+  captcha. *(Captcha = an optional later escalation only on measured need — see E2.3, deferred.)*
 
 ---
 
