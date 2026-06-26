@@ -20,6 +20,7 @@ See the design + plan in the repo root:
 | `seed.sql` | KG geo tree (oblast→city→district) + a starter category taxonomy with attributes |
 | `test_phase0.py` | e2e: boots cellar against the bundle, exercises validation + facet-sync (ctest `classifieds_phase0`) |
 | `run.sh` | provision + seed + boot for manual use |
+| [`FRONTEND.md`](FRONTEND.md) | **front-end integration guide** — API contract, auth, security, and classifieds-specific gotchas for the client dev/agent (web = React, mobile = React Native later) |
 
 ## Run it
 
