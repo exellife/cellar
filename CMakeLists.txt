@@ -386,6 +386,12 @@ if(CELLAR_BUILD_TESTS)
     target_include_directories(base64url_test PRIVATE src/core)
     add_test(NAME base64url COMMAND base64url_test)
 
+    # DB-free BlobStore disk-adapter unit test (port-first object store; E0.1).
+    add_executable(blob_store_test tests/blob_store_test.c src/core/blob_store_disk.c)
+    target_include_directories(blob_store_test PRIVATE src/core)
+    target_link_libraries(blob_store_test Threads::Threads)
+    add_test(NAME blob_store COMMAND blob_store_test)
+
     find_program(PYTHON3 python3)
     if(PYTHON3)
         add_test(NAME smoke
