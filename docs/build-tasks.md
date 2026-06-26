@@ -18,8 +18,9 @@
 ## Phase 0 — Foundations *(MVP prerequisites; E + A in parallel)*
 
 ### Track E — engine modules (build standalone + tested, behind a port)
-- ◻ **E0.1 `BlobStore` port + local-disk adapter + tests** — port (`put/get/url/del`, content-type,
-  opaque `ctx`); disk adapter (key layout, atomic writes); tests (roundtrip, missing, large, concurrent).
+- ✓ **E0.1 `BlobStore` port + local-disk adapter + tests** — port (`put/get/exists/del/url/destroy`,
+  content-type, opaque `ctx`); disk adapter (blobs/ + meta/ trees, atomic temp+fsync+rename, key
+  traversal guard); 45-check test (roundtrip, missing, overwrite, large, concurrent), ASan-clean.
 - ◻ **E0.2 Image-processing lib (pure) + tests** — sniff/validate format; **size+dimension caps *before*
   full decode** (decompression-bomb guard); resize + canonical thumbnail set; **re-encode** (JPEG/WebP);
   EXIF strip; reject/sanitize SVG; HEIC decode. Tests: golden images, bomb, malformed, oversized.
