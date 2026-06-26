@@ -152,8 +152,12 @@ add_custom_command(
 # auth_schema.c (version-stamped via PRAGMA user_version).
 
 file(GLOB_RECURSE CELLAR_SOURCES CONFIGURE_DEPENDS src/*.c)
+# Vendored stb single-header impl (third_party/stb): compile the generated code
+# with warnings off, like cjson/sqlite. Our own image_proc.c keeps full warnings.
+set_source_files_properties(src/core/stb_impl.c PROPERTIES COMPILE_OPTIONS "-w")
+
 add_executable(cellar ${CELLAR_SOURCES} ${WEB_ASSETS_C})
-target_include_directories(cellar PRIVATE src src/core)
+target_include_directories(cellar PRIVATE src src/core third_party/stb/include)
 # OpenSSL: HMAC-SHA1 for TOTP (RFC 6238) + RS256 verification for OIDC ID tokens.
 find_package(OpenSSL REQUIRED)
 # libcurl: fetch OIDC providers' JWKS (public keys) over HTTPS for OAuth sign-in.
@@ -170,6 +174,7 @@ target_link_libraries(cellar PRIVATE
     CURL::libcurl
     ${SODIUM_LIB}
     ${UUID_LIB}
+    m
     Threads::Threads)
 # Hooks call cellar's C API via FFI → export the binary's dynamic symbols so
 # LuaJIT's ffi.C can resolve them. Build LuaJIT before cellar links.
@@ -391,6 +396,13 @@ if(CELLAR_BUILD_TESTS)
     target_include_directories(blob_store_test PRIVATE src/core)
     target_link_libraries(blob_store_test Threads::Threads)
     add_test(NAME blob_store COMMAND blob_store_test)
+
+    # DB-free image-processing unit test (stb-backed validate/resize/re-encode; E0.2).
+    add_executable(image_proc_test tests/image_proc_test.c
+        src/core/image_proc.c src/core/stb_impl.c)
+    target_include_directories(image_proc_test PRIVATE src/core third_party/stb/include)
+    target_link_libraries(image_proc_test m)
+    add_test(NAME image_proc COMMAND image_proc_test)
 
     find_program(PYTHON3 python3)
     if(PYTHON3)
