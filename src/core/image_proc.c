@@ -102,47 +102,69 @@ static void fit_box(int w, int h, int box, int *ow, int *oh) {
     *oh = nh < 1 ? 1 : nh;
 }
 
-int image_reencode(const void *data, size_t len,
-                   const img_limits_t *limits, const img_encode_opts_t *opts,
-                   void **out, size_t *out_len) {
-    if (!out || !out_len) return IMG_EINVAL;
-    *out = NULL; *out_len = 0;
+int image_decode_rgb(const void *data, size_t len, const img_limits_t *limits,
+                     unsigned char **rgb, int *w, int *h) {
+    if (!rgb || !w || !h) return IMG_EINVAL;
+    *rgb = NULL; *w = 0; *h = 0;
 
     img_info_t info;
-    int rc = image_validate(data, len, limits, &info);
+    int rc = image_validate(data, len, limits, &info);   /* caps area BEFORE decode */
     if (rc != IMG_OK) return rc;
 
-    /* Decode forcing 3-channel RGB (alpha dropped; JPEG output has no alpha). */
-    int w = 0, h = 0, comp = 0;
-    unsigned char *rgb = stbi_load_from_memory((const stbi_uc *)data, (int)len,
-                                               &w, &h, &comp, 3);
-    if (!rgb) return IMG_EDECODE;
+    int comp = 0;
+    unsigned char *px = stbi_load_from_memory((const stbi_uc *)data, (int)len,
+                                              w, h, &comp, 3);   /* force 3-ch RGB */
+    if (!px) return IMG_EDECODE;
+    *rgb = px;
+    return IMG_OK;
+}
 
-    int max_dim = opts ? opts->max_dim : 0;
-    int q = (opts && opts->jpeg_quality) ? opts->jpeg_quality : DEF_JPEG_Q;
+void image_free_rgb(unsigned char *rgb) { stbi_image_free(rgb); }
+
+int image_encode_jpeg(const unsigned char *rgb, int w, int h,
+                      int max_dim, int jpeg_quality, void **out, size_t *out_len) {
+    if (!out || !out_len) return IMG_EINVAL;
+    *out = NULL; *out_len = 0;
+    if (!rgb || w <= 0 || h <= 0) return IMG_EINVAL;
+
+    int q = jpeg_quality ? jpeg_quality : DEF_JPEG_Q;
     if (q < 1) q = 1;
     if (q > 100) q = 100;
 
     int ow, oh;
     fit_box(w, h, max_dim, &ow, &oh);
 
-    unsigned char *pixels = rgb;
+    unsigned char *pixels = (unsigned char *)rgb;
     unsigned char *resized = NULL;
     if (ow != w || oh != h) {
         resized = stbir_resize_uint8_srgb(rgb, w, h, 0, NULL, ow, oh, 0, STBIR_RGB);
-        if (!resized) { stbi_image_free(rgb); return IMG_ENOMEM; }
+        if (!resized) return IMG_ENOMEM;
         pixels = resized;
     }
 
     growbuf b = {0};
     int wrote = stbi_write_jpg_to_func(gb_write, &b, ow, oh, 3, pixels, q);
-
-    stbi_image_free(rgb);
     free(resized);
 
     if (!wrote || b.err) { free(b.p); return b.err ? IMG_ENOMEM : IMG_EENCODE; }
-
     *out = b.p;
     *out_len = b.len;
     return IMG_OK;
+}
+
+int image_reencode(const void *data, size_t len,
+                   const img_limits_t *limits, const img_encode_opts_t *opts,
+                   void **out, size_t *out_len) {
+    if (!out || !out_len) return IMG_EINVAL;
+    *out = NULL; *out_len = 0;
+
+    unsigned char *rgb = NULL;
+    int w = 0, h = 0;
+    int rc = image_decode_rgb(data, len, limits, &rgb, &w, &h);
+    if (rc != IMG_OK) return rc;
+
+    rc = image_encode_jpeg(rgb, w, h, opts ? opts->max_dim : 0,
+                           opts ? opts->jpeg_quality : 0, out, out_len);
+    image_free_rgb(rgb);
+    return rc;
 }

@@ -117,16 +117,19 @@ POST /rpc/category_form { "category": "cat-cars" | "cars" }   // id or slug
 
 ## Listings (CRUD)
 
-- **List/browse (raw):** `GET /api/listings?where=...&order=-created_at&limit=20&offset=0`
-  → `{count, rows}`. Prefer **`search`** (below) for the real browse/feed — it
-  also returns facet counts.
-- **Detail:** use the **`listing`** RPC (gives social proof + your save state):
+- **Public browse → use the `search` RPC** (below), never `GET /api/listings`.
+  The generic `/api/listings` read surface is **owner-scoped**: a logged-in user
+  sees only **their own** listings (any status — their drafts/sold), and anon is
+  denied (401). That's the "My listings" endpoint, not the public catalog —
+  `search` (status=active only) is the public browse/feed.
+- **Detail → the `listing` RPC** (gives social proof + your save state):
   ```
   POST /rpc/listing { "id": "<uuid>" }
   → result: { listing: {...}, favorite_count: N, favorited: bool }
   ```
-  (Anon may call it; active listings only — owners also see their own
-  draft/expired. Raw `GET /api/listings/<id>` also works but omits favorited/count.)
+  Anon may call it; it returns active listings (the owner/admin also see their
+  own non-active). Do **not** use `GET /api/listings/<id>` for public detail — it
+  is owner-scoped and 401s anon / 404s a non-owner.
 - **Create:** `POST /api/listings` (auth = user)
   ```
   { category_id, title, description?, price?, price_negotiable?, currency?,

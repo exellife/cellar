@@ -1,5 +1,5 @@
 {
-  "_comment": "classifieds authorization. A public catalog: anyone (role 'anon') may browse (list/get) the taxonomy, geo, and listings; posting/editing needs a logged-in 'user'; the catalog (category/category_attribute/geo) is admin-curated. Roles are matched exactly (no wildcard), so read actions list both 'anon' and 'user' (admin is a superuser and bypasses). listing_facet is an internal derived index — no direct client access (queries read it server-side). self_register is on for early testing; gate it for production.",
+  "_comment": "classifieds authorization. Public browse/detail go through the search + listing rpcs, which enforce status='active' (and owner/admin for non-active). The GENERIC /api/listings read surface is therefore NOT public: it is scoped by owner_column=seller_id so a logged-in user sees only their OWN listings (any status — their drafts/sold), and anon is denied. This closes the hole where anon could enumerate /api/listings and read other sellers' draft/removed listing content (the generic CRUD read path can't express 'active-only'). The taxonomy + geo are public (anon list/get); the catalog is admin-curated. listing_facet/listing_contact/contact_event/conversation_member/favorite are internal (admin-only direct). self_register is on for early testing; gate it for production.",
 
   "_default": "deny",
   "_roles": {
@@ -14,7 +14,9 @@
   "geo_district":       { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
 
   "listings": {
-    "list": ["anon", "user"], "get": ["anon", "user"], "create": ["user"],
+    "list": { "roles": ["user"], "owner_column": "seller_id" },
+    "get":  { "roles": ["user"], "owner_column": "seller_id" },
+    "create": ["user"],
     "update": { "roles": ["user"], "owner_column": "seller_id" },
     "delete": { "roles": ["user"], "owner_column": "seller_id" }
   },

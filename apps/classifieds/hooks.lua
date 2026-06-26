@@ -102,9 +102,15 @@ local function before_message(op, input, who)
     'SELECT 1 AS ok FROM conversation_member WHERE conversation_id = ? AND user_id = ?',
     { conv, who.user_id })
   if #m == 0 then return false, 'not a participant' end
-  input.sender_id = who.user_id            -- server-owned (anti-spoof)
-  if not input.created_at or input.created_at == '' then input.created_at = now_iso() end
+  input.sender_id  = who.user_id           -- server-owned (anti-spoof)
+  input.created_at = now_iso()             -- server-owned: never trust a client timestamp
   return true
+end
+
+-- price is optional, but if present must be a whole, non-negative number (soms).
+local function valid_price(p)
+  if p == nil then return true end
+  return type(p) == 'number' and p >= 0 and p == math.floor(p)
 end
 
 function before(op, tbl, input, who)
@@ -113,9 +119,10 @@ function before(op, tbl, input, who)
 
   if op == 'create' then
     input.seller_id  = who.user_id            -- server-owned (anti-spoof); id via column DEFAULT
-    if not input.created_at or input.created_at == '' then input.created_at = now_iso() end
+    input.created_at = now_iso()              -- server-owned (drives the "newest" sort)
     input.updated_at = input.created_at
-    if not input.expires_at or input.expires_at == '' then input.expires_at = iso_in(EXPIRY_DAYS) end
+    input.expires_at = iso_in(EXPIRY_DAYS)    -- server-owned
+    if not valid_price(input.price) then return false, 'price must be a whole, non-negative number' end
     local pok, perr = validate_photos(input.photos)
     if not pok then return false, perr end
     return validate_attrs(input.category_id, input.attributes)
@@ -123,12 +130,17 @@ function before(op, tbl, input, who)
   elseif op == 'update' then
     input.updated_at = now_iso()
     input.seller_id  = nil                    -- ownership can't be reassigned via update
+    input.created_at = nil                    -- can't be backdated via a PATCH
+    if not valid_price(input.price) then return false, 'price must be a whole, non-negative number' end
     local pok, perr = validate_photos(input.photos)
     if not pok then return false, perr end
-    -- Validate only when attributes are part of this PATCH. category_id may be
-    -- absent on a partial update; if so we can't re-validate here (the stored
-    -- category still governs — a category change would carry category_id).
+    -- before() sees only the PATCH body (no row id), so if attributes change we
+    -- REQUIRE category_id in the same PATCH — otherwise validation would be
+    -- silently skipped (the bypass). The post form always carries it.
     if input.attributes ~= nil then
+      if not input.category_id or input.category_id == '' then
+        return false, 'category_id is required when updating attributes'
+      end
       return validate_attrs(input.category_id, input.attributes)
     end
     return true
@@ -484,16 +496,17 @@ local function start_conversation(args, who)
   local buyer, seller = who.user_id, l.seller_id
   if buyer == seller then return nil end
 
-  local existing = cellar.query('SELECT id FROM conversation WHERE listing_id = ? AND buyer_id = ?', { lid, buyer })[1]
-  local cid, is_new
-  if existing then
-    cid, is_new = existing.id, false
-  else
-    cid, is_new = server_uuid(), true
-    local ts = now_iso()
-    cellar.exec('INSERT INTO conversation(id, listing_id, buyer_id, seller_id, created_at, last_message_at) VALUES (?,?,?,?,?,?)',
-                { cid, lid, buyer, seller, ts, ts })
-  end
+  -- Race-safe create-or-get (the rpc path autocommits per statement, no txn):
+  -- INSERT OR IGNORE against UNIQUE(listing_id, buyer_id), then SELECT the id
+  -- back. Two concurrent calls both no-op-or-insert; the SELECT always returns
+  -- the single winner's id, and only the winner sees its own uuid (is_new) — so
+  -- chat_started is logged exactly once and the loser doesn't 400.
+  local mine = server_uuid()
+  local ts = now_iso()
+  cellar.exec('INSERT OR IGNORE INTO conversation(id, listing_id, buyer_id, seller_id, created_at, last_message_at) VALUES (?,?,?,?,?,?)',
+              { mine, lid, buyer, seller, ts, ts })
+  local cid = cellar.query('SELECT id FROM conversation WHERE listing_id = ? AND buyer_id = ?', { lid, buyer })[1].id
+  local is_new = (cid == mine)
   -- membership: idempotent, so this also repairs a conversation left memberless
   cellar.exec('INSERT OR IGNORE INTO conversation_member(conversation_id, user_id) VALUES (?,?)', { cid, buyer })
   cellar.exec('INSERT OR IGNORE INTO conversation_member(conversation_id, user_id) VALUES (?,?)', { cid, seller })

@@ -14,6 +14,7 @@
 #include <string.h>
 
 #define MEDIA_MAX_DEFAULT (8u * 1024 * 1024)   /* 8 MiB wire cap (< portico 16) */
+#define MEDIA_MAX_PIXELS  (25L * 1000 * 1000)  /* 25 MP decoded-area cap (~75 MB RGB) */
 
 static size_t g_media_max = 0;
 void cel_media_set_max(size_t bytes) { g_media_max = bytes; }
@@ -92,22 +93,32 @@ int cel_media_upload(const portico_request_t *req, portico_response_t *res,
 
     img_limits_t lim; image_limits_default(&lim);
     lim.max_bytes = media_cap();
+    /* Cap the DECODED area too (not just the wire bytes): an 8 MiB highly-
+     * compressed image could otherwise declare ~50 MP and blow up to ~150 MB of
+     * RGB. MEDIA_MAX_PIXELS keeps a single decode bounded (~75 MB at 25 MP) — far
+     * more than any phone photo needs. */
+    lim.max_pixels = MEDIA_MAX_PIXELS;
 
     img_info_t info;
     if (image_validate(req->body, req->body_len, &lim, &info) != IMG_OK)
         return json_error(res, 400, "unsupported or invalid image");
 
+    /* Decode ONCE; every variant is encoded from this shared RGB buffer. */
+    unsigned char *rgb = NULL; int dw = 0, dh = 0;
+    if (image_decode_rgb(req->body, req->body_len, &lim, &rgb, &dw, &dh) != IMG_OK)
+        return json_error(res, 400, "unsupported or invalid image");
+
     char id[33];
-    if (gen_id(id) != 0) return json_error(res, 500, "id generation failed");
+    if (gen_id(id) != 0) { image_free_rgb(rgb); return json_error(res, 500, "id generation failed"); }
 
     blob_store_t bs;
-    if (open_store(&bs) != BLOB_OK) return json_error(res, 500, "storage unavailable");
+    if (open_store(&bs) != BLOB_OK) { image_free_rgb(rgb); return json_error(res, 500, "storage unavailable"); }
 
     int err_code = 0; const char *err_msg = NULL;
+    size_t stored = 0;                       /* variants successfully written */
     for (size_t i = 0; i < NVARIANTS; i++) {
         void *out = NULL; size_t outn = 0;
-        img_encode_opts_t opts = { .max_dim = VARIANTS[i].max_dim, .jpeg_quality = VARIANTS[i].quality };
-        if (image_reencode(req->body, req->body_len, &lim, &opts, &out, &outn) != IMG_OK) {
+        if (image_encode_jpeg(rgb, dw, dh, VARIANTS[i].max_dim, VARIANTS[i].quality, &out, &outn) != IMG_OK) {
             err_code = 400; err_msg = "image processing failed"; break;
         }
         char key[160];
@@ -115,9 +126,21 @@ int cel_media_upload(const portico_request_t *req, portico_response_t *res,
         int pr = bs.put(bs.ctx, key, out, outn, "image/jpeg");
         free(out);
         if (pr != BLOB_OK) { err_code = 500; err_msg = "store failed"; break; }
+        stored++;
+    }
+    image_free_rgb(rgb);
+    if (err_code) {
+        /* roll back: the id is never returned on failure, so any variants already
+         * written would be permanently orphaned — delete them. */
+        for (size_t j = 0; j < stored; j++) {
+            char key[160];
+            media_key(key, sizeof key, id, VARIANTS[j].name);
+            bs.del(bs.ctx, key);
+        }
+        bs.destroy(bs.ctx);
+        return json_error(res, err_code, err_msg);
     }
     bs.destroy(bs.ctx);
-    if (err_code) return json_error(res, err_code, err_msg);
 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "id", id);

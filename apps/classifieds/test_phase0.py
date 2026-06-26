@@ -345,19 +345,18 @@ def run_checks(port, db):
     s, b = req("POST", "/rpc/listing", {"id": "nope-not-real"})
     chk("unknown listing -> 400", s == 400, f"status={s}")
 
-    # engine fix (#1): /api reads now defer to policy, so anon can read where the
-    # policy lists 'anon' — public browse without an rpc workaround.
-    s, b = req("GET", f"/api/listings/{one.get('id')}")          # anon, no token
-    chk("anon /api detail -> 200 (policy)", s == 200, f"status={s}")
-    s, b = req("GET", "/api/listings")                           # anon list
-    chk("anon /api list -> 200", s == 200, f"status={s}")
-    # a table that does NOT grant 'anon' stays protected (401 unauthenticated)
-    s, b = req("GET", "/api/listing_facet")
+    # engine fix (#1): /api reads defer to policy — anon may read a table that
+    # lists 'anon' (the public catalog) but not one that doesn't.
+    s, b = req("GET", "/api/category")                           # anon; category lists 'anon'
+    chk("anon /api category -> 200 (public catalog)", s == 200, f"status={s}")
+    s, b = req("GET", "/api/listing_facet")                      # internal table
     chk("anon /api listing_facet -> 401", s == 401, f"status={s}")
-    # ...and an authenticated user without the role gets 403, not 401
-    # (admin is superuser here, so just assert the table is reachable as admin)
-    s, b = req("GET", "/api/listing_facet", token=tok)
-    chk("admin /api listing_facet -> 200", s == 200, f"status={s}")
+    # security fix (#1): /api/listings is now OWNER-scoped, not public — anon is
+    # denied; public browse/detail go through the search + listing rpcs (active-only).
+    s, b = req("GET", f"/api/listings/{one.get('id')}")          # anon
+    chk("anon /api/listings get denied -> 401", s == 401, f"status={s}")
+    s, b = req("GET", "/api/listings")                           # anon list
+    chk("anon /api/listings list denied -> 401", s == 401, f"status={s}")
 
     # ---- A1.6 contact: phone-reveal (login-gated) + events ----
     buyer = (req("POST", "/auth/login", {"email": BUYER[0], "password": BUYER[1]})[1] or {}).get("token")
@@ -374,10 +373,12 @@ def run_checks(port, db):
                {"listing_id": clid, "phone": "+996700123456", "whatsapp": "+996700123456"}, token=tok)
     chk("owner set_listing_contact -> 200", s == 200 and ((b or {}).get("result") or {}).get("ok"), str(b))
 
-    # phone must NOT leak via the public listing read
-    s, b = req("GET", f"/api/listings/{clid}")               # anon
-    chk("anon detail has channel flags", (b or {}).get("row", {}).get("allow_call") == 1, str(b)[:80])
-    chk("anon detail does NOT leak phone", "phone" not in (b or {}).get("row", {}), str((b or {}).get("row", {}).keys()))
+    # phone must NOT leak via the public listing read (the `listing` rpc; the
+    # generic /api/listings is owner-scoped, so anon uses the rpc)
+    s, b = req("POST", "/rpc/listing", {"id": clid})         # anon
+    det = ((b or {}).get("result") or {}).get("listing") or {}
+    chk("public detail has channel flags", det.get("allow_call") == 1, str(det)[:80])
+    chk("public detail does NOT leak phone", "phone" not in det, str(list(det.keys())))
 
     # reveal requires login
     s, b = req("POST", "/rpc/reveal_contact", {"listing_id": clid})   # anon
@@ -554,6 +555,38 @@ def run_checks(port, db):
     s, b = req("POST", "/api/listings",
                {"category_id": "cat-cars", "title": "anon post", "attributes": {"make": "Toyota", "year": 2014}})
     chk("anon create -> 401", s == 401, f"status={s}")
+
+    # ---- review hardening (security-review follow-ups) ----
+    base_ok = {"category_id": "cat-cars", "title": "Hardening", "city_id": "ci-bishkek",
+               "attributes": {"make": "Toyota", "year": 2016}}
+    # #5 price: negative / fractional rejected
+    s, _ = req("POST", "/api/listings", dict(base_ok, price=-100), token=seller)
+    chk("negative price -> 400", s == 400, f"status={s}")
+    s, _ = req("POST", "/api/listings", dict(base_ok, price=10.5), token=seller)
+    chk("fractional price -> 400", s == 400, f"status={s}")
+    # #6 created_at is server-owned (a forged far-future value is ignored)
+    s, b = req("POST", "/api/listings", dict(base_ok, created_at="2099-01-01T00:00:00Z"), token=seller)
+    hid = (b or {}).get("row", {}).get("id")
+    chk("forged created_at ignored", (b or {}).get("row", {}).get("created_at", "").startswith("202"),
+        str((b or {}).get("row", {}).get("created_at")))
+    # #3 updating attributes without category_id is rejected (no silent bypass)
+    s, _ = req("PATCH", f"/api/listings/{hid}", {"attributes": {"make": "NotAMake", "year": 2016}}, token=seller)
+    chk("update attrs w/o category_id -> 400", s == 400, f"status={s}")
+    # ...and with category_id it still validates (bad enum rejected)
+    s, _ = req("PATCH", f"/api/listings/{hid}",
+               {"category_id": "cat-cars", "attributes": {"make": "NotAMake", "year": 2016}}, token=seller)
+    chk("update attrs bad enum -> 400", s == 400, f"status={s}")
+
+    # #1 /api/listings is owner-scoped: a user sees only their OWN listings
+    s, b = req("GET", "/api/listings", token=seller)
+    rows = (b or {}).get("rows") or []
+    chk("seller /api list -> own only", s == 200 and all(r.get("seller_id") == seller_id for r in rows) and len(rows) > 0,
+        f"status={s} n={len(rows)}")
+    s, b = req("GET", "/api/listings", token=buyer)
+    rows = (b or {}).get("rows") or []
+    chk("buyer /api list excludes seller's", all(r.get("seller_id") != seller_id for r in rows), f"n={len(rows)}")
+    s, b = req("GET", f"/api/listings/{hid}", token=buyer)   # buyer fetching seller's listing
+    chk("buyer get seller's listing -> 404 (owner-scoped)", s == 404, f"status={s}")
 
 if __name__ == "__main__":
     sys.exit(main())

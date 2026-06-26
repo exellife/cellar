@@ -77,4 +77,21 @@ int image_reencode(const void *data, size_t len,
                    const img_limits_t *limits, const img_encode_opts_t *opts,
                    void **out, size_t *out_len);
 
+/* The two building blocks behind image_reencode, exposed so a caller producing
+ * MULTIPLE variants decodes the source ONCE and encodes each variant from the
+ * shared RGB buffer (avoids re-decoding a large image per variant). */
+
+/* Validate (caps area before decode) + decode into a fresh 3-channel RGB buffer.
+ * Sets *rgb (free with image_free_rgb), *w, *h. Returns IMG_OK or a code. */
+int image_decode_rgb(const void *data, size_t len, const img_limits_t *limits,
+                     unsigned char **rgb, int *w, int *h);
+
+/* Free a buffer returned by image_decode_rgb. */
+void image_free_rgb(unsigned char *rgb);
+
+/* Resize an RGB buffer to fit `max_dim` (downscale only; 0 = no resize) and
+ * encode to JPEG. Allocates `*out` (free with free()), sets `*out_len`. */
+int image_encode_jpeg(const unsigned char *rgb, int w, int h,
+                      int max_dim, int jpeg_quality, void **out, size_t *out_len);
+
 #endif /* CEL_IMAGE_PROC_H */
