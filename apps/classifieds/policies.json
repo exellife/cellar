@@ -15,12 +15,16 @@
 
   "listings":      { "list": ["anon", "user"], "get": ["anon", "user"], "create": ["user"], "update": ["user"], "delete": ["user"] },
   "listing_facet": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+  "listing_contact": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+  "contact_event":   { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
 
   "_comment_rpc": "NOTE: the engine does not currently enforce this _rpc whitelist (rpc has no authorization layer) — it documents intent, and sensitive rpcs self-guard in hooks.lua (rebuild_facets checks role=admin). search/category_form/listing are intentionally public.",
   "_rpc": {
     "search": { "roles": ["anon", "user"] },
     "category_form": { "roles": ["anon", "user"] },
     "listing": { "roles": ["anon", "user"] },
+    "set_listing_contact": { "roles": ["user"] },
+    "reveal_contact": { "roles": ["user"] },
     "rebuild_facets": { "roles": ["admin"] }
   }
 }

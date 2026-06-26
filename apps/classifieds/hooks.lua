@@ -347,6 +347,53 @@ local function get_listing(args, who)
   return { listing = l }
 end
 
+-- ── A1.6: contact (phone-reveal + events) ──────────────────────────────────
+-- Owner sets the contact details for their listing (kept out of the listings
+-- row so it can never leak via a public read). Login-gated, owner-only.
+local function set_listing_contact(args, who)
+  if not (who and who.authenticated) then return nil end
+  local id = args and args.listing_id
+  if not id then return nil end
+  local l = cellar.query('SELECT seller_id FROM listings WHERE id = ?', { id })[1]
+  if not l then return nil end
+  if l.seller_id ~= who.user_id and who.role ~= 'admin' then return nil end
+  cellar.exec(
+    'INSERT INTO listing_contact(listing_id, phone, whatsapp, updated_at) VALUES (?,?,?,?) ' ..
+    'ON CONFLICT(listing_id) DO UPDATE SET phone=excluded.phone, whatsapp=excluded.whatsapp, updated_at=excluded.updated_at',
+    { id, args.phone, args.whatsapp, now_iso() })
+  return { ok = true, listing_id = id }
+end
+
+-- Reveal a contact channel for a listing. LOGIN-GATED (kills bulk number
+-- scraping; ties each reveal to a real account) and logged as a contact_event
+-- (the demand signal), except when the viewer is the seller. `channel` is
+-- 'phone' (default) or 'whatsapp'; the listing's channel flag must allow it.
+local function reveal_contact(args, who)
+  if not (who and who.authenticated) then return nil end
+  local id = args and args.listing_id
+  if not id then return nil end
+  local l = cellar.query(
+    'SELECT seller_id, status, allow_call, allow_whatsapp FROM listings WHERE id = ?', { id })[1]
+  if not l or l.status ~= 'active' then return nil end
+
+  local c = cellar.query('SELECT phone, whatsapp FROM listing_contact WHERE listing_id = ?', { id })[1] or {}
+  local out, kind = { listing_id = id }, nil
+  if (args.channel or 'phone') == 'whatsapp' then
+    if tonumber(l.allow_whatsapp) ~= 1 then return nil end
+    out.whatsapp, kind = c.whatsapp, 'whatsapp_clicked'
+  else
+    if tonumber(l.allow_call) ~= 1 then return nil end
+    out.phone, kind = c.phone, 'number_revealed'
+  end
+
+  if who.user_id ~= l.seller_id then       -- don't log the seller viewing their own
+    cellar.exec(
+      'INSERT INTO contact_event(listing_id, actor_id, seller_id, kind, created_at) VALUES (?,?,?,?,?)',
+      { id, who.user_id, l.seller_id, kind, now_iso() })
+  end
+  return out
+end
+
 -- ── repair / ops primitive ──────────────────────────────────────────────────
 -- POST /rpc/rebuild_facets {"id": "<listing-id>"}  (admin) — reconcile one
 -- listing's facets if an after() fault ever left them stale.
@@ -364,6 +411,12 @@ function rpc(name, args, who)
   end
   if name == 'listing' then
     return get_listing(args, who)
+  end
+  if name == 'set_listing_contact' then
+    return set_listing_contact(args, who)
+  end
+  if name == 'reveal_contact' then
+    return reveal_contact(args, who)
   end
   if name == 'category_form' then
     return category_form(args and args.category)

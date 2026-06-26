@@ -19,6 +19,7 @@ import http.client
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADMIN = ("admin@cls.dev", "adminpw01")
+BUYER = ("buyer@cls.dev", "buyerpw01")
 
 ok = 0; fail = 0
 def chk(name, cond, detail=""):
@@ -64,7 +65,7 @@ def main():
                    CEL_PORT=str(port), CEL_DATA_DB=db, CEL_LOG_LEVEL="warn",
                    CEL_POLICY_FILE=os.path.join(d, "policies.json"),
                    CEL_AUTH_RATELIMIT="0", CEL_API_RATELIMIT="0",
-                   CEL_SEED_USERS=f"{ADMIN[0]}:{ADMIN[1]}:admin")
+                   CEL_SEED_USERS=f"{ADMIN[0]}:{ADMIN[1]}:admin;{BUYER[0]}:{BUYER[1]}:user")
         log = open(os.path.join(d, "server.log"), "w")
         proc = subprocess.Popen([binary], env=env, stdout=log, stderr=subprocess.STDOUT)
         try:
@@ -354,6 +355,55 @@ def run_checks(port, db):
     # (admin is superuser here, so just assert the table is reachable as admin)
     s, b = req("GET", "/api/listing_facet", token=tok)
     chk("admin /api listing_facet -> 200", s == 200, f"status={s}")
+
+    # ---- A1.6 contact: phone-reveal (login-gated) + events ----
+    buyer = (req("POST", "/auth/login", {"email": BUYER[0], "password": BUYER[1]})[1] or {}).get("token")
+    chk("login buyer", bool(buyer))
+
+    # seller (admin here) posts a listing with channels + sets the number
+    s, b = req("POST", "/api/listings",
+               {"category_id": "cat-cars", "title": "Honda for contact test", "price": 5000,
+                "city_id": "ci-bishkek", "allow_call": 1, "allow_whatsapp": 1,
+                "attributes": {"make": "Honda", "year": 2019}}, token=tok)
+    clid = (b or {}).get("row", {}).get("id")
+    chk("contact listing -> 201", s == 201, f"status={s}")
+    s, b = req("POST", "/rpc/set_listing_contact",
+               {"listing_id": clid, "phone": "+996700123456", "whatsapp": "+996700123456"}, token=tok)
+    chk("owner set_listing_contact -> 200", s == 200 and ((b or {}).get("result") or {}).get("ok"), str(b))
+
+    # phone must NOT leak via the public listing read
+    s, b = req("GET", f"/api/listings/{clid}")               # anon
+    chk("anon detail has channel flags", (b or {}).get("row", {}).get("allow_call") == 1, str(b)[:80])
+    chk("anon detail does NOT leak phone", "phone" not in (b or {}).get("row", {}), str((b or {}).get("row", {}).keys()))
+
+    # reveal requires login
+    s, b = req("POST", "/rpc/reveal_contact", {"listing_id": clid})   # anon
+    chk("reveal anon -> 400 (login-gated)", s == 400, f"status={s}")
+
+    # buyer reveals phone -> gets number + event logged
+    s, b = req("POST", "/rpc/reveal_contact", {"listing_id": clid}, token=buyer)
+    rev = (b or {}).get("result") or {}
+    chk("buyer reveal phone -> 200", s == 200, f"status={s}")
+    chk("reveal returns number", rev.get("phone") == "+996700123456", str(rev))
+
+    # whatsapp channel
+    s, b = req("POST", "/rpc/reveal_contact", {"listing_id": clid, "channel": "whatsapp"}, token=buyer)
+    chk("buyer reveal whatsapp", ((b or {}).get("result") or {}).get("whatsapp") == "+996700123456", str(b))
+
+    # non-owner cannot set contact
+    s, b = req("POST", "/rpc/set_listing_contact",
+               {"listing_id": clid, "phone": "+996555000000"}, token=buyer)
+    chk("non-owner set_contact -> 400", s == 400, f"status={s}")
+
+    # events logged: 2 by buyer (number_revealed + whatsapp_clicked), seller self-view none
+    req("POST", "/rpc/reveal_contact", {"listing_id": clid}, token=tok)   # seller views own
+    c = sqlite3.connect(db)
+    rows = c.execute("SELECT kind, actor_id, seller_id FROM contact_event WHERE listing_id=? ORDER BY created_at", (clid,)).fetchall()
+    c.close()
+    kinds = [r[0] for r in rows]
+    chk("event: number_revealed logged", "number_revealed" in kinds, str(kinds))
+    chk("event: whatsapp_clicked logged", "whatsapp_clicked" in kinds, str(kinds))
+    chk("seller self-view not logged (2 events)", len(rows) == 2, str(rows))
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -120,6 +120,11 @@ CREATE TABLE listings (
   condition   TEXT,                             -- e.g. new | used (category-refined)
   status      TEXT NOT NULL DEFAULT 'active'
               CHECK (status IN ('draft','pending','active','sold','expired','removed')),
+  -- contact CHANNEL flags are public (the detail page shows the right buttons);
+  -- the number itself lives in listing_contact, never exposed on this row.
+  allow_chat     INTEGER NOT NULL DEFAULT 1,
+  allow_call     INTEGER NOT NULL DEFAULT 1,
+  allow_whatsapp INTEGER NOT NULL DEFAULT 0,
   photos      TEXT NOT NULL DEFAULT '[]',       -- JSON: ordered media ids (POST /media)
   attributes  TEXT NOT NULL DEFAULT '{}',       -- JSON: category-specific values
   created_at  TEXT NOT NULL DEFAULT '',
@@ -175,3 +180,35 @@ CREATE TRIGGER listings_fts_au AFTER UPDATE ON listings BEGIN
   INSERT INTO listings_fts(rowid, title, description)
     VALUES (new.rowid, new.title, new.description);
 END;
+
+-- ── Contact (A1.6) ──────────────────────────────────────────────────────────
+-- The actual contact details — DELIBERATELY a separate table, never a column on
+-- listings, so an anon /api/listings read can't leak the number. Readable only
+-- by the gated reveal_contact rpc (server-side) and the owner; policy denies
+-- direct anon/user access.
+CREATE TABLE listing_contact (
+  listing_id TEXT PRIMARY KEY REFERENCES listings(id) ON DELETE CASCADE,
+  phone      TEXT,
+  whatsapp   TEXT,
+  updated_at TEXT NOT NULL DEFAULT ''
+);
+
+-- Contact events — the gated, identity-bearing demand signal (every reveal/chat/
+-- whatsapp click is a logged-in user acting on a listing). The richer generic
+-- EventSink + browsing telemetry (views/clicks) is Phase 2; this is the
+-- contact-specific log that powers "responsive seller" badges + demand metrics.
+CREATE TABLE contact_event (
+  id         TEXT PRIMARY KEY DEFAULT (
+               lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
+               substr(lower(hex(randomblob(2))),2)||'-'||
+               substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||
+               '-'||lower(hex(randomblob(6)))),
+  listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  actor_id   TEXT NOT NULL,                      -- the (logged-in) viewer
+  seller_id  TEXT NOT NULL,                      -- the listing owner
+  kind       TEXT NOT NULL
+             CHECK (kind IN ('number_revealed','whatsapp_clicked','chat_started')),
+  created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_contact_event_listing ON contact_event (listing_id, created_at);
+CREATE INDEX idx_contact_event_seller  ON contact_event (seller_id, created_at);
