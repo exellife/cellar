@@ -20,17 +20,6 @@ import http.client
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADMIN = ("admin@cls.dev", "adminpw01")
 
-SEED = """
-INSERT INTO category(id,slug,name) VALUES ('cat-cars','cars','Авто');
-INSERT INTO category_attribute(id,category_id,key,label,type,required,filterable,options) VALUES
-  ('at-year','cat-cars','year','Год','int',1,1,NULL),
-  ('at-make','cat-cars','make','Марка','enum',1,1,'["Toyota","Honda","BMW"]'),
-  ('at-mile','cat-cars','mileage','Пробег','int',0,1,NULL),
-  ('at-color','cat-cars','color','Цвет','text',0,0,NULL);
-INSERT INTO geo_oblast(id,name) VALUES ('ob-chuy','Чуйская область');
-INSERT INTO geo_city(id,oblast_id,name) VALUES ('ci-bishkek','ob-chuy','Бишкек');
-"""
-
 ok = 0; fail = 0
 def chk(name, cond, detail=""):
     global ok, fail
@@ -57,10 +46,11 @@ def main():
     d = tempfile.mkdtemp(prefix="cls-p0-")
     db = os.path.join(d, "data.db")
     try:
-        # build the app db: bundle schema + seeded catalog
+        # build the app db: bundle schema + the REAL bundle seed (so a seed
+        # regression is caught here too)
         con = sqlite3.connect(db)
         con.executescript(open(os.path.join(HERE, "schema.sql")).read())
-        con.executescript(SEED)
+        con.executescript(open(os.path.join(HERE, "seed.sql")).read())
         con.commit(); con.close()
         # the bundle hooks + policies live beside data.db (single-app mode)
         shutil.copy(os.path.join(HERE, "hooks.lua"), os.path.join(d, "hooks.lua"))
@@ -114,50 +104,66 @@ def run_checks(port, db):
     s, b = req("POST", "/auth/login", {"email": ADMIN[0], "password": ADMIN[1]})
     tok = (b or {}).get("token"); chk("login admin", bool(tok), f"status={s}")
 
-    base = {"category_id": "cat-cars", "title": "Toyota Camry", "price": 150000,
-            "city_id": "ci-bishkek"}
+    car = {"category_id": "cat-cars", "title": "Toyota Camry", "price": 150000,
+           "city_id": "ci-bishkek", "district_id": "di-leninsky"}
 
-    # ---- valid create -> 201 + facets (filterable only) ----
+    # ---- valid car create -> 201 + facets for the filterable attrs ----
     s, b = req("POST", "/api/listings",
-               dict(base, attributes={"year": 2015, "make": "Toyota",
-                                      "mileage": 120000, "color": "white"}), token=tok)
-    chk("valid create -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
+               dict(car, attributes={"make": "Toyota", "year": 2015, "mileage": 120000,
+                                     "transmission": "Автомат", "fuel": "Бензин",
+                                     "body": "Седан"}), token=tok)
+    chk("valid car create -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
     row = (b or {}).get("row", {}); lid = row.get("id")
     chk("server set seller_id", bool(row.get("seller_id")), str(row.get("seller_id")))
     chk("server set expires_at", bool(row.get("expires_at")), str(row.get("expires_at")))
 
     f = facets(db, lid) if lid else {}
-    chk("facet year (num)",  f.get("year") == (2015.0, None), str(f.get("year")))
     chk("facet make (text)", f.get("make") == (None, "Toyota"), str(f.get("make")))
+    chk("facet year (num)",  f.get("year") == (2015.0, None), str(f.get("year")))
     chk("facet mileage (num)", f.get("mileage") == (120000.0, None), str(f.get("mileage")))
-    chk("non-filterable color excluded", "color" not in f, str(list(f.keys())))
+    chk("facet transmission (text)", f.get("transmission") == (None, "Автомат"), str(f.get("transmission")))
+    chk("optional model not faceted (absent)", "model" not in f, str(list(f.keys())))
 
-    # ---- missing required attr -> 400 ----
+    # ---- missing required attr -> 400 (year is required for cars) ----
     s, b = req("POST", "/api/listings",
-               dict(base, attributes={"make": "Toyota"}), token=tok)   # no year
+               dict(car, attributes={"make": "Toyota"}), token=tok)
     chk("missing required -> 400", s == 400, f"status={s}")
     chk("reason mentions year", "year" in (b or {}).get("message", ""), str(b))
 
-    # ---- bad enum -> 400 ----
+    # ---- bad enum -> 400 (Жигуль not in the make list) ----
     s, b = req("POST", "/api/listings",
-               dict(base, attributes={"year": 2015, "make": "Lada"}), token=tok)
+               dict(car, attributes={"make": "Жигуль", "year": 2015}), token=tok)
     chk("bad enum -> 400", s == 400, f"status={s}")
     chk("reason mentions make", "make" in (b or {}).get("message", ""), str(b))
 
-    # ---- wrong type -> 400 ----
+    # ---- wrong type -> 400 (year must be a number) ----
     s, b = req("POST", "/api/listings",
-               dict(base, attributes={"year": "old", "make": "Toyota"}), token=tok)
+               dict(car, attributes={"make": "Toyota", "year": "old"}), token=tok)
     chk("wrong type -> 400", s == 400, f"status={s}")
+
+    # ---- non-filterable attr excluded (apartment.total_floors, filterable=0) ----
+    s, b = req("POST", "/api/listings",
+               {"category_id": "cat-apartments", "title": "2-комн квартира", "price": 80000,
+                "city_id": "ci-bishkek",
+                "attributes": {"deal": "Аренда", "rooms": 2, "area": 55.5, "floor": 3,
+                               "total_floors": 9, "furnished": True}}, token=tok)
+    chk("valid apartment -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
+    aid = (b or {}).get("row", {}).get("id")
+    af = facets(db, aid) if aid else {}
+    chk("facet rooms (num)", af.get("rooms") == (2.0, None), str(af.get("rooms")))
+    chk("facet area (num)",  af.get("area") == (55.5, None), str(af.get("area")))
+    chk("facet furnished (bool->1)", af.get("furnished") == (1.0, None), str(af.get("furnished")))
+    chk("non-filterable total_floors excluded", "total_floors" not in af, str(list(af.keys())))
 
     # ---- update re-syncs facets (idempotent rebuild) ----
     s, b = req("PATCH", f"/api/listings/{lid}",
                {"category_id": "cat-cars",
-                "attributes": {"year": 2016, "make": "Honda", "mileage": 90000}}, token=tok)
+                "attributes": {"make": "Honda", "year": 2016, "mileage": 90000}}, token=tok)
     chk("update -> 200", s == 200, f"status={s} {b if s!=200 else ''}")
     f = facets(db, lid)
-    chk("facet year resynced", f.get("year") == (2016.0, None), str(f.get("year")))
     chk("facet make resynced", f.get("make") == (None, "Honda"), str(f.get("make")))
-    chk("facet mileage resynced", f.get("mileage") == (90000.0, None), str(f.get("mileage")))
+    chk("facet year resynced", f.get("year") == (2016.0, None), str(f.get("year")))
+    chk("dropped attr gone (transmission)", "transmission" not in f, str(list(f.keys())))
 
     # ---- admin rpc: rebuild_facets reconciles ----
     s, b = req("POST", "/rpc/rebuild_facets", {"id": lid}, token=tok)

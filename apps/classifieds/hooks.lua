@@ -92,12 +92,15 @@ end
 -- land in num_value, everything else in text_value.
 local function sync_facets(listing_id)
   cellar.exec('DELETE FROM listing_facet WHERE listing_id = ?', { listing_id })
+  -- Numeric types (and bool, as 0/1) land in num_value for range/equality
+  -- filtering; enum/text land in text_value. json_extract yields a number for
+  -- JSON numbers/true/false and a string for JSON strings.
   cellar.exec([[
     INSERT INTO listing_facet (listing_id, key, num_value, text_value)
     SELECT l.id, ca.key,
-           CASE WHEN ca.type IN ('int','number')
+           CASE WHEN ca.type IN ('int','number','bool')
                 THEN json_extract(l.attributes, '$."' || ca.key || '"') END,
-           CASE WHEN ca.type NOT IN ('int','number')
+           CASE WHEN ca.type NOT IN ('int','number','bool')
                 THEN json_extract(l.attributes, '$."' || ca.key || '"') END
     FROM listings l
     JOIN category_attribute ca
