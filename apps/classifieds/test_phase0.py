@@ -631,6 +631,31 @@ def run_checks(port, db):
     chk("A2.4 favorite event emitted", len(rows_of("SELECT 1 FROM event WHERE type='favorite'") or []) >= 1, "")
     chk("A2.4 contact event emitted", len(rows_of("SELECT 1 FROM event WHERE type='contact'") or []) >= 1, "")
 
+    # ---- A2.3 saved searches + matcher → alert ----
+    s, b = req("POST", "/rpc/save_search", {"q": "toyota", "category": "cat-cars", "name": "Toyotas"}, token=seller)
+    ss_id = ((b or {}).get("result") or {}).get("id")
+    chk("A2.3 save_search -> id", s == 200 and bool(ss_id), str(b))
+    time.sleep(1.1)   # new listing's created_at must exceed last_run_at (1s ISO precision)
+    s, b = req("POST", "/api/listings",
+               {"category_id": "cat-cars", "title": "Toyota Land Cruiser fresh", "city_id": "ci-bishkek",
+                "attributes": {"make": "Toyota", "year": 2020}}, token=buyer)
+    new_lid = (b or {}).get("row", {}).get("id")
+    chk("A2.3 new matching listing", s == 201, f"status={s}")
+    req("POST", "/rpc/enqueue_job", {"type": "match_saved_searches"}, token=tok)
+    req("POST", "/jobs/run", {}, token=tok)
+    s, b = req("POST", "/rpc/notifications", {"unread_only": True}, token=seller)
+    ssn = ((b or {}).get("result") or {}).get("notifications") or []
+    chk("A2.3 saved-search alert fired",
+        any(n.get("type") == "saved_search" and n.get("subject_id") == new_lid for n in ssn),
+        str([(n.get("type"), n.get("subject_id")) for n in ssn]))
+    s, b = req("POST", "/rpc/saved_searches", {}, token=seller)
+    chk("A2.3 saved_searches lists it",
+        any(x.get("id") == ss_id for x in (((b or {}).get("result") or {}).get("searches") or [])), str(b)[:80])
+    req("POST", "/rpc/delete_saved_search", {"id": ss_id}, token=seller)
+    s, b = req("POST", "/rpc/saved_searches", {}, token=seller)
+    chk("A2.3 delete_saved_search removes it",
+        not any(x.get("id") == ss_id for x in (((b or {}).get("result") or {}).get("searches") or [])), "")
+
     # ---- review hardening (security-review follow-ups) ----
     base_ok = {"category_id": "cat-cars", "title": "Hardening", "city_id": "ci-bishkek",
                "attributes": {"make": "Toyota", "year": 2016}}

@@ -38,6 +38,7 @@
     "get":  { "roles": ["user"], "owner_column": "user_id" },
     "create": ["admin"], "update": ["admin"], "delete": ["admin"]
   },
+  "saved_search": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
   "message": {
     "realtime": true,
     "create": ["user"],
@@ -58,6 +59,9 @@
     "unfavorite": { "roles": ["user"] },
     "favorites": { "roles": ["user"] },
     "renew_listing": { "roles": ["user"] },
+    "save_search": { "roles": ["user"] },
+    "saved_searches": { "roles": ["user"] },
+    "delete_saved_search": { "roles": ["user"] },
     "notifications": { "roles": ["user"] },
     "unread_count": { "roles": ["user"] },
     "mark_read": { "roles": ["user"] },

@@ -235,6 +235,8 @@ function job(name, payload)
              'Срок размещения вашего объявления истёк', l.id)
     end
     cellar.log.info('job expire_listings: expired ' .. tostring(#due) .. ' listing(s)')
+  elseif name == 'match_saved_searches' then
+    match_saved_searches()               -- global (defined below); alerts on new matches
   end
 end
 
@@ -608,6 +610,66 @@ local function renew_listing(args, who)
   return { listing_id = lid, expires_at = iso_in(EXPIRY_DAYS) }
 end
 
+-- ── A2.3: saved searches + the matcher ──────────────────────────────────────
+local function save_search(args, who)
+  if not (who and who.authenticated) then return nil end
+  args = args or {}
+  local q, cat, city = args.q, args.category, args.city
+  if (not q or q == '') and (not cat or cat == '') and (not city or city == '') then
+    return nil                          -- need at least one criterion
+  end
+  local id, ts = server_uuid(), now_iso()
+  cellar.exec(
+    'INSERT INTO saved_search(id, user_id, name, q, category_id, city_id, created_at, last_run_at) ' ..
+    'VALUES (?,?,?,?,?,?,?,?)', { id, who.user_id, args.name or '', q or '', cat, city, ts, ts })
+  return { id = id }
+end
+
+local function my_saved_searches(args, who)
+  if not (who and who.authenticated) then return nil end
+  return { searches = cellar.query(
+    'SELECT id, name, q, category_id, city_id, notify, created_at FROM saved_search ' ..
+    'WHERE user_id = ? ORDER BY created_at DESC', { who.user_id }) }
+end
+
+local function delete_saved_search(args, who)
+  if not (who and who.authenticated) then return nil end
+  local id = args and args.id
+  if not id then return nil end
+  cellar.exec('DELETE FROM saved_search WHERE id = ? AND user_id = ?', { id, who.user_id })
+  return { ok = true }
+end
+
+-- The matcher job: for each saved search, notify its owner of active listings
+-- created since last_run_at that match (q via FTS + category + city), then
+-- advance the cursor. Global so the `job` hook (defined earlier) resolves it.
+-- (Facet-filter matching is a later refinement; q/category/city covers the
+-- common alerts and never over-notifies past the cursor.)
+function match_saved_searches()
+  local searches = cellar.query(
+    'SELECT id, user_id, q, category_id, city_id, last_run_at FROM saved_search WHERE notify = 1')
+  for _, ss in ipairs(searches) do
+    local match = fts_query(ss.q)
+    local from = 'listings l'
+    local conds = { "l.status = 'active'", 'l.created_at > ?' }
+    local binds = { ss.last_run_at or '' }
+    if match ~= '' then
+      from = 'listings_fts JOIN listings l ON l.rowid = listings_fts.rowid'
+      conds[#conds+1] = 'listings_fts MATCH ?'; binds[#binds+1] = match
+    end
+    if ss.category_id and ss.category_id ~= '' then conds[#conds+1] = 'l.category_id = ?'; binds[#binds+1] = ss.category_id end
+    if ss.city_id and ss.city_id ~= '' then conds[#conds+1] = 'l.city_id = ?'; binds[#binds+1] = ss.city_id end
+
+    local rows = cellar.query(
+      'SELECT l.id, l.title FROM ' .. from .. ' WHERE ' .. table.concat(conds, ' AND ') ..
+      ' ORDER BY l.created_at LIMIT 50', binds)
+    for _, r in ipairs(rows) do
+      notify(ss.user_id, 'saved_search', 'Новое по вашему поиску', r.title, r.id)
+    end
+    cellar.exec('UPDATE saved_search SET last_run_at = ? WHERE id = ?', { now_iso(), ss.id })
+  end
+end
+
 -- ── A2.2: notification feed rpcs ────────────────────────────────────────────
 local function my_notifications(args, who)
   if not (who and who.authenticated) then return nil end
@@ -709,6 +771,15 @@ function rpc(name, args, who)
   end
   if name == 'renew_listing' then
     return renew_listing(args, who)
+  end
+  if name == 'save_search' then
+    return save_search(args, who)
+  end
+  if name == 'saved_searches' then
+    return my_saved_searches(args, who)
+  end
+  if name == 'delete_saved_search' then
+    return delete_saved_search(args, who)
   end
   if name == 'rebuild_facets' then
     if who.role ~= 'admin' then return nil end

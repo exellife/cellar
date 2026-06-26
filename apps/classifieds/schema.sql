@@ -285,3 +285,23 @@ CREATE TABLE notification (
 );
 CREATE INDEX idx_notification_user   ON notification (user_id, created_at);
 CREATE INDEX idx_notification_unread ON notification (user_id, read_at);
+
+-- ── Saved searches + alerts (A2.3) ──────────────────────────────────────────
+-- A user's saved query (q + category + city). A recurring matcher job finds
+-- listings created since last_run_at that match, and notifies the user.
+CREATE TABLE saved_search (
+  id          TEXT PRIMARY KEY DEFAULT (
+                lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
+                substr(lower(hex(randomblob(2))),2)||'-'||
+                substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||
+                '-'||lower(hex(randomblob(6)))),
+  user_id     TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL DEFAULT '',
+  q           TEXT NOT NULL DEFAULT '',
+  category_id TEXT,
+  city_id     TEXT,
+  notify      INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL DEFAULT '',
+  last_run_at TEXT NOT NULL DEFAULT ''     -- cursor: only match listings created after this
+);
+CREATE INDEX idx_saved_search_user ON saved_search (user_id);
