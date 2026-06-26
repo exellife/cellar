@@ -85,11 +85,13 @@
 ## Phase 2 — Lifecycle, identity hardening, events
 
 ### Track E *(JobQueue + EventSink built early — the async backbone, pulled ahead of the rest of Phase 2)*
-- ◑ **E2.1 `JobQueue` port + SQLite adapter + tests** — ✓ MODULE done: enqueue/atomic-claim/complete/
-  fail-with-backoff/dead-letter/visibility-timeout/recurring + `jobq_run_due` tick; 27-check test
-  (concurrent no-double-claim), ASan-clean. ◻ engine wiring (per-app queue + worker thread + Lua `job` hook).
-- ◑ **E2.2 `EventSink` port + SQLite adapter + tests** — ✓ MODULE done: `emit` + cursor `read`; 19-check
-  test, ASan-clean. ◻ engine wiring (per-app sink + `cellar.emit` Lua API; bundle emits view/search/etc.).
+- ✓ **E2.1 `JobQueue`** — module (atomic-claim/retry/visibility/dead-letter/recurring + `jobq_run_due`,
+  27-check test) **+ WIRED**: per-app queue on a dedicated connection, `cellar.enqueue_job` Lua API,
+  `cel_hooks_run_jobs` dispatch to the `job` hook, `POST /jobs/run` (admin) trigger. Bundle:
+  `expire_listings` sweep. e2e-proven. ◻ *remaining: a background timer thread to drive /jobs/run.*
+- ✓ **E2.2 `EventSink`** — module (`emit` + cursor `read`, 19-check test) **+ WIRED**: per-app sink on a
+  dedicated connection, `cellar.emit` Lua API. Bundle emits `listing_viewed` (anon incl.) + `search`.
+  e2e-proven (data collecting from day one). ◻ *later: cursor `read` consumed by a rollup job (recs).*
 - ◻ **E2.3 `CaptchaVerifier` port + adapter + tests** — Turnstile / hCaptcha.
 - ◻ **E2.4 `NotifChannel` port + push adapter + tests** — Web-Push/VAPID (or FCM); fold existing
   `mailer.c` (email) + optional SMS behind the same port.
