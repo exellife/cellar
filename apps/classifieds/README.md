@@ -7,7 +7,7 @@ cellar itself never learns the word "listing".
 
 See the design + plan in the repo root:
 [`docs/classifieds-design.md`](../../docs/classifieds-design.md) ·
-[`docs/build-tasks.md`](../../docs/build-tasks.md) ·
+[`build-tasks.md`](build-tasks.md) ·
 [`docs/engine-modules.md`](../../docs/engine-modules.md).
 
 ## Bundle contents
@@ -57,4 +57,4 @@ Authorization is enforced by `policies.json` + hooks: anon may browse; a logged-
 photos, metadata-driven post form, FTS5 search, faceted filtering, browse +
 detail, contact (phone-reveal + realtime chat), favorites, auth gates. The web/
 mobile client (A1.UI) is parked on the client-stack decision. See
-[`docs/build-tasks.md`](../../docs/build-tasks.md).
+[`build-tasks.md`](build-tasks.md).

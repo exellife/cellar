@@ -1,7 +1,7 @@
 # cellar + classifieds — build tasks (ordered)
 
 > **Status:** plan of record (2026-06-26). The durable, ordered task breakdown derived from
-> [`classifieds-design.md`](classifieds-design.md) (roadmap) + [`engine-modules.md`](engine-modules.md)
+> [`classifieds-design.md`](../../docs/classifieds-design.md) (roadmap) + [`engine-modules.md`](../../docs/engine-modules.md)
 > (ports + core-vs-addon line). When *executing* a phase, spin up live session tasks from it.
 
 ## How to read
