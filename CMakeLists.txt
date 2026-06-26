@@ -236,9 +236,15 @@ if(CELLAR_BUILD_TESTS)
     # cel_val_t* payloads into Lua proxies, authorize/before run with table-like
     # sugar, before() mutates input in place, absent hooks no-op, faults fail
     # closed. Linked -rdynamic so the prelude's ffi.C resolves cellar's symbols.
+    # cel_hooks.c grew hard deps on apps/realtime/policy/jobq (rt_emit + run_jobs),
+    # so the unit target links the same engine slice as cel_apps_test.
     add_executable(cel_hooks_test tests/cel_hooks_test.c
-        src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c)
-    target_include_directories(cel_hooks_test PRIVATE src/engine lib/logger/include)
+        src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c
+        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c
+        src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
+        src/engine/cel_control.c src/engine/cel_sync.c src/engine/realtime.c src/core/metrics.c
+        src/core/event_sink_sqlite.c src/core/job_queue_sqlite.c src/engine/cel_hook_state.c)
+    target_include_directories(cel_hooks_test PRIVATE src src/engine src/core lib/logger/include)
     target_link_libraries(cel_hooks_test luajit cjson logger SQLite::SQLite3 Threads::Threads)
     target_link_options(cel_hooks_test PRIVATE -rdynamic)
     add_dependencies(cel_hooks_test luajit_build)
@@ -248,8 +254,12 @@ if(CELLAR_BUILD_TESTS)
     # from <bundle>/hooks.lua, mtime hot-reload, compile-error recovery, per-thread
     # independence. No server needed (drives a temp bundle dir).
     add_executable(cel_hook_state_test tests/cel_hook_state_test.c
-        src/engine/cel_hook_state.c src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c)
-    target_include_directories(cel_hook_state_test PRIVATE src/engine lib/logger/include)
+        src/engine/cel_hook_state.c src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c
+        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c
+        src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
+        src/engine/cel_control.c src/engine/cel_sync.c src/engine/realtime.c src/core/metrics.c
+        src/core/event_sink_sqlite.c src/core/job_queue_sqlite.c)
+    target_include_directories(cel_hook_state_test PRIVATE src src/engine src/core lib/logger/include)
     target_link_libraries(cel_hook_state_test luajit cjson logger SQLite::SQLite3 Threads::Threads)
     target_link_options(cel_hook_state_test PRIVATE -rdynamic)
     add_dependencies(cel_hook_state_test luajit_build)
@@ -319,7 +329,8 @@ if(CELLAR_BUILD_TESTS)
     add_executable(cel_apps_test tests/cel_apps_test.c
         src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c
         src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
-        src/engine/cel_control.c src/engine/cel_sync.c
+        src/engine/cel_control.c src/engine/cel_sync.c src/engine/realtime.c src/core/metrics.c
+        src/core/event_sink_sqlite.c src/core/job_queue_sqlite.c
         src/engine/cel_hook_state.c src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c)
     target_include_directories(cel_apps_test PRIVATE src src/engine src/core lib/logger/include)
     target_link_libraries(cel_apps_test SQLite::SQLite3 cjson logger luajit Threads::Threads)

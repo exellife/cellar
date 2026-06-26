@@ -28,6 +28,22 @@ local CONTACT_LIMIT_1H = tonumber(os.getenv('CLS_CONTACT_LIMIT') or '') or 25
 local function now_iso()        return os.date('!%Y-%m-%dT%H:%M:%SZ', os.time()) end
 local function iso_in(days)     return os.date('!%Y-%m-%dT%H:%M:%SZ', os.time() + days * 86400) end
 
+-- Truncate to at most `max` BYTES without splitting a UTF-8 codepoint. Bodies are
+-- Cyrillic (multibyte), so a raw string.sub(1,80) can land mid-sequence and emit
+-- invalid UTF-8 that breaks JSON decode on the client. Back the cut off any
+-- trailing continuation bytes (0x80–0xBF) so it ends on a complete character.
+local function utf8_trunc(s, max)
+  s = tostring(s)
+  if #s <= max then return s end
+  local i = max
+  while i > 0 do
+    local b = s:byte(i + 1)
+    if not b or b < 0x80 or b >= 0xC0 then break end   -- next byte starts a new char → clean cut
+    i = i - 1
+  end
+  return s:sub(1, i)
+end
+
 -- Mint a uuid4 server-side via SQLite (for rows whose id we need before insert).
 local function server_uuid()
   return cellar.query(
@@ -240,7 +256,7 @@ function after(op, tbl, row, who)
         'SELECT user_id FROM conversation_member WHERE conversation_id = ? AND user_id <> ?',
         { row.conversation_id, row.sender_id })
       for _, m in ipairs(others) do
-        notify(m.user_id, 'message', 'Новое сообщение', tostring(row.body):sub(1, 80), row.conversation_id)
+        notify(m.user_id, 'message', 'Новое сообщение', utf8_trunc(row.body, 80), row.conversation_id)
       end
     end
     return
@@ -549,6 +565,7 @@ end
 -- 'phone' (default) or 'whatsapp'; the listing's channel flag must allow it.
 local function reveal_contact(args, who)
   if not (who and who.authenticated) then return nil end
+  if over_contact_limit(who) then return nil end     -- A2.5 velocity gate (anti number-scraping)
   local id = args and args.listing_id
   if not id then return nil end
   local l = cellar.query(
@@ -707,12 +724,17 @@ function match_saved_searches()
     if ss.city_id and ss.city_id ~= '' then conds[#conds+1] = 'l.city_id = ?'; binds[#binds+1] = ss.city_id end
 
     local rows = cellar.query(
-      'SELECT l.id, l.title FROM ' .. from .. ' WHERE ' .. table.concat(conds, ' AND ') ..
+      'SELECT l.id, l.title, l.created_at FROM ' .. from .. ' WHERE ' .. table.concat(conds, ' AND ') ..
       ' ORDER BY l.created_at LIMIT 50', binds)
     for _, r in ipairs(rows) do
       notify(ss.user_id, 'saved_search', 'Новое по вашему поиску', r.title, r.id)
     end
-    cellar.exec('UPDATE saved_search SET last_run_at = ? WHERE id = ?', { now_iso(), ss.id })
+    -- Advance the cursor only as far as we actually processed. If we hit the page
+    -- limit there may be more matches between the last row and now, so park the
+    -- cursor on the last row's created_at (the next run picks up the rest);
+    -- only jump to now when the page wasn't full (we drained everything).
+    local cursor = (#rows >= 50) and rows[#rows].created_at or now_iso()
+    cellar.exec('UPDATE saved_search SET last_run_at = ? WHERE id = ?', { cursor, ss.id })
   end
 end
 
@@ -808,7 +830,10 @@ function rpc(name, args, who)
     -- dedup recurring jobs by type so re-seeding (e.g. the daily expire sweep on
     -- every deploy) never piles up duplicates.
     if args.repeat_every and tonumber(args.repeat_every) and tonumber(args.repeat_every) > 0 then
-      local ex = cellar.query("SELECT id FROM job WHERE type = ? AND repeat_every > 0 LIMIT 1", { t })[1]
+      -- exclude dead rows: a recurring job that exhausted max_attempts keeps
+      -- repeat_every>0 but is never claimed again — re-seeding must revive it,
+      -- not dedup against the corpse.
+      local ex = cellar.query("SELECT id FROM job WHERE type = ? AND repeat_every > 0 AND state <> 'dead' LIMIT 1", { t })[1]
       if ex then return { id = ex.id, existing = true } end
     end
     local id = cellar.enqueue_job(t, args.payload,

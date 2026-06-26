@@ -84,11 +84,21 @@ static void open_bg_services(cel_app_t *slot, const char *db_path) {
     if (ec) { sqlite3_busy_timeout(ec, 5000); sqlite3_exec(ec, "PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;", NULL, NULL, NULL); }
     if (jc) { sqlite3_busy_timeout(jc, 5000); sqlite3_exec(jc, "PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;", NULL, NULL, NULL); }
 
-    if (ec && jc &&
-        event_sink_sqlite_open(ec, &slot->events) == EVT_OK &&
-        job_queue_sqlite_open(jc, &slot->jobs) == JOBQ_OK) {
+    /* Open each adapter independently so a partial success can be torn down
+     * cleanly. event_sink_sqlite_open caches a prepared INSERT on `ec`; if we
+     * then bail without calling its destroy(), that statement is never finalized
+     * and sqlite3_close(ec) returns BUSY → the ctx struct AND the connection both
+     * leak (never freed; bg_ready stays 0 so shutdown skips them). Destroy any
+     * adapter that opened before closing its connection. */
+    int evt_ok = (ec && event_sink_sqlite_open(ec, &slot->events) == EVT_OK);
+    int job_ok = (jc && job_queue_sqlite_open(jc, &slot->jobs) == JOBQ_OK);
+    if (evt_ok && job_ok) {
         slot->evt_conn = ec; slot->jobq_conn = jc; slot->bg_ready = 1;
     } else {
+        if (evt_ok) slot->events.destroy(slot->events.ctx);   /* finalizes c->ins */
+        if (job_ok) slot->jobs.destroy(slot->jobs.ctx);
+        slot->events = (event_sink_t){0};
+        slot->jobs   = (job_queue_t){0};
         sqlite3_close(ec); sqlite3_close(jc);
         slot->bg_ready = 0;
         LOG_WARN("apps: background services (events/jobs) unavailable");

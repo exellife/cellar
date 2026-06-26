@@ -138,7 +138,16 @@ void cel_hook_rt_emit(const char *table, const char *op, const char *row_json) {
     if (!cel_realtime_active() || !cel_policy_realtime_enabled(table)) return;
     cJSON *row = cJSON_Parse(row_json);
     if (!cJSON_IsObject(row)) { cJSON_Delete(row); return; }
+    /* publish drives the on_realtime filter on THIS thread's Lua state, reentrantly
+     * inside the current hook/job pcall. On the worker job path t_db is bound to
+     * the job's connection; the on_realtime contract is "no db in this context"
+     * (and re-entering the same connection here would be unsafe). Clear t_db across
+     * the publish so on_realtime behaves identically on the request and worker
+     * paths, then restore it for the rest of the job. */
+    sqlite3 *saved = t_db;
+    t_db = NULL;
     cel_realtime_publish((const void *)app_db_current(), table, op, row);
+    t_db = saved;
     cJSON_Delete(row);
 }
 
@@ -470,7 +479,7 @@ int cel_hooks_run_jobs(cel_lua_t *Lh, job_queue_t *q, long long now,
             lua_pop(L, 2);
         }
         if (ok) q->complete(q->ctx, job.id, now);
-        else    q->fail(q->ctx, job.id, "job handler failed", now + 60);
+        else    q->fail(q->ctx, job.id, "job handler failed", jobq_backoff_at(now, job.attempt));
         job_free(&job);
         processed++;
     }

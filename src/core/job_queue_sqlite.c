@@ -200,7 +200,7 @@ int job_queue_sqlite_open(void *db, job_queue_t *out) {
 /* ---- generic worker tick (port-only; one place defines it) -------------- */
 
 /* exponential backoff with a 1h cap: retry_at = now + min(2^attempt, 3600). */
-static long long backoff_at(long long now, int attempt) {
+long long jobq_backoff_at(long long now, int attempt) {
     long long d = 1;
     for (int i = 0; i < attempt && d < 3600; i++) d *= 2;
     if (d > 3600) d = 3600;
@@ -218,7 +218,7 @@ int jobq_run_due(job_queue_t *q, long long now, int visibility, int budget,
         if (rc != JOBQ_OK) return rc;
         int hr = handler(user, &job);
         if (hr == 0) q->complete(q->ctx, job.id, now);
-        else         q->fail(q->ctx, job.id, "handler failed", backoff_at(now, job.attempt));
+        else         q->fail(q->ctx, job.id, "handler failed", jobq_backoff_at(now, job.attempt));
         job_free(&job);
         processed++;
     }

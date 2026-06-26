@@ -71,6 +71,11 @@ typedef struct job_queue {
 /* Free the owned fields of a claimed job (safe on a zeroed job). */
 void job_free(job_t *job);
 
+/* Retry time for a failed job: exponential backoff with a 1h cap
+ * (now + min(2^attempt, 3600)). Shared by every fail path so the worker, the
+ * admin POST /jobs/run dispatcher, and jobq_run_due can't drift. */
+long long jobq_backoff_at(long long now, int attempt);
+
 /* One worker tick (no threads): claim up to `budget` due jobs and run `handler`
  * on each — completing on success, failing with exponential backoff on error or
  * exception. Returns the number processed (>= 0) or a negative code. The engine
