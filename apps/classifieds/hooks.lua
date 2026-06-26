@@ -190,10 +190,78 @@ local function category_form(arg)
            breadcrumb = chain, attributes = attrs }
 end
 
+-- ── A1.3: full-text search ──────────────────────────────────────────────────
+local SEARCH_LIMIT_MAX = 50
+local SEARCH_LIMIT_DEF = 20
+
+-- A token is "wordish" if it has any ASCII alphanumeric or any UTF-8 multibyte
+-- byte (Cyrillic letters are multibyte). Lua's %w is ASCII-only, so we scan bytes.
+local function wordish(w)
+  for i = 1, #w do
+    local b = w:byte(i)
+    if b >= 0x80 then return true end
+    if (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) then return true end
+  end
+  return false
+end
+
+-- Build a safe FTS5 MATCH string from untrusted input: split on whitespace, drop
+-- embedded quotes (so a term can't break out of its phrase), keep only wordish
+-- tokens, quote each and prefix-match it. Space between terms = implicit AND.
+local function fts_query(q)
+  local terms = {}
+  for w in tostring(q or ''):gmatch('%S+') do
+    w = w:gsub('"', '')
+    if #w > 0 and wordish(w) then terms[#terms + 1] = '"' .. w .. '"*' end
+  end
+  return table.concat(terms, ' ')
+end
+
+-- POST /rpc/search { q, category?, city?, limit?, offset? } → ranked active
+-- listings matching the text query, with optional category/city narrowing.
+local function search(args)
+  args = args or {}
+  local match = fts_query(args.q)
+  if match == '' then return { results = {}, total = 0, limit = SEARCH_LIMIT_DEF, offset = 0 } end
+
+  local limit = tonumber(args.limit) or SEARCH_LIMIT_DEF
+  if limit < 1 then limit = SEARCH_LIMIT_DEF end
+  if limit > SEARCH_LIMIT_MAX then limit = SEARCH_LIMIT_MAX end
+  local offset = tonumber(args.offset) or 0
+  if offset < 0 then offset = 0 end
+
+  -- shared WHERE: text match + active, plus optional category/city. Binds are
+  -- assembled in lockstep so the count and page queries stay identical.
+  local conds  = { 'listings_fts MATCH ?', "l.status = 'active'" }
+  local binds  = { match }
+  if args.category and args.category ~= '' then conds[#conds+1] = 'l.category_id = ?'; binds[#binds+1] = args.category end
+  if args.city and args.city ~= '' then conds[#conds+1] = 'l.city_id = ?'; binds[#binds+1] = args.city end
+  local where = table.concat(conds, ' AND ')
+
+  local total = cellar.query(
+    'SELECT count(*) AS n FROM listings_fts JOIN listings l ON l.rowid = listings_fts.rowid WHERE ' .. where,
+    binds)[1].n
+
+  -- page query: same binds + limit/offset; bm25 ascending = most relevant first
+  local pbinds = {}
+  for i = 1, #binds do pbinds[i] = binds[i] end
+  pbinds[#pbinds+1] = limit; pbinds[#pbinds+1] = offset
+  local rows = cellar.query(
+    'SELECT l.id, l.title, l.price, l.currency, l.category_id, l.city_id, l.photos, l.created_at, ' ..
+    'bm25(listings_fts) AS rank ' ..
+    'FROM listings_fts JOIN listings l ON l.rowid = listings_fts.rowid ' ..
+    'WHERE ' .. where .. ' ORDER BY rank LIMIT ? OFFSET ?', pbinds)
+
+  return { results = rows, total = total, limit = limit, offset = offset }
+end
+
 -- ── repair / ops primitive ──────────────────────────────────────────────────
 -- POST /rpc/rebuild_facets {"id": "<listing-id>"}  (admin) — reconcile one
 -- listing's facets if an after() fault ever left them stale.
 function rpc(name, args, who)
+  if name == 'search' then
+    return search(args)
+  end
   if name == 'category_form' then
     return category_form(args and args.category)
   end

@@ -60,6 +60,7 @@ target_compile_definitions(sqlite3 PRIVATE
     SQLITE_DEFAULT_MEMSTATUS=0    # perf: skip global malloc accounting
     SQLITE_LIKE_DOESNT_MATCH_BLOBS
     SQLITE_OMIT_DEPRECATED
+    SQLITE_ENABLE_FTS5           # full-text search (generic capability; used by app FTS indexes)
     SQLITE_USE_ALLOCA)
 target_link_libraries(sqlite3 PRIVATE ${CMAKE_DL_LIBS} m Threads::Threads)
 add_library(SQLite::SQLite3 ALIAS sqlite3)

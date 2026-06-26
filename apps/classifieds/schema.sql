@@ -145,3 +145,33 @@ CREATE TABLE listing_facet (
 );
 CREATE INDEX idx_facet_key_num  ON listing_facet (key, num_value);
 CREATE INDEX idx_facet_key_text ON listing_facet (key, text_value);
+
+-- ── Full-text search (A1.3) ─────────────────────────────────────────────────
+-- An external-content FTS5 index over listings' title + description, kept in
+-- sync by triggers (the canonical FTS5 external-content pattern). Maps to
+-- listings by rowid; the search rpc joins fts.rowid → listings.rowid.
+--
+-- Tokenizer: unicode61 with Unicode case-folding + diacritic removal — handles
+-- ru/ky (Cyrillic case folding) and gives word + prefix ("term*") search with
+-- bm25 ranking. (A trigram index for true mid-word substring matching is a
+-- later enhancement; unicode61 + prefix covers the common partial-word case.)
+CREATE VIRTUAL TABLE listings_fts USING fts5(
+  title, description,
+  content='listings', content_rowid='rowid',
+  tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER listings_fts_ai AFTER INSERT ON listings BEGIN
+  INSERT INTO listings_fts(rowid, title, description)
+    VALUES (new.rowid, new.title, new.description);
+END;
+CREATE TRIGGER listings_fts_ad AFTER DELETE ON listings BEGIN
+  INSERT INTO listings_fts(listings_fts, rowid, title, description)
+    VALUES ('delete', old.rowid, old.title, old.description);
+END;
+CREATE TRIGGER listings_fts_au AFTER UPDATE ON listings BEGIN
+  INSERT INTO listings_fts(listings_fts, rowid, title, description)
+    VALUES ('delete', old.rowid, old.title, old.description);
+  INSERT INTO listings_fts(rowid, title, description)
+    VALUES (new.rowid, new.title, new.description);
+END;

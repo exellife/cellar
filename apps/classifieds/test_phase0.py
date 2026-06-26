@@ -205,5 +205,64 @@ def run_checks(port, db):
     chk("rpc rebuild_facets -> 200", s == 200, f"status={s}")
     chk("rpc reports 3 facets", ((b or {}).get("result") or {}).get("facets") == 3, str(b))
 
+    # ---- A1.3 full-text search (FTS5) ----
+    def mklisting(title, cat, attrs):
+        s, b = req("POST", "/api/listings",
+                   {"category_id": cat, "title": title, "price": 100, "city_id": "ci-bishkek",
+                    "attributes": attrs}, token=tok)
+        return s, (b or {}).get("row", {}).get("id")
+
+    s, _ = mklisting("Toyota Camry 2015", "cat-cars", {"make": "Toyota", "year": 2015})
+    chk("search seed car1 -> 201", s == 201, f"status={s}")
+    mklisting("Тойота Королла", "cat-cars", {"make": "Toyota", "year": 2016})
+    s, apt_id = mklisting("Квартира в центре города", "cat-apartments", {"deal": "Продажа", "rooms": 3})
+    chk("search seed apt -> 201", s == 201, f"status={s}")
+
+    def search(q, **kw):
+        s, b = req("POST", "/rpc/search", dict(q=q, **kw), token=tok)
+        return s, (b or {}).get("result") or {}
+    def titles(r): return [x["title"] for x in r.get("results", [])]
+
+    s, r = search("toyota")
+    chk("search 'toyota' -> 200", s == 200, f"status={s}")
+    chk("finds Toyota Camry", "Toyota Camry 2015" in titles(r), str(titles(r)))
+
+    s, r = search("тойота")
+    chk("Cyrillic 'тойота' finds Королла", "Тойота Королла" in titles(r), str(titles(r)))
+    s, r = search("ТОЙОТА")
+    chk("case-folded 'ТОЙОТА' matches", "Тойота Королла" in titles(r), str(titles(r)))
+
+    s, r = search("королл")
+    chk("prefix 'королл' matches Королла", "Тойота Королла" in titles(r), str(titles(r)))
+
+    s, r = search("квартира")
+    chk("'квартира' finds apartment", "Квартира в центре города" in titles(r), str(titles(r)))
+
+    # category narrowing
+    s, r = search("тойота", category="cat-cars")
+    chk("category narrows (cars has it)", r.get("total", 0) >= 1, str(r.get("total")))
+    s, r = search("тойота", category="cat-apartments")
+    chk("category narrows (apartments: none)", r.get("total") == 0, str(r.get("total")))
+
+    # no match + injection safety (special chars must not error)
+    s, r = search("zzzznomatchqqq")
+    chk("no match -> empty", s == 200 and r.get("total") == 0, f"status={s} {r.get('total')}")
+    s, r = search('"); drop table listings; --  *(^')
+    chk("fts injection safe -> 200", s == 200, f"status={s}")
+
+    # trigger sync on UPDATE: retitle the apartment, old term gone, new term found
+    s, _ = req("PATCH", f"/api/listings/{apt_id}", {"title": "Студия уютная"}, token=tok)
+    chk("retitle apartment -> 200", s == 200, f"status={s}")
+    s, r = search("квартира")
+    chk("old title no longer matches", "Студия уютная" not in titles(r) and apt_id not in [x["id"] for x in r.get("results", [])], str(titles(r)))
+    s, r = search("студия")
+    chk("new title matches after update", "Студия уютная" in titles(r), str(titles(r)))
+
+    # trigger sync on DELETE: removed from the index
+    s, _ = req("DELETE", f"/api/listings/{apt_id}", token=tok)
+    chk("delete listing -> 200", s == 200, f"status={s}")
+    s, r = search("студия")
+    chk("deleted listing gone from search", apt_id not in [x["id"] for x in r.get("results", [])], str(titles(r)))
+
 if __name__ == "__main__":
     sys.exit(main())
