@@ -52,6 +52,7 @@ static void *worker_loop(void *arg) {
         /* sleep in 1s steps so stop is responsive */
         for (int s = 0; s < g_interval && atomic_load(&g_run); s++) sleep(1);
     }
+    cel_hook_state_thread_cleanup();   /* free this thread's lazily-compiled hook states */
     return NULL;
 }
 
