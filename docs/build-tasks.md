@@ -49,8 +49,10 @@
 ## Phase 1 — MVP loop *(post w/ photos → browse/search → contact)*
 
 ### Track E
-- ◻ **E1.1 Media upload handler** — multipart, **wire size cap**, → image lib (validate/process) → `BlobStore`.
-- ◻ **E1.2 Media serve handler** — variant selection, cache headers (range if needed).
+- ✓ **E1.1 Media upload handler** — `POST /media` raw image body (cap exempt from JSON cap, own
+  `CEL_MEDIA_MAX`), → image lib validate/re-encode → JPEG variants (full/thumb) → per-app `BlobStore`.
+- ✓ **E1.2 Media serve handler** — `GET /media/<id>/<variant>`, immutable cache, 302 for URL adapters.
+  *(ctest `media`, 19 checks, ASan-clean. Generic engine endpoint — no domain leak.)*
 
 ### Track A
 - ◻ **A1.1** Listing CRUD (create/edit/delete/get) via cellar CRUD + hooks; attach photos.

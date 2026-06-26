@@ -17,6 +17,7 @@
   "listing_facet": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
 
   "_rpc": {
+    "category_form": { "roles": ["anon", "user"] },
     "rebuild_facets": { "roles": ["admin"] }
   }
 }

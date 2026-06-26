@@ -19,9 +19,29 @@
 -- ============================================================================
 
 local EXPIRY_DAYS = 30
+local MAX_PHOTOS  = 12
 
 local function now_iso()        return os.date('!%Y-%m-%dT%H:%M:%SZ', os.time()) end
 local function iso_in(days)     return os.date('!%Y-%m-%dT%H:%M:%SZ', os.time() + days * 86400) end
+
+-- A1.1: validate the photos array (ordered media ids from POST /media). `photos`
+-- is the inbound array proxy or nil. Each id is a 32-hex media id; cap the count.
+-- NB: iterate by index until nil — LuaJIT's `#` does not honor the proxy's __len
+-- (table __len is 5.2+), so #photos would read as 0 and skip every check.
+local function validate_photos(photos)
+  if photos == nil then return true end
+  local i = 1
+  while true do
+    local p = photos[i]
+    if p == nil then break end
+    if i > MAX_PHOTOS then return false, 'too many photos (max ' .. MAX_PHOTOS .. ')' end
+    if type(p) ~= 'string' or #p ~= 32 or not p:match('^[0-9a-f]+$') then
+      return false, 'invalid photo id'
+    end
+    i = i + 1
+  end
+  return true
+end
 
 -- ── A0.4: validate submitted attributes against the category schema ─────────
 -- `attrs` is the inbound attributes object (a read-only proxy) or nil. We drive
@@ -69,11 +89,15 @@ function before(op, tbl, input, who)
     if not input.created_at or input.created_at == '' then input.created_at = now_iso() end
     input.updated_at = input.created_at
     if not input.expires_at or input.expires_at == '' then input.expires_at = iso_in(EXPIRY_DAYS) end
+    local pok, perr = validate_photos(input.photos)
+    if not pok then return false, perr end
     return validate_attrs(input.category_id, input.attributes)
 
   elseif op == 'update' then
     input.updated_at = now_iso()
     input.seller_id  = nil                    -- ownership can't be reassigned via update
+    local pok, perr = validate_photos(input.photos)
+    if not pok then return false, perr end
     -- Validate only when attributes are part of this PATCH. category_id may be
     -- absent on a partial update; if so we can't re-validate here (the stored
     -- category still governs — a category change would carry category_id).
@@ -118,10 +142,61 @@ function after(op, tbl, row, who)
   -- delete: ON DELETE CASCADE already removed the facet rows
 end
 
+-- ── A1.2: post-form contract ────────────────────────────────────────────────
+-- POST /rpc/category_form {"category": "<id-or-slug>"} → the data a client needs
+-- to render the post form / filters for a category, in one call: the category,
+-- its breadcrumb (root→leaf), and its ordered attributes with enum options as
+-- real arrays. Pure data assembled from the metadata tables — no per-category
+-- code. Public (anon may call) so the form renders before login.
+local function category_form(arg)
+  local rows = cellar.query(
+    'SELECT id, parent_id, slug, name, labels FROM category WHERE id = ? OR slug = ? LIMIT 1',
+    { arg, arg })
+  local cat = rows[1]
+  if not cat then return nil end
+
+  -- breadcrumb: walk parents up, then reverse to root→leaf
+  local chain, cur, guard = {}, cat, 0
+  while cur and guard < 16 do
+    table.insert(chain, 1, { id = cur.id, slug = cur.slug, name = cur.name })
+    if not cur.parent_id then break end
+    local p = cellar.query('SELECT id, parent_id, slug, name FROM category WHERE id = ?', { cur.parent_id })
+    cur = p[1]; guard = guard + 1
+  end
+
+  -- ordered attributes; enum options pulled as a clean array via json_each
+  local defs = cellar.query(
+    'SELECT id, key, label, labels, type, required, filterable, unit, depends_on ' ..
+    'FROM category_attribute WHERE category_id = ? ORDER BY sort_order', { cat.id })
+  local attrs = {}
+  for _, d in ipairs(defs) do
+    local a = {
+      key = d.key, label = d.label, labels = d.labels, type = d.type,
+      required = tonumber(d.required) == 1, filterable = tonumber(d.filterable) == 1,
+      unit = d.unit, depends_on = d.depends_on,
+    }
+    if d.type == 'enum' then
+      local opts = cellar.query(
+        'SELECT value AS v FROM category_attribute, json_each(category_attribute.options) ' ..
+        'WHERE category_attribute.id = ?', { d.id })
+      local list = {}
+      for _, o in ipairs(opts) do list[#list + 1] = o.v end
+      a.options = list
+    end
+    attrs[#attrs + 1] = a
+  end
+
+  return { category = { id = cat.id, slug = cat.slug, name = cat.name, labels = cat.labels },
+           breadcrumb = chain, attributes = attrs }
+end
+
 -- ── repair / ops primitive ──────────────────────────────────────────────────
 -- POST /rpc/rebuild_facets {"id": "<listing-id>"}  (admin) — reconcile one
 -- listing's facets if an after() fault ever left them stale.
 function rpc(name, args, who)
+  if name == 'category_form' then
+    return category_form(args and args.category)
+  end
   if name == 'rebuild_facets' then
     if who.role ~= 'admin' then return nil end
     local id = args and args.id

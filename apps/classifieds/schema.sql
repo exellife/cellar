@@ -120,6 +120,7 @@ CREATE TABLE listings (
   condition   TEXT,                             -- e.g. new | used (category-refined)
   status      TEXT NOT NULL DEFAULT 'active'
               CHECK (status IN ('draft','pending','active','sold','expired','removed')),
+  photos      TEXT NOT NULL DEFAULT '[]',       -- JSON: ordered media ids (POST /media)
   attributes  TEXT NOT NULL DEFAULT '{}',       -- JSON: category-specific values
   created_at  TEXT NOT NULL DEFAULT '',
   updated_at  TEXT NOT NULL DEFAULT '',

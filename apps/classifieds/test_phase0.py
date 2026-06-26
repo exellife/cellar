@@ -104,6 +104,19 @@ def run_checks(port, db):
     s, b = req("POST", "/auth/login", {"email": ADMIN[0], "password": ADMIN[1]})
     tok = (b or {}).get("token"); chk("login admin", bool(tok), f"status={s}")
 
+    # ---- A1.2 post-form contract: category_form by slug ----
+    s, b = req("POST", "/rpc/category_form", {"category": "cars"}, token=tok)
+    form = (b or {}).get("result") or {}
+    chk("category_form -> 200", s == 200, f"status={s}")
+    chk("form category is cars", (form.get("category") or {}).get("slug") == "cars", str(form.get("category")))
+    chk("breadcrumb root->leaf",
+        [c.get("slug") for c in form.get("breadcrumb", [])] == ["transport", "cars"],
+        str(form.get("breadcrumb")))
+    attrs = {a["key"]: a for a in form.get("attributes", [])}
+    chk("form has make attr", "make" in attrs and attrs["make"]["required"] is True, str(list(attrs)))
+    chk("make options is array w/ Toyota", "Toyota" in (attrs.get("make", {}).get("options") or []),
+        str(attrs.get("make", {}).get("options")))
+
     car = {"category_id": "cat-cars", "title": "Toyota Camry", "price": 150000,
            "city_id": "ci-bishkek", "district_id": "di-leninsky"}
 
@@ -154,6 +167,28 @@ def run_checks(port, db):
     chk("facet area (num)",  af.get("area") == (55.5, None), str(af.get("area")))
     chk("facet furnished (bool->1)", af.get("furnished") == (1.0, None), str(af.get("furnished")))
     chk("non-filterable total_floors excluded", "total_floors" not in af, str(list(af.keys())))
+
+    # ---- A1.1 photos attach + validation ----
+    pid_a, pid_b = "a" * 32, "b" * 32
+    s, b = req("POST", "/api/listings",
+               dict(car, attributes={"make": "Toyota", "year": 2018},
+                    photos=[pid_a, pid_b]), token=tok)
+    chk("create with photos -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
+    ph = (b or {}).get("row", {}).get("photos")
+    if isinstance(ph, str):
+        try: ph = json.loads(ph)
+        except Exception: pass
+    chk("photos stored in order", ph == [pid_a, pid_b], str((b or {}).get("row", {}).get("photos")))
+
+    s, b = req("POST", "/api/listings",
+               dict(car, attributes={"make": "Toyota", "year": 2018},
+                    photos=[("%032x" % i) for i in range(13)]), token=tok)
+    chk("too many photos -> 400", s == 400, f"status={s}")
+
+    s, b = req("POST", "/api/listings",
+               dict(car, attributes={"make": "Toyota", "year": 2018},
+                    photos=["not-a-valid-id"]), token=tok)
+    chk("bad photo id -> 400", s == 400, f"status={s}")
 
     # ---- update re-syncs facets (idempotent rebuild) ----
     s, b = req("PATCH", f"/api/listings/{lid}",
