@@ -378,7 +378,47 @@ local function get_listing(args, who)
     local owner = who and who.authenticated and (who.user_id == l.seller_id or who.role == 'admin')
     if not owner then return nil end
   end
-  return { listing = l }
+  -- social proof + the viewer's own save state (A1.7)
+  local fc = cellar.query('SELECT count(*) AS n FROM favorite WHERE listing_id = ?', { id })
+  local out = { listing = l, favorite_count = fc[1].n, favorited = false }
+  if who and who.authenticated then
+    local f = cellar.query('SELECT 1 AS ok FROM favorite WHERE user_id = ? AND listing_id = ?',
+                           { who.user_id, id })
+    out.favorited = #f > 0
+  end
+  return out
+end
+
+-- ── A1.7: favorites (save/unsave + my list) ─────────────────────────────────
+-- All login-gated, self-guarded (rpc has no engine authz). Toggle by listing id.
+local function favorite(args, who)
+  if not (who and who.authenticated) then return nil end
+  local lid = args and args.listing_id
+  if not lid then return nil end
+  if not cellar.query('SELECT 1 AS ok FROM listings WHERE id = ?', { lid })[1] then return nil end
+  cellar.exec('INSERT OR IGNORE INTO favorite(user_id, listing_id, created_at) VALUES (?,?,?)',
+              { who.user_id, lid, now_iso() })
+  return { favorited = true, listing_id = lid }
+end
+
+local function unfavorite(args, who)
+  if not (who and who.authenticated) then return nil end
+  local lid = args and args.listing_id
+  if not lid then return nil end
+  cellar.exec('DELETE FROM favorite WHERE user_id = ? AND listing_id = ?', { who.user_id, lid })
+  return { favorited = false, listing_id = lid }
+end
+
+-- My saved listings (any status, so a sold/expired save still shows — with its
+-- status — rather than vanishing), newest-saved first.
+local function favorites(args, who)
+  if not (who and who.authenticated) then return nil end
+  local rows = cellar.query(
+    'SELECT l.id, l.title, l.price, l.currency, l.category_id, l.city_id, l.photos, l.status, ' ..
+    'f.created_at AS saved_at ' ..
+    'FROM favorite f JOIN listings l ON l.id = f.listing_id ' ..
+    'WHERE f.user_id = ? ORDER BY f.created_at DESC LIMIT 200', { who.user_id })
+  return { favorites = rows }
 end
 
 -- ── A1.6: contact (phone-reveal + events) ──────────────────────────────────
@@ -509,6 +549,15 @@ function rpc(name, args, who)
   end
   if name == 'inbox' then
     return inbox(args, who)
+  end
+  if name == 'favorite' then
+    return favorite(args, who)
+  end
+  if name == 'unfavorite' then
+    return unfavorite(args, who)
+  end
+  if name == 'favorites' then
+    return favorites(args, who)
   end
   if name == 'category_form' then
     return category_form(args and args.category)

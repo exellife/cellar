@@ -253,3 +253,13 @@ CREATE TABLE message (
   created_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX idx_message_conv ON message (conversation_id, created_at);
+
+-- ── Favorites (A1.7) ────────────────────────────────────────────────────────
+-- A user's saved listings (composite key = the toggle). Accessed via rpcs only.
+CREATE TABLE favorite (
+  user_id    TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,
+  listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (user_id, listing_id)
+);
+CREATE INDEX idx_favorite_listing ON favorite (listing_id);   -- favorite_count

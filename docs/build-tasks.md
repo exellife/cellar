@@ -69,7 +69,8 @@
   conversation + `conversation_member` (VIA membership table) + message; `owner_via` scopes message
   reads AND realtime subscribe to participants (no `/api`/WS leak); `before()` gates message create
   on membership; rpcs `start_conversation`/`inbox`. WS e2e proves live delivery + non-member denied.
-- ◻ **A1.7** Favorites.
+- ✓ **A1.7** Favorites — `favorite` table + toggle rpcs (`favorite`/`unfavorite`/`favorites`);
+  `favorited` + `favorite_count` (social proof) on listing detail.
 - ◻ **A1.8** Auth wiring — OAuth + email magic-link (existing) + optional TOTP; login gate on contact/post.
 - ◻ **A1.UI** *(PARKED on client decision)* — the web/mobile client consuming the above APIs.
 

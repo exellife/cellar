@@ -478,5 +478,43 @@ def run_checks(port, db):
     s, b = req("POST", "/rpc/start_conversation", {"listing_id": nochat}, token=buyer)
     chk("start on chat-disabled -> 400", s == 400, f"status={s}")
 
+    # ---- A1.7 favorites ----
+    s, b = req("POST", "/rpc/favorite", {"listing_id": clid}, token=buyer)
+    chk("favorite -> 200", s == 200 and ((b or {}).get("result") or {}).get("favorited") is True, str(b))
+
+    s, b = req("POST", "/rpc/favorites", {}, token=buyer)
+    favs = ((b or {}).get("result") or {}).get("favorites") or []
+    chk("favorites list includes it", any(f.get("id") == clid for f in favs), str([f.get("id") for f in favs]))
+
+    # listing detail reflects the viewer's save state + social-proof count
+    s, b = req("POST", "/rpc/listing", {"id": clid}, token=buyer)
+    res = (b or {}).get("result") or {}
+    chk("detail favorited=true (buyer)", res.get("favorited") is True, str(res.get("favorited")))
+    chk("detail favorite_count=1", res.get("favorite_count") == 1, str(res.get("favorite_count")))
+    s, b = req("POST", "/rpc/listing", {"id": clid})            # anon
+    res = (b or {}).get("result") or {}
+    chk("detail favorited=false (anon)", res.get("favorited") is False, str(res.get("favorited")))
+    chk("anon still sees count=1", res.get("favorite_count") == 1, str(res.get("favorite_count")))
+
+    # idempotent
+    req("POST", "/rpc/favorite", {"listing_id": clid}, token=buyer)
+    s, b = req("POST", "/rpc/listing", {"id": clid}, token=buyer)
+    chk("favorite idempotent (count still 1)", ((b or {}).get("result") or {}).get("favorite_count") == 1, str(b))
+
+    # unfavorite
+    s, b = req("POST", "/rpc/unfavorite", {"listing_id": clid}, token=buyer)
+    chk("unfavorite -> 200", s == 200 and ((b or {}).get("result") or {}).get("favorited") is False, str(b))
+    s, b = req("POST", "/rpc/favorites", {}, token=buyer)
+    favs = ((b or {}).get("result") or {}).get("favorites") or []
+    chk("removed from favorites", not any(f.get("id") == clid for f in favs), str([f.get("id") for f in favs]))
+    s, b = req("POST", "/rpc/listing", {"id": clid}, token=buyer)
+    chk("count back to 0", ((b or {}).get("result") or {}).get("favorite_count") == 0, str(b))
+
+    # guards
+    s, b = req("POST", "/rpc/favorite", {"listing_id": "no-such-listing"}, token=buyer)
+    chk("favorite missing listing -> 400", s == 400, f"status={s}")
+    s, b = req("POST", "/rpc/favorite", {"listing_id": clid})   # anon
+    chk("favorite anon -> 400 (login-gated)", s == 400, f"status={s}")
+
 if __name__ == "__main__":
     sys.exit(main())

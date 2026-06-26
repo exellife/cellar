@@ -25,6 +25,7 @@
     "create": ["admin"], "update": ["admin"], "delete": ["admin"]
   },
   "conversation_member": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+  "favorite": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
   "message": {
     "realtime": true,
     "create": ["user"],
@@ -41,6 +42,9 @@
     "reveal_contact": { "roles": ["user"] },
     "start_conversation": { "roles": ["user"] },
     "inbox": { "roles": ["user"] },
+    "favorite": { "roles": ["user"] },
+    "unfavorite": { "roles": ["user"] },
+    "favorites": { "roles": ["user"] },
     "rebuild_facets": { "roles": ["admin"] }
   }
 }
