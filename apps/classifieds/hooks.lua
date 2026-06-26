@@ -330,10 +330,10 @@ local function search(args)
 end
 
 -- ── A1.5: listing detail ────────────────────────────────────────────────────
--- POST /rpc/listing {"id": "..."} → one listing for the detail page. Public for
--- ACTIVE listings (anon-browsable); the owner/admin may also fetch their own
--- non-active (draft/expired/sold) ones. (Reads go through an rpc because the
--- engine's /api read path requires authentication — see NOTES at the bottom.)
+-- POST /rpc/listing {"id": "..."} → one listing for the detail page. Active
+-- listings are also readable directly via GET /api/listings/<id> (policy grants
+-- anon); this rpc adds the visibility rule the generic CRUD can't express — the
+-- owner/admin may fetch their own NON-active (draft/expired/sold) listings too.
 local function get_listing(args, who)
   local id = args and args.id
   if not id then return nil end
@@ -351,13 +351,13 @@ end
 -- POST /rpc/rebuild_facets {"id": "<listing-id>"}  (admin) — reconcile one
 -- listing's facets if an after() fault ever left them stale.
 --
--- NOTES (engine gaps this bundle works around — worth fixing in cellar):
---   * /api list+get hard-require authentication BEFORE the policy check, so the
---     policy's "anon" role is dead on that path → public browse/detail go through
---     rpcs (search / listing) instead.
---   * /rpc has NO authorization (no auth gate, and the _rpc whitelist is not
---     enforced) → every rpc is world-callable. Sensitive rpcs MUST self-guard:
---     rebuild_facets checks who.role == 'admin' itself.
+-- NOTES (engine authz model):
+--   * /api list+get now DEFER to policy (fixed in cellar) — anon may read a table
+--     that lists "anon"; search/listing rpcs remain for ranked/visibility queries.
+--   * /rpc has NO authorization yet (no auth gate, _rpc whitelist not enforced) —
+--     a known cellar gap (rpc authz lands in a later engine phase). Every rpc is
+--     world-callable, so sensitive ones MUST self-guard: rebuild_facets checks
+--     who.role == 'admin' itself.
 function rpc(name, args, who)
   if name == 'search' then
     return search(args)
