@@ -405,6 +405,12 @@ if(CELLAR_BUILD_TESTS)
     target_link_libraries(image_proc_test m)
     add_test(NAME image_proc COMMAND image_proc_test)
 
+    # EventSink SQLite-adapter unit test (port-first event collection; E2.2).
+    add_executable(event_sink_test tests/event_sink_test.c src/core/event_sink_sqlite.c)
+    target_include_directories(event_sink_test PRIVATE src/core)
+    target_link_libraries(event_sink_test SQLite::SQLite3 Threads::Threads)
+    add_test(NAME event_sink COMMAND event_sink_test)
+
     find_program(PYTHON3 python3)
     if(PYTHON3)
         add_test(NAME smoke
