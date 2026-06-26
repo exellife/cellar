@@ -590,6 +590,30 @@ def run_checks(port, db):
     s, _ = req("POST", "/jobs/run", {}, token=seller)
     chk("JobQueue: non-admin /jobs/run -> 403", s == 403, f"status={s}")
 
+    # ---- A2.2 in-app notification feed ----
+    # the chat earlier notified the buyer (seller replied) and the seller (buyer wrote)
+    s, b = req("POST", "/rpc/unread_count", {}, token=buyer)
+    chk("notif: buyer has unread", ((b or {}).get("result") or {}).get("unread", 0) >= 1, str(b))
+    s, b = req("POST", "/rpc/notifications", {}, token=buyer)
+    notes = ((b or {}).get("result") or {}).get("notifications") or []
+    chk("notif: a 'message' notification", any(n.get("type") == "message" for n in notes), str([n.get("type") for n in notes]))
+    chk("notif: carries deep-link subject", any(n.get("subject_id") for n in notes), str(notes[:1]))
+
+    # the expire job (run above) notified the seller about their expired listing
+    s, b = req("POST", "/rpc/notifications", {"unread_only": True}, token=seller)
+    snotes = ((b or {}).get("result") or {}).get("notifications") or []
+    chk("notif: seller got listing_expired", any(n.get("type") == "listing_expired" for n in snotes),
+        str([n.get("type") for n in snotes]))
+
+    # mark_read clears unread; owner-scoped reads
+    s, b = req("POST", "/rpc/mark_read", {}, token=buyer)        # all mine
+    chk("notif: mark_read -> unread 0", ((b or {}).get("result") or {}).get("unread") == 0, str(b))
+    s, b = req("GET", "/api/notification", token=seller)
+    rows = (b or {}).get("rows") or []
+    chk("notif: /api owner-scoped", len(rows) > 0 and all(r.get("user_id") == seller_id for r in rows), f"n={len(rows)}")
+    s, b = req("GET", "/api/notification")                       # anon
+    chk("notif: anon /api denied -> 401", s == 401, f"status={s}")
+
     # ---- review hardening (security-review follow-ups) ----
     base_ok = {"category_id": "cat-cars", "title": "Hardening", "city_id": "ci-bishkek",
                "attributes": {"make": "Toyota", "year": 2016}}

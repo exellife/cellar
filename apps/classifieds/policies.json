@@ -32,6 +32,12 @@
   },
   "conversation_member": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
   "favorite": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+  "notification": {
+    "realtime": true,
+    "list": { "roles": ["user"], "owner_column": "user_id" },
+    "get":  { "roles": ["user"], "owner_column": "user_id" },
+    "create": ["admin"], "update": ["admin"], "delete": ["admin"]
+  },
   "message": {
     "realtime": true,
     "create": ["user"],
@@ -51,6 +57,9 @@
     "favorite": { "roles": ["user"] },
     "unfavorite": { "roles": ["user"] },
     "favorites": { "roles": ["user"] },
+    "notifications": { "roles": ["user"] },
+    "unread_count": { "roles": ["user"] },
+    "mark_read": { "roles": ["user"] },
     "enqueue_job": { "roles": ["admin"] },
     "rebuild_facets": { "roles": ["admin"] }
   }

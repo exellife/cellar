@@ -1,6 +1,7 @@
 /* cellar — the Lua hook dispatcher (design §8). See cel_hooks.h. */
 #include "cel_hooks.h"
 #include "cel_apps.h"
+#include "realtime.h"
 #include "logger.h"
 
 #include <stdio.h>
@@ -128,6 +129,19 @@ long long cel_hook_enqueue(const char *type, const char *payload,
     return id;
 }
 
+/* Realtime: publish a change for a server-created row (e.g. a notification) so
+ * subscribers get it live — same fan-out the CRUD write path uses (rt_emit), but
+ * reachable from a hook/job that inserted the row via raw SQL. `row_json` is the
+ * row object; delivery is scoped by the table's policy (owner/VIA) + on_realtime. */
+void cel_hook_rt_emit(const char *table, const char *op, const char *row_json) {
+    if (!table || !op || !row_json) return;
+    if (!cel_realtime_active() || !cel_policy_realtime_enabled(table)) return;
+    cJSON *row = cJSON_Parse(row_json);
+    if (!cJSON_IsObject(row)) { cJSON_Delete(row); return; }
+    cel_realtime_publish((const void *)app_db_current(), table, op, row);
+    cJSON_Delete(row);
+}
+
 /* ---- the prelude: FFI cdef + `cellar` sugar + per-hook trampolines ---------
  * Loaded into every state before its hooks.lua. The trampolines box the raw
  * cel_val_t* (passed from C as a lightuserdata) into table-like proxies, call the
@@ -160,6 +174,7 @@ static const char *PRELUDE =
 "  long long  cel_hook_exec (const char*, const cel_val_t*, char*, int);\n"
 "  void       cel_hook_emit (const char*, const char*, const char*, const char*);\n"
 "  long long  cel_hook_enqueue(const char*, const char*, long long, long long);\n"
+"  void       cel_hook_rt_emit(const char*, const char*, const char*);\n"
 "]]\n"
 "local C = ffi.C\n"
 "local NUL, BOOL, NUM, STR, OBJ, ARR = 0,1,2,3,4,5\n"
@@ -216,6 +231,10 @@ static const char *PRELUDE =
 "  o = o or {}\n"
 "  return tonumber(C.cel_hook_enqueue(tostring(jtype), payload or '',\n"
 "                                     o.run_at or 0, o.repeat_every or 0))\n"
+"end\n"
+"-- Realtime: push a server-created row (e.g. a notification) to live subscribers.\n"
+"function cellar.rt_emit(tbl, op, row_json)\n"
+"  C.cel_hook_rt_emit(tostring(tbl), tostring(op), tostring(row_json))\n"
 "end\n"
 "\n"
 "-- deep copy a result handle into plain Lua values (the handle is C-owned and\n"

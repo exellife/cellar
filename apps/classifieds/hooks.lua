@@ -32,6 +32,21 @@ local function server_uuid()
     "substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))) AS id")[1].id
 end
 
+-- A2.2: drop a notification into a user's in-app feed (the bell). Persisted, and
+-- realtime-pushed to the user if they're online + subscribed (owner-scoped). The
+-- realtime row carries only controlled ids (no free text → no JSON escaping
+-- needed); the client refetches title/body from the notifications rpc.
+local function notify(user_id, ntype, title, body, subject)
+  if not user_id or user_id == '' then return end
+  local id, ts = server_uuid(), now_iso()
+  cellar.exec(
+    'INSERT INTO notification(id, user_id, type, title, body, subject_id, created_at) VALUES (?,?,?,?,?,?,?)',
+    { id, user_id, ntype, title or '', body or '', subject, ts })
+  cellar.rt_emit('notification', 'INSERT',
+    '{"id":"' .. id .. '","user_id":"' .. user_id .. '","type":"' .. tostring(ntype) ..
+    '","subject_id":"' .. (subject or '') .. '"}')
+end
+
 -- A1.1: validate the photos array (ordered media ids from POST /media). `photos`
 -- is the inbound array proxy or nil. Each id is a 32-hex media id; cap the count.
 -- NB: iterate by index until nil — LuaJIT's `#` does not honor the proxy's __len
@@ -185,6 +200,13 @@ function after(op, tbl, row, who)
     if op == 'create' then       -- surface the conversation in both inboxes
       cellar.exec('UPDATE conversation SET last_message_at = ? WHERE id = ?',
                   { row.created_at, row.conversation_id })
+      -- notify the OTHER participant(s) of the new message (the bell)
+      local others = cellar.query(
+        'SELECT user_id FROM conversation_member WHERE conversation_id = ? AND user_id <> ?',
+        { row.conversation_id, row.sender_id })
+      for _, m in ipairs(others) do
+        notify(m.user_id, 'message', 'Новое сообщение', tostring(row.body):sub(1, 80), row.conversation_id)
+      end
     end
     return
   end
@@ -201,13 +223,18 @@ end
 -- retry/dead-letter. Unknown types are a no-op (drained).
 function job(name, payload)
   if name == 'expire_listings' then
-    -- a sweep: flip active listings whose ISO expires_at has passed (string
-    -- compare is correct for ISO-8601). Recurring, so it self-reschedules.
+    -- sweep active listings whose ISO expires_at has passed (string compare is
+    -- correct for ISO-8601); fetch first so each seller can be notified.
     local ts = now_iso()
-    local n = cellar.exec(
-      "UPDATE listings SET status='expired', updated_at=? " ..
-      "WHERE status='active' AND expires_at <> '' AND expires_at < ?", { ts, ts })
-    cellar.log.info('job expire_listings: expired ' .. tostring(n) .. ' listing(s)')
+    local due = cellar.query(
+      "SELECT id, seller_id FROM listings " ..
+      "WHERE status='active' AND expires_at <> '' AND expires_at < ?", { ts })
+    for _, l in ipairs(due) do
+      cellar.exec("UPDATE listings SET status='expired', updated_at=? WHERE id=?", { ts, l.id })
+      notify(l.seller_id, 'listing_expired', 'Объявление истекло',
+             'Срок размещения вашего объявления истёк', l.id)
+    end
+    cellar.log.info('job expire_listings: expired ' .. tostring(#due) .. ' listing(s)')
   end
 end
 
@@ -561,6 +588,40 @@ local function inbox(args, who)
   return { conversations = rows }
 end
 
+-- ── A2.2: notification feed rpcs ────────────────────────────────────────────
+local function my_notifications(args, who)
+  if not (who and who.authenticated) then return nil end
+  local lim = math.min(tonumber(args and args.limit) or 30, 100)
+  local off = math.max(tonumber(args and args.offset) or 0, 0)
+  local cond = (args and args.unread_only) and ' AND read_at IS NULL' or ''
+  local rows = cellar.query(
+    'SELECT id, type, title, body, subject_id, read_at, created_at FROM notification ' ..
+    'WHERE user_id = ?' .. cond .. ' ORDER BY created_at DESC LIMIT ? OFFSET ?',
+    { who.user_id, lim, off })
+  return { notifications = rows }
+end
+
+local function unread_count(args, who)
+  if not (who and who.authenticated) then return nil end
+  local r = cellar.query('SELECT count(*) AS n FROM notification WHERE user_id = ? AND read_at IS NULL',
+                         { who.user_id })
+  return { unread = r[1].n }
+end
+
+-- mark_read {id?}: one by id (owner-scoped) or all of mine; returns new unread count.
+local function mark_read(args, who)
+  if not (who and who.authenticated) then return nil end
+  local ts = now_iso()
+  if args and args.id then
+    cellar.exec('UPDATE notification SET read_at = ? WHERE id = ? AND user_id = ? AND read_at IS NULL',
+                { ts, args.id, who.user_id })
+  else
+    cellar.exec('UPDATE notification SET read_at = ? WHERE user_id = ? AND read_at IS NULL',
+                { ts, who.user_id })
+  end
+  return unread_count(args, who)
+end
+
 -- ── repair / ops primitive ──────────────────────────────────────────────────
 -- POST /rpc/rebuild_facets {"id": "<listing-id>"}  (admin) — reconcile one
 -- listing's facets if an after() fault ever left them stale.
@@ -599,6 +660,15 @@ function rpc(name, args, who)
   end
   if name == 'favorites' then
     return favorites(args, who)
+  end
+  if name == 'notifications' then
+    return my_notifications(args, who)
+  end
+  if name == 'unread_count' then
+    return unread_count(args, who)
+  end
+  if name == 'mark_read' then
+    return mark_read(args, who)
   end
   if name == 'category_form' then
     return category_form(args and args.category)

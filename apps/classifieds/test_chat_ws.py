@@ -181,5 +181,25 @@ def run(port):
     chk("stranger subscribe denied", body.get("status") != "ok", str(body))
     w2.close()
 
+    # notification realtime (A2.2): the seller subscribes to THEIR notification
+    # feed (owner-scoped, no key); the buyer's next message must push a live
+    # notification CHANGE to the seller.
+    w3 = ws_connect(HOST, port)
+    ws_send(w3, OP_LOGIN, 1, {"email": SELLER[0], "password": SELLER[1]})
+    _op, body = ws_recv(w3); stk = body.get("token")
+    ws_send(w3, OP_SUBSCRIBE, 2, {"token": stk, "table": "notification"})
+    _op, body = ws_recv(w3)
+    chk("seller subscribes to notifications", body.get("status") == "ok", str(body))
+    hreq("POST", "/api/message", {"conversation_id": conv, "body": "ping for notif"}, token=buyer_t)
+    note = None
+    for _ in range(8):
+        try: aop, body = ws_recv(w3)
+        except (socket.timeout, ConnectionError): break
+        if aop == OP_CHANGE and body.get("table") == "notification": note = body; break
+    chk("seller receives live notification", note is not None, str(note))
+    if note:
+        chk("notification type=message", (note.get("row") or {}).get("type") == "message", str(note.get("row")))
+    w3.close()
+
 if __name__ == "__main__":
     sys.exit(main())

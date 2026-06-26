@@ -40,6 +40,8 @@ long long  cel_hook_exec (const char *sql, const cel_val_t *params, char *err, i
 void       cel_hook_emit (const char *type, const char *actor, const char *subject, const char *props);
 /* JobQueue enqueue onto the current app's queue → new id, or -1. */
 long long  cel_hook_enqueue(const char *type, const char *payload, long long run_at, long long repeat_every);
+/* Realtime publish for a server-created row (e.g. a notification) → live subscribers. */
+void       cel_hook_rt_emit(const char *table, const char *op, const char *row_json);
 
 /* Claim + dispatch up to `budget` due jobs from `q` (job_queue_t*) to the Lua
  * `job` hook on this thread's state; completes/retries per result. The caller

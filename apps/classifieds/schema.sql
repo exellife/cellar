@@ -263,3 +263,25 @@ CREATE TABLE favorite (
   PRIMARY KEY (user_id, listing_id)
 );
 CREATE INDEX idx_favorite_listing ON favorite (listing_id);   -- favorite_count
+
+-- ── Notifications (in-app feed, A2.2) ───────────────────────────────────────
+-- A per-user feed (the bell): persisted source of truth, realtime-enabled so an
+-- online user gets live pushes (owner-scoped, like chat) and an offline user
+-- sees them on next load. Created server-side (hooks/jobs via the notify helper).
+CREATE TABLE notification (
+  id         TEXT PRIMARY KEY DEFAULT (
+               lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
+               substr(lower(hex(randomblob(2))),2)||'-'||
+               substr('89ab',abs(random())%4+1,1)||substr(lower(hex(randomblob(2))),2)||
+               '-'||lower(hex(randomblob(6)))),
+  user_id    TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,
+  type       TEXT NOT NULL,                  -- message | listing_expired | ...
+  title      TEXT NOT NULL DEFAULT '',
+  body       TEXT NOT NULL DEFAULT '',
+  subject_id TEXT,                            -- related entity (listing/conversation) for deep-link
+  data       TEXT,                            -- optional JSON
+  read_at    TEXT,                            -- NULL = unread
+  created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_notification_user   ON notification (user_id, created_at);
+CREATE INDEX idx_notification_unread ON notification (user_id, read_at);
