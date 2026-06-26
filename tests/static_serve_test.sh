@@ -34,7 +34,10 @@ chk "SPA fallback for /profile/42"      "$(body "$U/profile/42")"        "SHOP-H
 # API routes are NOT shadowed by the SPA fallback
 chk "POST /auth/login still works"      "$(code -X POST -H 'Content-Type: application/json' \
                                             -d '{"email":"admin@shop","password":"secret123"}' "$U/auth/login")" "200"
-chk "GET /api/* not served as SPA"      "$(code "$U/api/products")"      "401"
+# /api is handled by the API, not the SPA fallback: an unknown table returns the
+# API's 404 (reads now defer to policy, so there's no pre-routing 401 gate); the
+# SPA fallback would instead return 200 with the app HTML.
+chk "GET /api/* not served as SPA"      "$(code "$U/api/products")"      "404"
 chk "GET /health still works"           "$(code "$U/health")"            "200"
 
 # path traversal out of public/ is blocked (not 200)

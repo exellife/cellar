@@ -341,5 +341,19 @@ def run_checks(port, db):
     s, b = req("POST", "/rpc/listing", {"id": "nope-not-real"})
     chk("unknown listing -> 400", s == 400, f"status={s}")
 
+    # engine fix (#1): /api reads now defer to policy, so anon can read where the
+    # policy lists 'anon' — public browse without an rpc workaround.
+    s, b = req("GET", f"/api/listings/{one.get('id')}")          # anon, no token
+    chk("anon /api detail -> 200 (policy)", s == 200, f"status={s}")
+    s, b = req("GET", "/api/listings")                           # anon list
+    chk("anon /api list -> 200", s == 200, f"status={s}")
+    # a table that does NOT grant 'anon' stays protected (401 unauthenticated)
+    s, b = req("GET", "/api/listing_facet")
+    chk("anon /api listing_facet -> 401", s == 401, f"status={s}")
+    # ...and an authenticated user without the role gets 403, not 401
+    # (admin is superuser here, so just assert the table is reachable as admin)
+    s, b = req("GET", "/api/listing_facet", token=tok)
+    chk("admin /api listing_facet -> 200", s == 200, f"status={s}")
+
 if __name__ == "__main__":
     sys.exit(main())

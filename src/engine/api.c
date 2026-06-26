@@ -753,10 +753,18 @@ static char *encode_next_cursor(const cel_table_t *t, const cJSON *req, const cJ
 }
 
 cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req) {
-    if (!who->authenticated) return result_error(401, "authentication required");
+    /* Reads defer to policy (not a hard auth gate): an unauthenticated caller has
+     * role "anon", which cel_policy_allows grants ONLY where a table explicitly
+     * lists "anon" (or _default:allow) — fail-closed otherwise. This lets an app
+     * expose a public read surface (e.g. a catalog) without making everything
+     * public. When the policy DENIES, an unauthenticated caller still gets 401
+     * (so clients know to authenticate); an authenticated one gets 403. Apps that
+     * never mention "anon" therefore behave exactly as before. */
     const cel_table_t *t = resolve_table(req);
     if (!t) return result_error(404, "unknown table");
-    if (!cel_policy_allows(t->name, CEL_ACT_LIST, who->role)) return result_error(403, "forbidden");
+    if (!cel_policy_allows(t->name, CEL_ACT_LIST, who->role))
+        return result_error(who->authenticated ? 403 : 401,
+                            who->authenticated ? "forbidden" : "authentication required");
     /* authorize() is a table-level gate for list (no single row). */
     if (hook_denies_read(who, "list", t->name, NULL)) return result_error(403, "forbidden");
 
@@ -868,10 +876,14 @@ cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req) {
 }
 
 cel_api_result_t cel_api_get(const cel_identity_t *who, const cJSON *req) {
-    if (!who->authenticated) return result_error(401, "authentication required");
+    /* Reads defer to policy — see cel_api_list. Anon ("anon" role) is granted
+     * only where a table explicitly lists it; otherwise fail-closed (401 if
+     * unauthenticated so clients re-auth, 403 if authenticated). */
     const cel_table_t *t = resolve_table(req);
     if (!t) return result_error(404, "unknown table");
-    if (!cel_policy_allows(t->name, CEL_ACT_GET, who->role)) return result_error(403, "forbidden");
+    if (!cel_policy_allows(t->name, CEL_ACT_GET, who->role))
+        return result_error(who->authenticated ? 403 : 401,
+                            who->authenticated ? "forbidden" : "authentication required");
 
     cel_scope_t scope;
     if (make_scope(t, CEL_ACT_GET, who, &scope) != 0) return result_error(500, "policy misconfiguration");
