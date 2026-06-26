@@ -18,6 +18,13 @@ rules. Read the **Gotchas** section before writing any fetch call.
 - **Auth transport:** a bearer token in `Authorization: Bearer <token>`. No
   cookies. Store the token (web: memory + refresh, or localStorage for the MVP;
   RN: SecureStore).
+- **Charts/stats (when dashboards land):** a charting lib (Victory for web+RN
+  parity, or Recharts/visx web-only) is **~100–130 KB gzipped** and MUST live
+  behind a **lazily-loaded** stats/dashboard route (`React.lazy` / dynamic
+  import) — never imported into the core browse/search/post bundle. Import
+  modular (`victory-bar`, not the `victory` umbrella). A chart lib in the main
+  entry is the one easy way to bloat first paint; behind a lazy route it costs
+  ~0 KB for users who never open stats.
 
 ## Roles
 
