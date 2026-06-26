@@ -100,23 +100,26 @@
   ~½-day add gating signup/post. Don't pre-build.
 - ◻ **E2.4 `NotifChannel` port + push adapter + tests** — Web-Push/VAPID (or FCM); fold existing
   `mailer.c` (email) + optional SMS behind the same port.
-- ◻ **E2.5 Verify TOTP/MFA in a live app** — tests cover it; exercise enroll→challenge→recovery end-to-end.
-- ◻ **E2.6 Passkeys/WebAuthn module + `CredentialStore` port + tests** *(optional this phase)*.
+- ✓ **E2.5 TOTP/MFA verified live** — the engine `mfa` ctest is a full live e2e (enroll→confirm→two-step
+  login challenge→verify→recovery codes→regenerate→disable); MFA is engine-level (`/auth/mfa/*`) so the
+  classifieds bundle inherits it with zero bundle code. Confirmed.
+- ⊘ **E2.6 Passkeys/WebAuthn** — **DEFERRED (optional).** OAuth + password + TOTP cover auth; revisit if
+  passwordless-by-passkey becomes a priority.
 
 ### Track A
-- ◻ **A2.1** Listing lifecycle — auto-expiry / renew / sold via `JobQueue` (cron sweep).
+- ✓ **A2.1** Listing lifecycle — auto-expiry (recurring `expire_listings` sweep, seeded by run.sh, runs
+  via the worker), `renew_listing` rpc (reset window + reactivate), sold/withdrawn via owner PATCH.
 - ◑ **A2.2** Notifications — ✓ **in-app feed** (the bell): `notification` table (owner-scoped, realtime),
-  `notify()` helper (persist + `cellar.rt_emit` live push), wired into new-message + listing-expired;
-  rpcs `notifications`/`unread_count`/`mark_read`. ◻ saved-search match (needs A2.3); ◻ off-site
-  delivery via `NotifChannel` (Web Push / email) — see E2.4.
-- ◻ **A2.3** Saved searches + alerts (jobs match new listings).
-- ◻ **A2.4** **Event instrumentation** — emit view/click/favorite/contact/search via `EventSink`
-  (*start collecting now* — recs need history).
-- ◻ **A2.5** **Progressive trust + rate-limit** (the real anti-abuse for a marketplace). New accounts
-  are post-limited until they age/verify: generic trust/status fields on the user (account_age,
-  verified, trust_level) + **velocity limits** (posts/contacts per window via the rate-limiter +
-  `EventSink` history) that loosen as trust rises. Stops the spam-posting funnel far better than a
-  captcha. *(Captcha = an optional later escalation only on measured need — see E2.3, deferred.)*
+  `notify()` helper (persist + `cellar.rt_emit` live push), wired into new-message + listing-expired
+  + saved-search match; rpcs `notifications`/`unread_count`/`mark_read`. ◻ off-site delivery via
+  `NotifChannel` (Web Push / email) — see E2.4.
+- ✓ **A2.3** Saved searches + alerts — `saved_search` table + rpcs; recurring `match_saved_searches`
+  job (FTS+category+city since a last_run_at cursor) → in-app alert. *(facet-filter matching later.)*
+- ✓ **A2.4** **Event instrumentation** — `EventSink` emits `listing_viewed`/`search`/`favorite`/`contact`
+  (collecting from day one — recs need history). *(click events come with the web client.)*
+- ✓ **A2.5** **Progressive trust + velocity limits** — trust from account age + email-verified (1×/3×/10×,
+  no new table); per-24h post cap + per-1h contact cap scale with trust (admins exempt; env-tunable);
+  `my_limits` rpc for the UI. Stops the spam funnel; captcha stays deferred (E2.3).
 
 ---
 
