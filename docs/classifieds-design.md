@@ -111,8 +111,20 @@ The catalog is **one app**; storefronts are tiered presentation on top of it.
 4. **Background jobs / scheduler** — *foundational for the lifecycle.* Listing auto-expiry
    (Craigslist's ~30-day rule), saved-search alerts, recommendation precompute, notification
    fan-out, cleanup. cellar has no job system. **(engine)**
-5. **Notifications: SMS + push** — *KG is phone-centric.* Phone-OTP signup, SMS for "new
-   message" / alerts; web/mobile push. Email exists; SMS + push don't. **(engine)**
+5. **Identity & auth + notifications** — three layers, mostly already in cellar.
+   **(engine — passkeys / captcha / push are new; OAuth / email / TOTP exist)**
+   - **Auth = passwordless:** **passkeys/WebAuthn** (new — phishing-proof, no per-auth cost),
+     **OAuth** Google/Apple (cellar has), **email magic-link** (cellar mailer). *No SMS front door,
+     no Telegram.*
+   - **Account security:** **TOTP/MFA** — *already in cellar* (covered by tests, **not yet exercised
+     in a live app → verify before relying on it**); optional for users, encouraged/required for
+     sellers & pro.
+   - **Sybil-resistance:** **progressive trust + risk-routing + bot captcha** (e.g. Cloudflare
+     Turnstile) — gate *posting* (esp. high-value) on earned trust, **not** a universal phone gate.
+     Heavyweight verification (**phone / ID-KYC / card-on-file**) reserved for high-risk / high-value /
+     verified-seller escalation only — phone is *one optional lever*, never required.
+   - **Notifications (separate concern):** email (have) + **push (new)** + **SMS (optional**, for
+     escalation/alerts only**)** — fanned out via jobs (§5.4). *SMS is demoted: not auth, not critical path.*
 6. **Trust & safety / moderation** — *classifieds are scam magnets.* **(app + engine hooks)**
    - **Threat model (ours):** since money never flows through us, the dominant scam (advance-fee /
      prepayment) happens **off-platform** — we detect the setup, not the transaction. Real vectors:
@@ -123,9 +135,10 @@ The catalog is **one app**; storefronts are tiered presentation on top of it.
      posting frictionless; (2) friction **proportional to risk** (a risk score gates challenges) —
      never one global gate. Defense in depth: heuristics + community + scoring + human review.
    - **Layers:**
-     - *Identity (most leverage):* **phone-verified posting** (SMS OTP, block VOIP/disposable);
-       new-account limits (fewer/no high-value listings); velocity caps per phone/device/IP;
-       device fingerprinting (sybil); ATO protection (MFA, breached-password).
+     - *Identity (most leverage):* **progressive trust + bot captcha** (gate posting on earned trust,
+       not a universal phone gate — see §5.5); new-account limits (fewer/no high-value listings);
+       velocity caps per device/IP/account; device fingerprinting (sybil); ATO protection (TOTP/MFA,
+       breached-password). Heavyweight verification (phone/ID/card) only as high-risk escalation.
      - *Post-time screening:* blocklists (prohibited goods + scam phrases + **phone/links in
        title/desc** → blocks off-platform luring); **price-anomaly** vs category median;
        duplicate/stolen-photo detection (text shingling + **image pHash**); image NSFW/illegal.
@@ -137,11 +150,11 @@ The catalog is **one app**; storefronts are tiered presentation on top of it.
      - *Enforcement:* **risk-routed** moderation (low risk publishes, high risk → review queue);
        **shadowban**; graduated ladder warn→limit→suspend→ban (account **+ phone + device**);
        confirmed scams feed back into blocklists/hashes/model.
-   - **Build-first order:** (1) phone-verified posting + new-account/velocity limits → (2) report +
+   - **Build-first order:** (1) progressive trust + captcha + new-account/velocity limits → (2) report +
      auto-throttle + moderation queue + shadowban → (3) safety nudges + trust badges (~free) →
      (4) blocklists + price-anomaly + duplicate/image-hash → (5) risk scoring → (6) graph/ML later.
-   - **Note:** this is the *consumer* that ties together four other gaps — SMS (§5.5), event
-     tracking (§5.3), jobs (§5.4), image pHash (§5.1) — an argument for building those primitives well.
+   - **Note:** this is the *consumer* that ties together four other gaps — identity/captcha (§5.5),
+     event tracking (§5.3), jobs (§5.4), image pHash (§5.1) — an argument for building those primitives well.
 7. **Promotion payments** *(optional, monetization)* — sellers pay to feature / bump / VIP a
    listing, plus pro-dealer subscriptions. One-directional: *charge → set a flag → schedule
    expiry*. No ledger, no escrow, no payouts — a minor component. **(app + engine webhook intake)**
@@ -224,7 +237,7 @@ separate search/OLAP system needed.
     realtime); phone secondary.
   - **Seller controls** which channels a listing exposes (chat / call / WhatsApp).
   - **Phone reveal gated behind login** — browsing is free (SEO), but seeing the number *or*
-    starting a chat needs a logged-in, phone-verified account → kills bulk number-scraping and
+    starting a chat needs a logged-in, trusted account → kills bulk number-scraping and
     yields a real contact signal. WhatsApp as a `wa.me` deep-link convenience.
   - **Every contact logged as an event** (chat-started / number-revealed / whatsapp-clicked) →
     feeds recs (§5.3), trust/"responsive seller" badges, and demand measurement.
@@ -296,6 +309,50 @@ a *single country* outgrowing a box would force it, far away and isolated to tha
 **Discipline:** build the *interfaces* + the cheap structural insurance now; do **not** build the
 scale-out adapters until a *measured* need (same rule as the tunnel's parked multi-core work).
 Over-abstraction is its own failure mode.
+
+## Build phases / roadmap
+
+> Ordering: **MVP loop first → infra where it unblocks → defer optional/monetization/scale.**
+> Tags: **[E]** cellar engine (reusable primitive), **[A]** classifieds app on cellar.
+
+**Phase 0 — Foundations.** §6 data model (category/attribute metadata + listings + JSON attrs +
+facet-index + geo reference tables; validation + facet-sync hooks) **[A]**; structural insurance —
+region tag, **global UUIDs**, multi-currency/locale **[A/E]**.
+
+**Phase 1 — MVP loop** (a working classifieds: post w/ photos → browse/search → contact).
+- **[E] Media pipeline** — upload/validate/store (local disk *behind a storage interface*)/resize/serve.
+- **[A]** Listing CRUD (metadata-driven post form + photos); browse by category + **FTS5 search +
+  facets + geo**; listing detail + contact (phone-reveal login-gated + basic WS chat) + favorites.
+- **Auth:** existing **OAuth + email magic-link** (+ optional **TOTP**) — *no new identity work to launch.*
+
+**Phase 2 — Lifecycle, identity hardening, events.**
+- **[E] Jobs/scheduler** (job table + worker + cron + retries) — the infra primitive.
+- **Identity (mostly existing):** verify **TOTP** in a live app; add **passkeys** **[E]** if desired;
+  add **bot captcha** **[E]** + **progressive-trust** posting gates **[A]**. *SMS NOT built here —
+  demoted to optional escalation/alerts; no Telegram.*
+- **[E] Event tracking** ingest — start collecting views/clicks/favorites/contacts *now* (recs need history).
+- **[A]** Listing lifecycle (auto-expiry/renew/sold via jobs); notifications (email[have] + **push[E]**)
+  via jobs; **saved searches + alerts**.
+
+**Phase 3 — Trust & safety + feed home.**
+- **[A/E]** Trust per §5.6 order: report → auto-throttle → moderation queue → shadowban; nudges + trust
+  badges; blocklists + price-anomaly + duplicate/stolen-photo (**image pHash [E]**); then risk scoring.
+- **[A] Feed home** — non-personalized ranking (fresh + near + popular).
+
+**Phase 4 — Recommendations + monetization.**
+- **[E/A] Recommendations** — precompute similar/also-viewed/trending from accumulated events; personalize feed.
+- **[E]** Webhook intake + idempotency; **[A]** promotion payments (featured/bump/VIP via jobs).
+
+**Phase 5 — Pro storefronts (Tier 2).**
+- **[E]** Untrusted-code **sandboxing** (LuaJIT hardening — the big security project); scoped catalog API;
+  custom-domain TLS (ACME); Tier-1 theme system. **[A]** pro storefront bundles.
+
+**Phase 6 — Scale-out (measured need only).** Swap adapters (S3 / external search / Redis) +
+per-region deployment for KZ/UZ (the swap-path table).
+
+**cellar engine build order:** media pipeline → jobs → event ingest → captcha (+ passkeys) → push →
+image pHash → faceted-query support (if hot) → webhook/idempotency → untrusted-code sandbox → scale
+adapters. *(SMS dropped from the critical path; TOTP already exists.)*
 
 ## 9. Parking lot / open questions
 
