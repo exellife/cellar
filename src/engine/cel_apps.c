@@ -210,6 +210,15 @@ job_queue_t *cel_apps_current_jobs(void) {
     return (t_cur_app && t_cur_app->bg_ready) ? (job_queue_t *)&t_cur_app->jobs : NULL;
 }
 
+int cel_apps_snapshot(const cel_app_t **out, int max) {
+    if (!out || max <= 0) return 0;
+    pthread_mutex_lock(&g.mtx);
+    int n = g.count < max ? g.count : max;
+    for (int i = 0; i < n; i++) out[i] = &g.apps[i];
+    pthread_mutex_unlock(&g.mtx);
+    return n;
+}
+
 void cel_apps_shutdown(void) {
     pthread_mutex_lock(&g.mtx);
     for (int i = 0; i < g.count; i++) {

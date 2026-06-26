@@ -81,6 +81,11 @@ const cel_app_t *cel_apps_current(void);
 event_sink_t *cel_apps_current_events(void);
 job_queue_t  *cel_apps_current_jobs(void);
 
+/* Snapshot up to `max` currently-open app slot pointers into `out` (the slots are
+ * stable for the process lifetime). Returns the count. Used by the background job
+ * worker to iterate apps without holding the registry lock during job runs. */
+int cel_apps_snapshot(const cel_app_t **out, int max);
+
 /* Free the cached catalogs (handles are freed by app_db_global_shutdown). */
 void cel_apps_shutdown(void);
 

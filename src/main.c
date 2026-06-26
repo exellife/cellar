@@ -38,6 +38,7 @@
 #include "handlers/realtime_handlers.h"
 #include "handlers/http_routes.h"
 #include "handlers/media.h"
+#include "engine/cel_worker.h"
 #include "engine/realtime.h"
 
 #include <stdio.h>
@@ -952,9 +953,14 @@ int main(int argc, char **argv) {
              tls_on ? "https" : "http", port);
     LOG_INFO("ready. ctrl-c to stop.");
 
+    /* Background job worker: runs each app's due jobs on a timer (expiry sweep,
+     * alerts, rollups). CEL_JOBS_INTERVAL=0 disables it. */
+    cel_worker_start((int)env_int("CEL_JOBS_INTERVAL", 30));
+
     while (g_running) pause();
 
     LOG_INFO("shutting down...");
+    cel_worker_stop();            /* stop the worker before tearing down apps */
     ws_server_destroy(g_server);
     cel_realtime_cleanup();
     opcode_dispatcher_destroy(g_dispatcher);

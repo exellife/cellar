@@ -66,6 +66,7 @@ def main():
         env = dict(os.environ,
                    CEL_PORT=str(port), CEL_DATA_DB=db, CEL_LOG_LEVEL="warn",
                    CEL_POLICY_FILE=os.path.join(d, "policies.json"),
+                   CEL_JOBS_INTERVAL="0",   # drive jobs via /jobs/run deterministically
                    CEL_AUTH_RATELIMIT="0", CEL_API_RATELIMIT="0",
                    CEL_SEED_USERS=(f"{ADMIN[0]}:{ADMIN[1]}:admin;{BUYER[0]}:{BUYER[1]}:user;"
                                    f"{SELLER[0]}:{SELLER[1]}:user;{STRANGER[0]}:{STRANGER[1]}:user"))
