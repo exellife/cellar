@@ -28,15 +28,21 @@
   malformed/oversized, thumbnail fit-box; ASan-clean. *Deferred: WebP/HEIC encode (libwebp/libheif
   behind same iface, measured need); EXIF-orientation re-apply (clients bake it in).*
 
-### Track A — data model (client-agnostic backend)
-- ◻ **A0.1** Schema: `category` + `category_attribute` (metadata layer, §6).
-- ◻ **A0.2** Schema: `listings` (common typed cols + `attributes JSON`), **global UUID ids**, **region/country
+### Track A — data model (client-agnostic backend) — bundle at `apps/classifieds/`
+- ✓ **A0.1** Schema: `category` + `category_attribute` (metadata layer, §6).
+- ✓ **A0.2** Schema: `listings` (common typed cols + `attributes JSON`), **uuid4 DEFAULT ids**, **region
   tag**, **currency + locale** fields (scaling insurance).
-- ◻ **A0.3** Schema: `listing_facet` (derived) + indexes `(key,num)`/`(key,text)`; reference tables
-  (geo oblast→city→district; later make/model).
-- ◻ **A0.4** Hook: write-time **validation** (read `category_attribute` → validate submitted attrs).
-- ◻ **A0.5** Hook: **facet-sync** (populate `listing_facet` from JSON for filterable attrs, in-txn).
-- ◻ **A0.6** Seed: initial categories + attributes + **KG geo tree** (data).
+- ✓ **A0.3** Schema: `listing_facet` (derived) + indexes `(key,num)`/`(key,text)`; geo reference tables
+  (oblast→city→district). *(make/model deferred — enum+depends_on for now.)*
+- ✓ **A0.4** Hook: write-time **validation** in `before()` (read `category_attribute` → required/type/enum;
+  rejects in-txn → 400, rolls back).
+- ✓ **A0.5** Hook: **facet-sync** in `after()` (rebuild `listing_facet` from stored JSON via
+  `json_extract`, idempotent; admin `rpc rebuild_facets` repair). *(after(), not before — id known
+  post-commit; validation stays atomic with the write.)*
+- ✓ **A0.6** Seed: KG geo tree + starter taxonomy (24 attrs, all types) + runnable `run.sh`/README.
+
+> **Phase 0 done.** Engine: `BlobStore` + image lib. Bundle: full catalog data model + validation/
+> facet-sync hooks + KG seed. e2e ctest `classifieds_phase0` (25 checks) + unit tests, all green.
 
 ---
 
