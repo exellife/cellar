@@ -3,6 +3,8 @@
 #include "engine/policy.h"
 #include "engine/openapi.h"
 #include "engine/cel_apps.h"
+#include "engine/cel_hooks.h"
+#include "core/app_db.h"
 #include "core/rate_limit.h"
 #include "core/metrics.h"
 #include "core/cors.h"
@@ -14,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
+#include <sqlite3.h>
 #include <time.h>
 #include <sodium.h>
 #include <sys/stat.h>
@@ -424,6 +428,41 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         int st = send_api(res, cel_api_rpc(&who, r));
         cJSON_Delete(r);
         return st;
+    }
+
+    /* POST /jobs/run — admin: run the current app's due background jobs once
+     * (dispatched to the bundle's `job` hook). A background worker will drive this
+     * on a timer later; this lets an operator (or a test) trigger it now. */
+    if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/jobs/run")) {
+        cel_identity_t who;
+        identity_from_request(req, &who);
+        if (!cel_role_is_superuser(who.role)) return send_error(res, 403, "forbidden");
+        job_queue_t *q = cel_apps_current_jobs();
+        if (!q) return send_error(res, 503, "background jobs unavailable");
+        cel_lua_t *L = cel_hook_app_state(cel_apps_current_hooks());
+        if (!L) return send_error(res, 501, "no hooks for this app");
+
+        int budget = 100;
+        if (req->body_len > 0) {
+            cJSON *b = cJSON_ParseWithLength(req->body, req->body_len);
+            cJSON *bn = b ? cJSON_GetObjectItemCaseSensitive(b, "budget") : NULL;
+            if (cJSON_IsNumber(bn) && bn->valueint > 0 && bn->valueint <= 1000) budget = bn->valueint;
+            cJSON_Delete(b);
+        }
+        /* bind a connection (handlers' cellar.exec) + take the app write lock so
+         * job writes serialize with request writes. */
+        app_db_t *adb = app_db_current();
+        sqlite3 *c = adb ? app_db_conn_acquire(adb) : NULL;
+        if (adb) app_db_write_lock(adb);
+        cel_hooks_set_db(c);
+        int n = cel_hooks_run_jobs(L, q, (long long)time(NULL), 60, budget);
+        cel_hooks_set_db(NULL);
+        if (adb) { app_db_write_unlock(adb); app_db_conn_release(adb, c); }
+
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddNumberToObject(o, "processed", n);
+        cel_api_result_t ar = { o, 200 };
+        return send_api(res, ar);
     }
 
     /* POST /sync/pull — offline-first delta pull: rows changed since a rev cursor

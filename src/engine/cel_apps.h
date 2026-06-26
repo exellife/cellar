@@ -16,6 +16,8 @@
 
 #include "schema_catalog.h"
 #include "core/app_db.h"
+#include "core/event_sink.h"
+#include "core/job_queue.h"
 #include "cel_hook_state.h"
 #include "policy.h"
 
@@ -29,6 +31,14 @@ typedef struct {
     cel_catalog_t  *catalog;
     cel_hook_app_t *hooks;
     cel_policy_t   *policy;
+    /* Background services (EventSink + JobQueue), each on its own dedicated
+     * connection to this app's data.db, opened eagerly at app-open. NULL conns
+     * mean the services failed to open (emit/enqueue then no-op). */
+    void           *evt_conn;           /* sqlite3* */
+    void           *jobq_conn;          /* sqlite3* */
+    event_sink_t    events;
+    job_queue_t     jobs;
+    int             bg_ready;
 } cel_app_t;
 
 /* Configure routing. If `apps_dir` is non-empty → multi-app (<apps_dir>/<host>/
@@ -64,6 +74,12 @@ cel_hook_app_t *cel_apps_current_hooks(void);
 /* This thread's current app (set by cel_apps_enter), or NULL outside a bound
  * request. Used by the router to find the app's public/ front-end directory. */
 const cel_app_t *cel_apps_current(void);
+
+/* This thread's current app's background services (each on a dedicated
+ * connection), or NULL if unavailable. Used by the hook FFI (cellar.emit /
+ * cellar.enqueue_job / cellar.run_jobs). */
+event_sink_t *cel_apps_current_events(void);
+job_queue_t  *cel_apps_current_jobs(void);
 
 /* Free the cached catalogs (handles are freed by app_db_global_shutdown). */
 void cel_apps_shutdown(void);

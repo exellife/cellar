@@ -74,6 +74,27 @@ static cel_app_t *find_cached(const char *host) {
 
 /* Open `db_path`, apply the identity schema, introspect the catalog. Caller holds
  * g.mtx. Returns a stable pointer into the cache, or NULL. */
+/* Open the per-app background services (EventSink + JobQueue) on dedicated
+ * connections to the app's data.db. Best-effort: on failure bg_ready stays 0 and
+ * emit/enqueue become no-ops (telemetry/jobs degrade, the app still serves). */
+static void open_bg_services(cel_app_t *slot, const char *db_path) {
+    sqlite3 *ec = NULL, *jc = NULL;
+    if (sqlite3_open(db_path, &ec) != SQLITE_OK) { sqlite3_close(ec); ec = NULL; }
+    if (sqlite3_open(db_path, &jc) != SQLITE_OK) { sqlite3_close(jc); jc = NULL; }
+    if (ec) { sqlite3_busy_timeout(ec, 5000); sqlite3_exec(ec, "PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;", NULL, NULL, NULL); }
+    if (jc) { sqlite3_busy_timeout(jc, 5000); sqlite3_exec(jc, "PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;", NULL, NULL, NULL); }
+
+    if (ec && jc &&
+        event_sink_sqlite_open(ec, &slot->events) == EVT_OK &&
+        job_queue_sqlite_open(jc, &slot->jobs) == JOBQ_OK) {
+        slot->evt_conn = ec; slot->jobq_conn = jc; slot->bg_ready = 1;
+    } else {
+        sqlite3_close(ec); sqlite3_close(jc);
+        slot->bg_ready = 0;
+        LOG_WARN("apps: background services (events/jobs) unavailable");
+    }
+}
+
 static cel_app_t *open_into_cache(const char *host, const char *db_path) {
     if (g.count >= CEL_APPS_MAX) { LOG_WARN("apps: registry full (%d)", g.count); return NULL; }
     /* Pinned: this cache holds the handle for the process lifetime, so it must
@@ -115,6 +136,8 @@ static cel_app_t *open_into_cache(const char *host, const char *db_path) {
     char pj[1100];
     snprintf(pj, sizeof pj, "%s/policies.json", dir);
     slot->policy = cel_policy_load(pj);
+
+    open_bg_services(slot, db_path);
 
     return slot;
 }
@@ -180,12 +203,26 @@ void cel_apps_leave(void) {
 cel_hook_app_t  *cel_apps_current_hooks(void) { return t_cur_hooks; }
 const cel_app_t *cel_apps_current(void)       { return t_cur_app; }
 
+event_sink_t *cel_apps_current_events(void) {
+    return (t_cur_app && t_cur_app->bg_ready) ? (event_sink_t *)&t_cur_app->events : NULL;
+}
+job_queue_t *cel_apps_current_jobs(void) {
+    return (t_cur_app && t_cur_app->bg_ready) ? (job_queue_t *)&t_cur_app->jobs : NULL;
+}
+
 void cel_apps_shutdown(void) {
     pthread_mutex_lock(&g.mtx);
     for (int i = 0; i < g.count; i++) {
         cel_catalog_free(g.apps[i].catalog);
         cel_hook_app_destroy(g.apps[i].hooks);
         cel_policy_free(g.apps[i].policy);
+        if (g.apps[i].bg_ready) {
+            g.apps[i].events.destroy(g.apps[i].events.ctx);
+            g.apps[i].jobs.destroy(g.apps[i].jobs.ctx);
+            sqlite3_close((sqlite3 *)g.apps[i].evt_conn);
+            sqlite3_close((sqlite3 *)g.apps[i].jobq_conn);
+            g.apps[i].bg_ready = 0;
+        }
     }
     g.count = 0;
     pthread_mutex_unlock(&g.mtx);

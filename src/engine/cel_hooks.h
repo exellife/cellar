@@ -36,6 +36,17 @@ void       cel_hook_log  (int level, const char *msg);       /* 0=dbg 1=info 2=w
 cel_val_t *cel_hook_query(const char *sql, const cel_val_t *params, char *err, int errlen);
 /* parameterized statement → rows changed, or -1 + err. */
 long long  cel_hook_exec (const char *sql, const cel_val_t *params, char *err, int errlen);
+/* EventSink emit onto the current app's log (best-effort; no error path). */
+void       cel_hook_emit (const char *type, const char *actor, const char *subject, const char *props);
+/* JobQueue enqueue onto the current app's queue → new id, or -1. */
+long long  cel_hook_enqueue(const char *type, const char *payload, long long run_at, long long repeat_every);
+
+/* Claim + dispatch up to `budget` due jobs from `q` (job_queue_t*) to the Lua
+ * `job` hook on this thread's state; completes/retries per result. The caller
+ * binds a db connection (cel_hooks_set_db) for the handlers. Returns # processed. */
+struct job_queue;
+int cel_hooks_run_jobs(cel_lua_t *L, struct job_queue *q, long long now,
+                       int visibility, int budget);
 
 /* authorize(op, table, row, who): an ADDITIONAL allow gate beyond the built-in
  * policy. Returns 1=allow, 0=deny. Absent hook → allow; a fault → deny. */

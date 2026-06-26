@@ -1,5 +1,6 @@
 /* cellar — the Lua hook dispatcher (design §8). See cel_hooks.h. */
 #include "cel_hooks.h"
+#include "cel_apps.h"
 #include "logger.h"
 
 #include <stdio.h>
@@ -102,6 +103,31 @@ long long cel_hook_exec(const char *sql, const cel_val_t *params, char *err, int
     return (long long)sqlite3_changes(t_db);
 }
 
+/* EventSink: append an event onto the current app's log (its own connection,
+ * independent of the request txn). Best-effort — telemetry never fails a hook. */
+void cel_hook_emit(const char *type, const char *actor, const char *subject, const char *props) {
+    event_sink_t *s = cel_apps_current_events();
+    if (!s || !type || !type[0]) return;
+    event_t ev = {
+        .type       = type,
+        .actor_id   = (actor   && actor[0])   ? actor   : NULL,
+        .subject_id = (subject && subject[0]) ? subject : NULL,
+        .props      = (props   && props[0])   ? props   : NULL,
+    };
+    s->emit(s->ctx, &ev);
+}
+
+/* JobQueue: enqueue onto the current app's queue. Returns the new id, or -1. */
+long long cel_hook_enqueue(const char *type, const char *payload,
+                           long long run_at, long long repeat_every) {
+    job_queue_t *q = cel_apps_current_jobs();
+    if (!q || !type || !type[0]) return -1;
+    long long id = -1;
+    q->enqueue(q->ctx, type, (payload && payload[0]) ? payload : NULL,
+               run_at, 0, repeat_every, &id);
+    return id;
+}
+
 /* ---- the prelude: FFI cdef + `cellar` sugar + per-hook trampolines ---------
  * Loaded into every state before its hooks.lua. The trampolines box the raw
  * cel_val_t* (passed from C as a lightuserdata) into table-like proxies, call the
@@ -132,6 +158,8 @@ static const char *PRELUDE =
 "  void       cel_hook_log  (int, const char*);\n"
 "  cel_val_t* cel_hook_query(const char*, const cel_val_t*, char*, int);\n"
 "  long long  cel_hook_exec (const char*, const cel_val_t*, char*, int);\n"
+"  void       cel_hook_emit (const char*, const char*, const char*, const char*);\n"
+"  long long  cel_hook_enqueue(const char*, const char*, long long, long long);\n"
 "]]\n"
 "local C = ffi.C\n"
 "local NUL, BOOL, NUM, STR, OBJ, ARR = 0,1,2,3,4,5\n"
@@ -176,6 +204,19 @@ static const char *PRELUDE =
 "    error = function(m) C.cel_hook_log(3, tostring(m)) end,\n"
 "  },\n"
 "}\n"
+"-- EventSink: cellar.emit(type, {actor=, subject=, props=}) — fire-and-forget\n"
+"-- onto this app's event log (props is a JSON string). Best-effort.\n"
+"function cellar.emit(etype, o)\n"
+"  o = o or {}\n"
+"  C.cel_hook_emit(tostring(etype), o.actor or '', o.subject or '', o.props or '')\n"
+"end\n"
+"-- JobQueue: cellar.enqueue_job(type, payload, {run_at=, repeat_every=}) →\n"
+"-- the new job id (or -1). payload is a JSON string.\n"
+"function cellar.enqueue_job(jtype, payload, o)\n"
+"  o = o or {}\n"
+"  return tonumber(C.cel_hook_enqueue(tostring(jtype), payload or '',\n"
+"                                     o.run_at or 0, o.repeat_every or 0))\n"
+"end\n"
 "\n"
 "-- deep copy a result handle into plain Lua values (the handle is C-owned and\n"
 "-- freed right after, so rows can't be live proxies)\n"
@@ -257,6 +298,12 @@ static const char *PRELUDE =
 "  local res, errm = rpc(name, box(args_ptr, false), box(who_ptr, false))\n"
 "  if res == nil then return nil, errm and tostring(errm) or 'rpc returned nil' end\n"
 "  return res\n"   /* a Lua value; the C side marshals it back to JSON */
+"end\n"
+"function __cel_job(jtype, payload)\n"   /* called by cel_hooks_run_jobs per claimed job */
+"  if type(job) ~= 'function' then return true end\n"   /* no handler → drop (complete) */
+"  local ok, err = pcall(job, jtype, payload)\n"
+"  if ok then return true end\n"
+"  return false, tostring(err)\n"   /* error → fail (retry/dead-letter) */
 "end\n"
 "function __cel_resolve(tbl, incoming_ptr, current_ptr, who_ptr)\n"
 "  if type(resolve) ~= 'function' then return 'incoming' end\n"   /* default LWW */
@@ -376,6 +423,39 @@ static cJSON *lua_to_cval(lua_State *L, int idx, int depth) {
             }
         default: return cJSON_CreateNull();      /* function / userdata / cdata */
     }
+}
+
+/* Run up to `budget` due jobs from `q`, dispatching each to the Lua `job` hook
+ * (on this thread's state). Completes on success, fails-with-retry on a Lua error
+ * or a job() error. The caller binds a db connection (cel_hooks_set_db) so the
+ * job handler's cellar.query/exec run against it. Returns the number processed. */
+int cel_hooks_run_jobs(cel_lua_t *Lh, job_queue_t *q, long long now,
+                       int visibility, int budget) {
+    lua_State *L = (lua_State *)cel_lua_state(Lh);
+    if (!L || !q) return 0;
+    int processed = 0;
+    for (int i = 0; i < budget; i++) {
+        job_t job;
+        int rc = q->claim(q->ctx, now, visibility, &job);
+        if (rc != JOBQ_OK) break;             /* JOBQ_NONE (drained) or error */
+        lua_getglobal(L, "__cel_job");
+        lua_pushstring(L, job.type ? job.type : "");
+        lua_pushstring(L, job.payload ? job.payload : "");
+        int ok;
+        if (lua_pcall(L, 2, 2, 0) != 0) {
+            LOG_ERROR("[hook] job fault: %s", lua_tostring(L, -1));
+            lua_pop(L, 1);
+            ok = 0;
+        } else {
+            ok = lua_toboolean(L, -2);
+            lua_pop(L, 2);
+        }
+        if (ok) q->complete(q->ctx, job.id, now);
+        else    q->fail(q->ctx, job.id, "job handler failed", now + 60);
+        job_free(&job);
+        processed++;
+    }
+    return processed;
 }
 
 cel_val_t *cel_hooks_rpc(cel_lua_t *Lh, const char *name, const cel_val_t *args,

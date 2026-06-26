@@ -51,6 +51,7 @@
     "favorite": { "roles": ["user"] },
     "unfavorite": { "roles": ["user"] },
     "favorites": { "roles": ["user"] },
+    "enqueue_job": { "roles": ["admin"] },
     "rebuild_facets": { "roles": ["admin"] }
   }
 }

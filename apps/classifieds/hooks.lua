@@ -195,6 +195,22 @@ function after(op, tbl, row, who)
   -- delete: ON DELETE CASCADE already removed the facet rows
 end
 
+-- ── Phase 2: background jobs (claimed by the worker → dispatched here) ───────
+-- POST /jobs/run (admin / worker) claims due jobs and calls this with each job's
+-- type + payload. Returning normally = success (job completes); a Lua error =
+-- retry/dead-letter. Unknown types are a no-op (drained).
+function job(name, payload)
+  if name == 'expire_listings' then
+    -- a sweep: flip active listings whose ISO expires_at has passed (string
+    -- compare is correct for ISO-8601). Recurring, so it self-reschedules.
+    local ts = now_iso()
+    local n = cellar.exec(
+      "UPDATE listings SET status='expired', updated_at=? " ..
+      "WHERE status='active' AND expires_at <> '' AND expires_at < ?", { ts, ts })
+    cellar.log.info('job expire_listings: expired ' .. tostring(n) .. ' listing(s)')
+  end
+end
+
 -- ── A1.2: post-form contract ────────────────────────────────────────────────
 -- POST /rpc/category_form {"category": "<id-or-slug>"} → the data a client needs
 -- to render the post form / filters for a category, in one call: the category,
@@ -379,6 +395,9 @@ local function search(args)
     end
   end
 
+  if match ~= '' then
+    cellar.emit('search', { props = '{"q":"' .. (tostring(args.q):gsub('"', '')) .. '"}' })
+  end
   return { results = rows, total = total, limit = limit, offset = offset, facets = facets }
 end
 
@@ -405,6 +424,8 @@ local function get_listing(args, who)
                            { who.user_id, id })
     out.favorited = #f > 0
   end
+  -- behavioral telemetry (anon included) for the feed/recs — can't be backfilled
+  cellar.emit('listing_viewed', { subject = id, actor = (who and who.user_id) or '' })
   return out
 end
 
@@ -581,6 +602,14 @@ function rpc(name, args, who)
   end
   if name == 'category_form' then
     return category_form(args and args.category)
+  end
+  if name == 'enqueue_job' then            -- admin: schedule a background job
+    if who.role ~= 'admin' then return nil end
+    local t = args and args.type
+    if not t then return nil end
+    local id = cellar.enqueue_job(t, args.payload,
+                                  { run_at = args.run_at, repeat_every = args.repeat_every })
+    return { id = id }
   end
   if name == 'rebuild_facets' then
     if who.role ~= 'admin' then return nil end

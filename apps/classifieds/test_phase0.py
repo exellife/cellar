@@ -556,6 +556,39 @@ def run_checks(port, db):
                {"category_id": "cat-cars", "title": "anon post", "attributes": {"make": "Toyota", "year": 2014}})
     chk("anon create -> 401", s == 401, f"status={s}")
 
+    # ---- Phase 2 wiring: EventSink + JobQueue exercised through the app ----
+    def rows_of(sql, args=()):
+        c = sqlite3.connect(db)
+        try: return c.execute(sql, args).fetchall()
+        except Exception: return None
+        finally: c.close()
+
+    # a listing view emits a listing_viewed event (collected for all viewers)
+    req("POST", "/rpc/listing", {"id": one.get("id")})          # one = a moto listing seeded earlier
+    evs = rows_of("SELECT subject_id FROM event WHERE type='listing_viewed'")
+    chk("EventSink: listing view emits event",
+        evs is not None and any(r[0] == one.get("id") for r in evs), str(evs)[:100] if evs is not None else "no event table")
+    facet_search(q="toyota", category="cat-cars")
+    chk("EventSink: search emits event", len(rows_of("SELECT 1 FROM event WHERE type='search'") or []) >= 1, "")
+
+    # JobQueue: an expire sweep flips a past-expiry active listing to 'expired'
+    s, b = req("POST", "/api/listings",
+               {"category_id": "cat-cars", "title": "Will expire", "city_id": "ci-bishkek",
+                "attributes": {"make": "Toyota", "year": 2015}}, token=seller)
+    exp_id = (b or {}).get("row", {}).get("id")
+    req("PATCH", f"/api/listings/{exp_id}", {"expires_at": "2000-01-01T00:00:00Z"}, token=seller)
+    s, b = req("POST", "/rpc/enqueue_job", {"type": "expire_listings"}, token=tok)   # admin
+    chk("JobQueue: enqueue_job -> id", s == 200 and ((b or {}).get("result") or {}).get("id", 0) > 0, str(b))
+    s, b = req("POST", "/jobs/run", {}, token=tok)                                   # admin
+    chk("JobQueue: /jobs/run processes >=1", s == 200 and (b or {}).get("processed", 0) >= 1, str(b))
+    st = rows_of("SELECT status FROM listings WHERE id=?", (exp_id,))
+    chk("JobQueue: job expired the listing", st and st[0][0] == "expired", str(st))
+    # one-shot job consumed
+    chk("JobQueue: one-shot job consumed", (rows_of("SELECT count(*) FROM job")[0][0]) == 0, "")
+    # non-admin cannot run jobs
+    s, _ = req("POST", "/jobs/run", {}, token=seller)
+    chk("JobQueue: non-admin /jobs/run -> 403", s == 403, f"status={s}")
+
     # ---- review hardening (security-review follow-ups) ----
     base_ok = {"category_id": "cat-cars", "title": "Hardening", "city_id": "ci-bishkek",
                "attributes": {"make": "Toyota", "year": 2016}}
