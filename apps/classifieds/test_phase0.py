@@ -57,8 +57,12 @@ def main():
         shutil.copy(os.path.join(HERE, "policies.json"), os.path.join(d, "policies.json"))
 
         port = free_port()
+        # Single-app mode loads the policy from CEL_POLICY_FILE (multi-app loads
+        # each bundle's policies.json automatically). Point it at the bundle's so
+        # the real policy is enforced — anon browse allowed, etc.
         env = dict(os.environ,
                    CEL_PORT=str(port), CEL_DATA_DB=db, CEL_LOG_LEVEL="warn",
+                   CEL_POLICY_FILE=os.path.join(d, "policies.json"),
                    CEL_AUTH_RATELIMIT="0", CEL_API_RATELIMIT="0",
                    CEL_SEED_USERS=f"{ADMIN[0]}:{ADMIN[1]}:admin")
         log = open(os.path.join(d, "server.log"), "w")
@@ -317,6 +321,25 @@ def run_checks(port, db):
     # text query + facet together
     s, r = facet_search(q="honda", category="cat-moto", filters=[{"key": "year", "min": 2021}])
     chk("q='honda' + year>=2021 -> 1", r.get("total") == 1, str(r.get("total")))
+
+    # ---- A1.5 browse + detail ----
+    # browse by geo (city filter, no q) — all moto seeded in Bishkek
+    s, r = facet_search(category="cat-moto", city="ci-bishkek")
+    chk("browse by city -> 3", r.get("total") == 3, str(r.get("total")))
+    s, r = facet_search(city="ci-bishkek")
+    chk("browse city-only (no cat) non-empty", r.get("total", 0) >= 3, str(r.get("total")))
+
+    # listing detail (anon) — via the public `listing` rpc (engine /api read path
+    # requires auth; public reads go through rpcs, like search)
+    one = (facet_search(category="cat-moto", limit=1)[1].get("results") or [{}])[0]
+    s, b = req("POST", "/rpc/listing", {"id": one.get("id")})   # no token = anon
+    detail = ((b or {}).get("result") or {}).get("listing") or {}
+    chk("listing detail (anon) -> 200", s == 200, f"status={s}")
+    chk("detail has title", bool(detail.get("title")), str(detail)[:80])
+    chk("detail id matches", detail.get("id") == one.get("id"), str(detail.get("id")))
+    # a non-existent id -> rpc returns nil -> 400
+    s, b = req("POST", "/rpc/listing", {"id": "nope-not-real"})
+    chk("unknown listing -> 400", s == 400, f"status={s}")
 
 if __name__ == "__main__":
     sys.exit(main())

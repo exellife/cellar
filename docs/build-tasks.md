@@ -59,9 +59,11 @@
 - ✓ **A1.2** Metadata-driven **post-form contract** — rpc `category_form` (category + breadcrumb + attrs).
 - ✓ **A1.3** **Search: FTS5** over listings — `unicode61` (Cyrillic case-fold + prefix, bm25), sync
   triggers, rpc `search` (injection-safe). *(trigram substring = noted later enhancement.)*
-- ◻ **A1.4** **Faceted filtering** — *design the **data/search port** here (the sticky seam)*; query =
-  base filter ∩ `listing_facet` lookups ∩ FTS ids; facet counts (cacheable).
-- ◻ **A1.5** Browse by category + geo filter; listing detail page (API).
+- ✓ **A1.4** **Faceted filtering** — rpc `search` composes base ∩ `listing_facet` (text IN / num range)
+  ∩ FTS ids, ranked + paged + sidebar facet counts. *Hook SQL (doc's "hook-first"); filters as an
+  array (proxy has no enumerable keys). Promote to an engine data/search port if it gets hot.*
+- ✓ **A1.5** Browse (= `search` with empty q + category/city) + listing detail rpc `listing`
+  (anon-readable; engine /api reads require auth — see below).
 - ◻ **A1.6** **Contact** — phone-reveal (login-gated) + reveal/contact **event**; basic WS chat (existing
   realtime) + inbox.
 - ◻ **A1.7** Favorites.
