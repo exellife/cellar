@@ -134,12 +134,19 @@ function before(op, tbl, input, who)
     if not valid_price(input.price) then return false, 'price must be a whole, non-negative number' end
     local pok, perr = validate_photos(input.photos)
     if not pok then return false, perr end
-    -- before() sees only the PATCH body (no row id), so if attributes change we
-    -- REQUIRE category_id in the same PATCH — otherwise validation would be
-    -- silently skipped (the bypass). The post form always carries it.
-    if input.attributes ~= nil then
+    -- before() sees only the PATCH body (no row id / no stored attributes), so a
+    -- change to EITHER category_id OR attributes requires BOTH in the same PATCH —
+    -- then validate. This blocks both bypass directions: changing attributes
+    -- without a category to validate against, AND changing the category while
+    -- leaving stale attributes un-revalidated (which would also pollute the
+    -- shared facet index). Changing the category means resubmitting attributes
+    -- anyway (the schema differs). A PATCH touching neither column is unaffected.
+    if input.category_id ~= nil or input.attributes ~= nil then
       if not input.category_id or input.category_id == '' then
         return false, 'category_id is required when updating attributes'
+      end
+      if input.attributes == nil then
+        return false, 'attributes are required when changing category'
       end
       return validate_attrs(input.category_id, input.attributes)
     end

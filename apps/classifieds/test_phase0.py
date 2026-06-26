@@ -572,10 +572,21 @@ def run_checks(port, db):
     # #3 updating attributes without category_id is rejected (no silent bypass)
     s, _ = req("PATCH", f"/api/listings/{hid}", {"attributes": {"make": "NotAMake", "year": 2016}}, token=seller)
     chk("update attrs w/o category_id -> 400", s == 400, f"status={s}")
+    # #3b symmetric: changing category WITHOUT attributes is rejected (re-review
+    # follow-up — would otherwise leave stale attributes unvalidated + pollute facets)
+    s, _ = req("PATCH", f"/api/listings/{hid}", {"category_id": "cat-apartments"}, token=seller)
+    chk("change category w/o attributes -> 400", s == 400, f"status={s}")
     # ...and with category_id it still validates (bad enum rejected)
     s, _ = req("PATCH", f"/api/listings/{hid}",
                {"category_id": "cat-cars", "attributes": {"make": "NotAMake", "year": 2016}}, token=seller)
     chk("update attrs bad enum -> 400", s == 400, f"status={s}")
+    # a valid category+attributes change succeeds
+    s, _ = req("PATCH", f"/api/listings/{hid}",
+               {"category_id": "cat-apartments", "attributes": {"deal": "Аренда", "rooms": 2}}, token=seller)
+    chk("valid category+attrs change -> 200", s == 200, f"status={s}")
+    # a PATCH touching neither category nor attributes is unaffected
+    s, _ = req("PATCH", f"/api/listings/{hid}", {"title": "Just a title edit"}, token=seller)
+    chk("title-only PATCH -> 200", s == 200, f"status={s}")
 
     # #1 /api/listings is owner-scoped: a user sees only their OWN listings
     s, b = req("GET", "/api/listings", token=seller)
