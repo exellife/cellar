@@ -411,6 +411,12 @@ if(CELLAR_BUILD_TESTS)
     target_link_libraries(event_sink_test SQLite::SQLite3 Threads::Threads)
     add_test(NAME event_sink COMMAND event_sink_test)
 
+    # JobQueue SQLite-adapter unit test (claim/retry/visibility/recurring; E2.1).
+    add_executable(job_queue_test tests/job_queue_test.c src/core/job_queue_sqlite.c)
+    target_include_directories(job_queue_test PRIVATE src/core)
+    target_link_libraries(job_queue_test SQLite::SQLite3 Threads::Threads)
+    add_test(NAME job_queue COMMAND job_queue_test)
+
     find_program(PYTHON3 python3)
     if(PYTHON3)
         add_test(NAME smoke
