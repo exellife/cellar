@@ -264,5 +264,59 @@ def run_checks(port, db):
     s, r = search("студия")
     chk("deleted listing gone from search", apt_id not in [x["id"] for x in r.get("results", [])], str(titles(r)))
 
+    # ---- A1.4 faceted filtering (fresh category cat-moto for exact counts) ----
+    def mkmoto(title, make, year, cc):
+        s, b = req("POST", "/api/listings",
+                   {"category_id": "cat-moto", "title": title, "price": 200, "city_id": "ci-bishkek",
+                    "attributes": {"make": make, "year": year, "engine_cc": cc}}, token=tok)
+        return s
+    chk("moto seed A", mkmoto("Honda CBR", "Honda", 2020, 600) == 201)
+    mkmoto("Yamaha R3", "Yamaha", 2018, 400)
+    mkmoto("Honda Africa Twin", "Honda", 2021, 1000)
+
+    def facet_search(**kw):
+        s, b = req("POST", "/rpc/search", kw, token=tok)
+        return s, (b or {}).get("result") or {}
+
+    # browse a category (no q) -> all active + facet counts
+    s, r = facet_search(category="cat-moto", sort="newest")
+    chk("browse cat-moto -> 3", r.get("total") == 3, str(r.get("total")))
+    fac = r.get("facets") or {}
+    make_counts = {x["value"]: x["count"] for x in fac.get("make", [])}
+    chk("facet make Honda=2", make_counts.get("Honda") == 2, str(make_counts))
+    chk("facet make Yamaha=1", make_counts.get("Yamaha") == 1, str(make_counts))
+
+    # text/enum facet filter (make=Honda) -> 2
+    s, r = facet_search(category="cat-moto", filters=[{"key": "make", "values": ["Honda"]}])
+    chk("filter make=Honda -> 2", r.get("total") == 2, str(r.get("total")))
+
+    # numeric range filter (year >= 2020) -> 2 (A + C)
+    s, r = facet_search(category="cat-moto", filters=[{"key": "year", "min": 2020}])
+    chk("filter year>=2020 -> 2", r.get("total") == 2, str(r.get("total")))
+
+    # combined: make=Honda AND year>=2021 -> 1 (Africa Twin)
+    s, r = facet_search(category="cat-moto",
+                        filters=[{"key": "make", "values": ["Honda"]}, {"key": "year", "min": 2021}])
+    chk("filter make+year -> 1", r.get("total") == 1, str(r.get("total")))
+    chk("combined result is Africa Twin", titles(r) == ["Honda Africa Twin"], str(titles(r)))
+
+    # OR within a key's values (Honda OR Yamaha) -> all 3
+    s, r = facet_search(category="cat-moto", filters=[{"key": "make", "values": ["Honda", "Yamaha"]}])
+    chk("filter make in (Honda,Yamaha) -> 3", r.get("total") == 3, str(r.get("total")))
+
+    # facet counts reflect the BASE set (not narrowed by the make selection)
+    s, r = facet_search(category="cat-moto", filters=[{"key": "make", "values": ["Yamaha"]}])
+    chk("narrowed result -> 1", r.get("total") == 1, str(r.get("total")))
+    mc = {x["value"]: x["count"] for x in (r.get("facets") or {}).get("make", [])}
+    chk("sidebar still shows Honda=2", mc.get("Honda") == 2, str(mc))
+
+    # sort price_asc doesn't error and returns the set
+    s, r = facet_search(category="cat-moto", sort="price_asc")
+    chk("sort price_asc -> 3", s == 200 and r.get("total") == 3, f"status={s} {r.get('total')}")
+
+    # text query + facet together
+    s, r = facet_search(q="honda", category="cat-moto", filters=[{"key": "year", "min": 2021}])
+    chk("q='honda' + year>=2021 -> 1", r.get("total") == 1, str(r.get("total")))
+
 if __name__ == "__main__":
     sys.exit(main())

@@ -217,12 +217,49 @@ local function fts_query(q)
   return table.concat(terms, ' ')
 end
 
--- POST /rpc/search { q, category?, city?, limit?, offset? } → ranked active
--- listings matching the text query, with optional category/city narrowing.
+-- A1.4: append the user's facet selections as EXISTS conditions (AND across
+-- keys; OR within a key's value list). `filters` is an array proxy of
+-- {key, values:[...]} (text/enum) or {key, min?, max?} (numeric range). Iterate
+-- by index (proxy objects have no enumerable keys). Uses the `ff` alias so it
+-- never collides with the facet-count query's `f`.
+local function add_facet_conds(filters, conds, binds)
+  if filters == nil then return end
+  local i = 1
+  while true do
+    local f = filters[i]; if f == nil then break end
+    i = i + 1
+    local key = f.key
+    if type(key) ~= 'string' or key == '' then goto continue end
+
+    local vals = f.values
+    if vals ~= nil then                         -- text/enum: text_value IN (...)
+      local ph, vb, j = {}, {}, 1
+      while true do local v = vals[j]; if v == nil then break end; ph[#ph+1] = '?'; vb[#vb+1] = tostring(v); j = j + 1 end
+      if #ph > 0 then
+        conds[#conds+1] = 'EXISTS(SELECT 1 FROM listing_facet ff WHERE ff.listing_id=l.id AND ff.key=? AND ff.text_value IN (' .. table.concat(ph, ',') .. '))'
+        binds[#binds+1] = key
+        for _, x in ipairs(vb) do binds[#binds+1] = x end
+      end
+    else                                        -- numeric range: num_value BETWEEN
+      local mn, mx = tonumber(f.min), tonumber(f.max)
+      if mn or mx then
+        local rc, rb = { 'ff.listing_id=l.id', 'ff.key=?' }, { key }
+        if mn then rc[#rc+1] = 'ff.num_value >= ?'; rb[#rb+1] = mn end
+        if mx then rc[#rc+1] = 'ff.num_value <= ?'; rb[#rb+1] = mx end
+        conds[#conds+1] = 'EXISTS(SELECT 1 FROM listing_facet ff WHERE ' .. table.concat(rc, ' AND ') .. ')'
+        for _, x in ipairs(rb) do binds[#binds+1] = x end
+      end
+    end
+    ::continue::
+  end
+end
+
+-- POST /rpc/search — the real classifieds query: FTS candidate ids ∩ facet
+-- lookups ∩ base filters (status/category/city), ranked + paged, plus sidebar
+-- facet counts. `q` optional (empty q ⇒ browse). See the contract above.
 local function search(args)
   args = args or {}
   local match = fts_query(args.q)
-  if match == '' then return { results = {}, total = 0, limit = SEARCH_LIMIT_DEF, offset = 0 } end
 
   local limit = tonumber(args.limit) or SEARCH_LIMIT_DEF
   if limit < 1 then limit = SEARCH_LIMIT_DEF end
@@ -230,29 +267,66 @@ local function search(args)
   local offset = tonumber(args.offset) or 0
   if offset < 0 then offset = 0 end
 
-  -- shared WHERE: text match + active, plus optional category/city. Binds are
-  -- assembled in lockstep so the count and page queries stay identical.
-  local conds  = { 'listings_fts MATCH ?', "l.status = 'active'" }
-  local binds  = { match }
+  -- base: status + (q) + category + city. binds assembled in '?'-order.
+  local conds, binds = { "l.status = 'active'" }, {}
+  local from
+  if match ~= '' then
+    from = 'listings_fts JOIN listings l ON l.rowid = listings_fts.rowid'
+    conds[#conds+1] = 'listings_fts MATCH ?'; binds[#binds+1] = match
+  else
+    from = 'listings l'
+  end
   if args.category and args.category ~= '' then conds[#conds+1] = 'l.category_id = ?'; binds[#binds+1] = args.category end
   if args.city and args.city ~= '' then conds[#conds+1] = 'l.city_id = ?'; binds[#binds+1] = args.city end
+
+  -- snapshot the base (facet counts use it WITHOUT the user's facet selections,
+  -- so the sidebar still shows the other available refinements)
+  local base_from, base_where, base_binds = from, table.concat(conds, ' AND '), {}
+  for i = 1, #binds do base_binds[i] = binds[i] end
+
+  add_facet_conds(args.filters, conds, binds)
   local where = table.concat(conds, ' AND ')
 
-  local total = cellar.query(
-    'SELECT count(*) AS n FROM listings_fts JOIN listings l ON l.rowid = listings_fts.rowid WHERE ' .. where,
-    binds)[1].n
+  -- ordering: relevance only with a query; else newest. price sorts push NULLs last.
+  local sort, order = args.sort, nil
+  if     sort == 'price_asc'  then order = 'l.price IS NULL, l.price ASC'
+  elseif sort == 'price_desc' then order = 'l.price IS NULL, l.price DESC'
+  elseif sort == 'newest'     then order = 'l.created_at DESC'
+  elseif match ~= ''          then order = 'bm25(listings_fts)'
+  else                             order = 'l.created_at DESC' end
 
-  -- page query: same binds + limit/offset; bm25 ascending = most relevant first
+  local total = cellar.query('SELECT count(*) AS n FROM ' .. from .. ' WHERE ' .. where, binds)[1].n
+
   local pbinds = {}
   for i = 1, #binds do pbinds[i] = binds[i] end
   pbinds[#pbinds+1] = limit; pbinds[#pbinds+1] = offset
   local rows = cellar.query(
-    'SELECT l.id, l.title, l.price, l.currency, l.category_id, l.city_id, l.photos, l.created_at, ' ..
-    'bm25(listings_fts) AS rank ' ..
-    'FROM listings_fts JOIN listings l ON l.rowid = listings_fts.rowid ' ..
-    'WHERE ' .. where .. ' ORDER BY rank LIMIT ? OFFSET ?', pbinds)
+    'SELECT l.id, l.title, l.price, l.currency, l.category_id, l.city_id, l.photos, l.created_at ' ..
+    'FROM ' .. from .. ' WHERE ' .. where .. ' ORDER BY ' .. order .. ' LIMIT ? OFFSET ?', pbinds)
 
-  return { results = rows, total = total, limit = limit, offset = offset }
+  -- sidebar facet counts (per category's filterable attrs, over the base set)
+  local facets = nil
+  if args.category and args.category ~= '' then
+    local keys = cellar.query('SELECT key FROM category_attribute WHERE category_id = ? AND filterable = 1', { args.category })
+    if #keys > 0 then
+      local kph, cbinds = {}, {}
+      for i = 1, #base_binds do cbinds[i] = base_binds[i] end
+      for _, r in ipairs(keys) do kph[#kph+1] = '?'; cbinds[#cbinds+1] = r.key end
+      local crows = cellar.query(
+        'SELECT f.key AS k, f.text_value AS tv, f.num_value AS nv, count(*) AS n ' ..
+        'FROM ' .. base_from .. ' JOIN listing_facet f ON f.listing_id = l.id ' ..
+        'WHERE ' .. base_where .. ' AND f.key IN (' .. table.concat(kph, ',') .. ') ' ..
+        'GROUP BY f.key, f.text_value, f.num_value ORDER BY f.key, n DESC', cbinds)
+      facets = {}
+      for _, r in ipairs(crows) do
+        local v = r.tv; if v == nil then v = r.nv end
+        local lst = facets[r.k]; if not lst then lst = {}; facets[r.k] = lst end
+        lst[#lst+1] = { value = v, count = r.n }
+      end
+    end
+  end
+
+  return { results = rows, total = total, limit = limit, offset = offset, facets = facets }
 end
 
 -- ── repair / ops primitive ──────────────────────────────────────────────────
