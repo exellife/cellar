@@ -245,7 +245,57 @@ A classifieds platform is **one app, one DB** (all users/listings/events in one 
 multi-app-per-SQLite model → a single-app deployment: ~5k writes/s single-writer, ~57k reads/s.
 For Kyrgyzstan scale (≈6.5M people; realistically thousands concurrent early) this is **comfortably
 enough** — the constraint is the missing primitives above, not throughput. Scale-out is a later
-problem.
+problem (see next section for the *international* path).
+
+## Scaling & internationalization strategy
+
+> Principle: **don't build the large-scale version — build the *seams* so we can swap into it.**
+> Cheap insurance (discipline), not speculative infrastructure.
+
+**North star — shard by country, not "make one system infinite."** International expansion
+(KZ, UZ, …) and scale point to the *same* answer: each country = its own catalog/deployment.
+
+- Turns "infinite scale" into **"more SQLite-sized regions"** — each country stays in the
+  comfortable single-box envelope; scale by *adding regions*, not by scaling one DB forever.
+- It's **cellar's natural shape** (multi-app, multi-DB, per-tenant).
+- **Cross-region queries are rare** (a Bishkek buyer won't browse Almaty's couches) → sharding by
+  region is cheap precisely because we almost never need cross-shard joins.
+- Matches reality anyway: per-country **language** (ky/kk/uz/ru), **currency** (KGS/KZT/UZS), geo
+  tree, and **data-residency law** (KZ/UZ may require local data).
+- → "Large scale" becomes an *operational* story (more regions), not a re-architecture. A thin (or
+  no) global layer handles the rare cross-border need; user identity is per-region (global SSO later
+  if needed).
+
+**Bake in NOW (painful to retrofit, cheap today):**
+1. **Region/country tag on every entity** — split by country later with no migration.
+2. **Global IDs (UUID / region-prefixed), not per-DB autoincrement** — autoincrement collides the
+   moment you shard or merge. The subtle one people regret.
+3. **Statelessness** — app nodes stateless; session/cache/realtime state must be *externalizable*
+   (even if v1 keeps it in-process). The gate to horizontal scale.
+4. **Multi-currency + locale in the model from the start** (needed for international regardless).
+5. **Go through cellar's data/API seams, not raw SQL in hooks** — so the storage engine *can* change.
+
+**Component swap-paths — the §5 gaps ARE the seams.** Build each primitive as an interface with a
+simple embedded default; the scale-out adapter is then a config + adapter, not a rewrite:
+
+| Component | Embedded default (now) | Scale-out adapter (later) |
+|---|---|---|
+| Object storage | local disk | S3-compatible (R2/MinIO) + CDN |
+| Search | SQLite FTS5 | Meilisearch / Typesense / OpenSearch |
+| Jobs / queue | SQLite-backed table | Redis / NATS |
+| Cache + session | in-process / SQLite | Redis (shared across nodes) |
+| Realtime pub/sub | in-process | Redis pub/sub / message bus (cross-node WS) |
+| Events / recs | SQL co-occurrence | event stream → warehouse → model |
+| Email / SMS / push | provider SDK | (already external — config only) |
+| **Catalog DB** | **SQLite per region** | **Postgres** *(only for a single hot region)* |
+
+**The one sticky seam:** primary store **SQLite → Postgres** (SQL dialect / txns / query builder
+couple tightly; cellar is SQLite-shaped). Region-sharding is exactly what lets us *avoid* it — only
+a *single country* outgrowing a box would force it, far away and isolated to that region.
+
+**Discipline:** build the *interfaces* + the cheap structural insurance now; do **not** build the
+scale-out adapters until a *measured* need (same rule as the tunnel's parked multi-core work).
+Over-abstraction is its own failure mode.
 
 ## 9. Parking lot / open questions
 
