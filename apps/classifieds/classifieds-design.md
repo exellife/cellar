@@ -314,6 +314,36 @@ a *single country* outgrowing a box would force it, far away and isolated to tha
 scale-out adapters until a *measured* need (same rule as the tunnel's parked multi-core work).
 Over-abstraction is its own failure mode.
 
+### Write scaling — the real SQLite constraint (not RAM/file size)
+
+SQLite reads scale fine well past RAM (B-tree working-set, not whole-file, in cache; graceful on NVMe —
+~57k reads/s measured). The actual ceiling is the **single writer** per DB file (~5k write-txns/s with
+FTS + hooks; WAL + `synchronous=NORMAL` so commits don't each fsync). Everything writing to one
+`data.db` shares that one lock. Write volume, highest first:
+
+1. **Events** (`listing_viewed` on *every* view, `search`, …) — the firehose, and **append-only /
+   offloadable**.
+2. **Chat** — #2: each message is ~3 write-txns (message + `conversation.last_message_at` bump +
+   `notification`). Lower volume than views (people view 100s of listings per message), but amplified.
+3. Posts / favorites / jobs — trickle.
+
+Fixes, cheapest first — **all are adapter/structural changes, no engine refactor** (the seams exist):
+
+- **Events → batch, then split.** Buffer emits in memory + flush every N / ~200ms in one txn (1000
+  events → 1 fsync; ~1000× fewer write-txns) — stays in SQLite, zero deps. If still hot, point the
+  **`EventSink` port** at its own DB file, then an append-log / stream. *If you ever go embedded-KV for
+  the firehose, use **RocksDB** (LSM, write-optimized) — **not LMDB**, which is single-writer +
+  read-optimized and buys nothing for writes.* Events are a queue, not the source of truth: a rollup
+  job aggregates them back into SQLite (the queryable counts recs/dashboards read).
+- **Chat → separate, don't KV it.** Messages need relational queries + realtime `owner_via` scoping +
+  policy, so they can't move to a KV store. The scale move is **separation**: chat's tables in their own
+  SQLite *file* (own write lock), then chat as its own **cellar app/bundle** — the multi-app/multi-DB
+  architecture makes this natural; region-sharding already bounds it. Within SQLite, trim the
+  `after(message)` amplification (batch the `last_message_at` bump / coalesce rapid notifications).
+
+Order of operations when write pressure shows: **batch events → split events store → split chat DB.**
+None needed at KG/MVP volume (both fit comfortably under the single-writer budget); measured-need only.
+
 ## Build phases / roadmap
 
 > Ordering: **MVP loop first → infra where it unblocks → defer optional/monetization/scale.**
