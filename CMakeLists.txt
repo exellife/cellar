@@ -443,6 +443,11 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME classifieds_worker
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/apps/classifieds/test_worker.py
                     $<TARGET_FILE:cellar>)
+        # classifieds progressive-trust velocity limits (A2.5): a new account's
+        # post cap is enforced; admins are exempt.
+        add_test(NAME classifieds_velocity
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/apps/classifieds/test_velocity.py
+                    $<TARGET_FILE:cellar>)
         # Mailer (no DB): send via the send-test-mail CLI to a local mock SMTP sink
         # and assert the captured message is well-formed RFC 5322.
         add_test(NAME mailer

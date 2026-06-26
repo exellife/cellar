@@ -21,6 +21,10 @@
 local EXPIRY_DAYS = 30
 local MAX_PHOTOS  = 12
 
+-- A2.5 progressive-trust velocity limits (base, scaled by trust). Env-tunable.
+local POST_LIMIT_24H   = tonumber(os.getenv('CLS_POST_LIMIT') or '') or 10
+local CONTACT_LIMIT_1H = tonumber(os.getenv('CLS_CONTACT_LIMIT') or '') or 25
+
 local function now_iso()        return os.date('!%Y-%m-%dT%H:%M:%SZ', os.time()) end
 local function iso_in(days)     return os.date('!%Y-%m-%dT%H:%M:%SZ', os.time() + days * 86400) end
 
@@ -128,11 +132,42 @@ local function valid_price(p)
   return type(p) == 'number' and p >= 0 and p == math.floor(p)
 end
 
+-- A2.5: trust multiplier from account age + email-verified (read from the
+-- engine's cel_users — same db). Brand-new + unverified = 1×; some trust = 3×;
+-- established (verified + aged ≥ 7d) = 10×. Higher trust → higher velocity caps.
+local function trust_mult(user_id)
+  local u = cellar.query('SELECT created_at, email_verified_at FROM cel_users WHERE id = ?', { user_id })[1]
+  if not u then return 1 end
+  local age_days = (os.time() - (tonumber(u.created_at) or os.time())) / 86400
+  local verified = u.email_verified_at ~= nil
+  if verified and age_days >= 7 then return 10 end
+  if verified or age_days >= 1  then return 3 end
+  return 1
+end
+
+-- posts in the last 24h vs the trust-scaled cap (admins exempt).
+local function over_post_limit(who)
+  if who.role == 'admin' then return false end
+  local n = cellar.query("SELECT count(*) AS n FROM listings WHERE seller_id = ? AND created_at > ?",
+                         { who.user_id, iso_in(-1) })[1].n
+  return n >= POST_LIMIT_24H * trust_mult(who.user_id)
+end
+
+-- contacts initiated (chat_started + reveals) in the last hour vs the cap.
+local function over_contact_limit(who)
+  if who.role == 'admin' then return false end
+  local since = os.date('!%Y-%m-%dT%H:%M:%SZ', os.time() - 3600)
+  local n = cellar.query("SELECT count(*) AS n FROM contact_event WHERE actor_id = ? AND created_at > ?",
+                         { who.user_id, since })[1].n
+  return n >= CONTACT_LIMIT_1H * trust_mult(who.user_id)
+end
+
 function before(op, tbl, input, who)
   if tbl == 'message' then return before_message(op, input, who) end
   if tbl ~= 'listings' then return true end
 
   if op == 'create' then
+    if over_post_limit(who) then return false, 'daily posting limit reached — try again later' end
     input.seller_id  = who.user_id            -- server-owned (anti-spoof); id via column DEFAULT
     input.created_at = now_iso()              -- server-owned (drives the "newest" sort)
     input.updated_at = input.created_at
@@ -549,6 +584,7 @@ end
 -- reads + realtime subscribe.
 local function start_conversation(args, who)
   if not (who and who.authenticated) then return nil end
+  if over_contact_limit(who) then return nil end     -- A2.5 velocity gate (anti spam-DM)
   local lid = args and args.listing_id
   if not lid then return nil end
   local l = cellar.query('SELECT seller_id, status, allow_chat FROM listings WHERE id = ?', { lid })[1]
@@ -608,6 +644,16 @@ local function renew_listing(args, who)
   cellar.exec("UPDATE listings SET status='active', expires_at=?, updated_at=? WHERE id=?",
               { iso_in(EXPIRY_DAYS), now_iso(), lid })
   return { listing_id = lid, expires_at = iso_in(EXPIRY_DAYS) }
+end
+
+-- A2.5: what the UI shows ("you can post N more today").
+local function my_limits(args, who)
+  if not (who and who.authenticated) then return nil end
+  local mult = trust_mult(who.user_id)
+  local used = cellar.query("SELECT count(*) AS n FROM listings WHERE seller_id = ? AND created_at > ?",
+                            { who.user_id, iso_in(-1) })[1].n
+  return { trust = mult, post_limit_24h = POST_LIMIT_24H * mult, posts_used_24h = used,
+           contact_limit_1h = CONTACT_LIMIT_1H * mult }
 end
 
 -- ── A2.3: saved searches + the matcher ──────────────────────────────────────
@@ -780,6 +826,9 @@ function rpc(name, args, who)
   end
   if name == 'delete_saved_search' then
     return delete_saved_search(args, who)
+  end
+  if name == 'my_limits' then
+    return my_limits(args, who)
   end
   if name == 'rebuild_facets' then
     if who.role ~= 'admin' then return nil end
