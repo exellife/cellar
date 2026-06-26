@@ -55,9 +55,10 @@
   *(ctest `media`, 19 checks, ASan-clean. Generic engine endpoint — no domain leak.)*
 
 ### Track A
-- ◻ **A1.1** Listing CRUD (create/edit/delete/get) via cellar CRUD + hooks; attach photos.
-- ◻ **A1.2** Metadata-driven **post-form contract** (API returns a category's attr schema for the form).
-- ◻ **A1.3** **Search: FTS5** over listings — tokenizer **`unicode61` + `trigram`** (ru/ky); sync triggers.
+- ✓ **A1.1** Listing CRUD via cellar CRUD + hooks; **photos** JSON array (media ids, server-validated).
+- ✓ **A1.2** Metadata-driven **post-form contract** — rpc `category_form` (category + breadcrumb + attrs).
+- ✓ **A1.3** **Search: FTS5** over listings — `unicode61` (Cyrillic case-fold + prefix, bm25), sync
+  triggers, rpc `search` (injection-safe). *(trigram substring = noted later enhancement.)*
 - ◻ **A1.4** **Faceted filtering** — *design the **data/search port** here (the sticky seam)*; query =
   base filter ∩ `listing_facet` lookups ∩ FTS ids; facet counts (cacheable).
 - ◻ **A1.5** Browse by category + geo filter; listing detail page (API).
