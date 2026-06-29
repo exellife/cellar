@@ -100,6 +100,22 @@ def main():
     s, _ = req("POST", "/auth/password/forgot", {"email": "nobody-here@test.local"})
     chk("forgot unknown email -> 200", s == 200, f"status={s}")
 
+    # ---- in-session change-password (POST /auth/password/change, no email) ----
+    # the account is at NEW_PW now; change it from within an authenticated session.
+    sess = (login(NEW_PW)[1] or {}).get("token")
+    chk("session for change-password", bool(sess))
+    s, _ = req("POST", "/auth/password/change",
+               {"current_password": "wrong-current", "new_password": "x-changed-99"}, token=sess)
+    chk("change: wrong current -> 401", s == 401, f"status={s}")
+    s, _ = req("POST", "/auth/password/change",
+               {"current_password": NEW_PW, "new_password": "changed-pw-7"}, token=sess)
+    chk("change: correct current -> 200", s == 200, f"status={s}")
+    chk("change: new password logs in", login("changed-pw-7")[0] == 200)
+    chk("change: old (reset) password rejected", login(NEW_PW)[0] == 401)
+    s, _ = req("POST", "/auth/password/change",
+               {"current_password": "changed-pw-7", "new_password": "y-changed-88"})
+    chk("change: unauthenticated -> 401", s == 401, f"status={s}")
+
     print(f"\n{'PASS' if fail == 0 else 'FAIL'}  ({ok} ok, {fail} failed)")
     return 1 if fail else 0
 

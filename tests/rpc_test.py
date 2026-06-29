@@ -73,6 +73,23 @@ def main():
                {"name": "Dup", "sku": "HOOK-1", "price": 1}, token=admin)
     chk("duplicate sku in hook -> 400", s == 400, f"status={s}")
 
+    # ---- cellar.create_user primitive: a hook mints a login account ----
+    s, b = req("POST", "/rpc/create_user",
+               {"email": "hired@cellar.dev", "password": "hired-pw1", "role": "editor"}, token=admin)
+    res = (b or {}).get("result", {})
+    chk("rpc create_user -> new id", s == 200 and bool(res.get("id")) and not res.get("error"), str(b))
+    chk("minted account can log in", bool(login(("hired@cellar.dev", "hired-pw1"))), "")
+    # duplicate email surfaces as an error, not a crash
+    s, b = req("POST", "/rpc/create_user",
+               {"email": "hired@cellar.dev", "password": "another-pw", "role": "editor"}, token=admin)
+    chk("create_user duplicate -> error", s == 200 and "already registered" in ((b or {}).get("result", {}).get("error") or ""),
+        str(b))
+    # the escalation boundary holds: platform_admin can't be minted from a hook
+    s, b = req("POST", "/rpc/create_user",
+               {"email": "evil@cellar.dev", "password": "evil-pw12", "role": "platform_admin"}, token=admin)
+    chk("create_user platform_admin refused", s == 200 and "platform_admin" in ((b or {}).get("result", {}).get("error") or ""),
+        str(b))
+
     # ---- unknown handler + faulting handler ----
     s, b = req("POST", "/rpc/nope", token=admin)
     chk("unknown rpc -> 400 with reason", s == 400 and "unknown rpc" in (b or {}).get("message", ""),

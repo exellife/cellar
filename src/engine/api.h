@@ -75,6 +75,11 @@ cel_api_result_t cel_api_oauth(const cJSON *req);
 cel_api_result_t cel_api_password_forgot(const cJSON *req);
 cel_api_result_t cel_api_password_reset(const cJSON *req);
 
+/* Authenticated in-session password change (Bearer): { current_password,
+ * new_password } -> 200 / 401 (unauthenticated, or current password wrong) /
+ * 400 (weak new password). Sessions are left intact. */
+cel_api_result_t cel_api_password_change(const cel_identity_t *who, const cJSON *req);
+
 /* Email verification (emailed single-use token; sent on register). verify redeems
  * the token; resend re-sends to the authenticated caller (idempotent).
  *   verify-email        : { token }  -> 200 / 400

@@ -407,6 +407,17 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         return st;
     }
 
+    /* POST /auth/password/change — authenticated in-session password change (Bearer) */
+    if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/password/change")) {
+        cel_identity_t who;
+        identity_from_request(req, &who);
+        cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
+        if (!body) return send_error(res, 400, "invalid JSON");
+        int st = send_api(res, cel_api_password_change(&who, body));
+        cJSON_Delete(body);
+        return st;
+    }
+
     /* POST /rpc/<fn> — call a whitelisted Postgres function (body = args object) */
     if (portico_req_method_is(req, "POST") && req->path_len > 5 && memcmp(req->path, "/rpc/", 5) == 0) {
         cel_identity_t who;

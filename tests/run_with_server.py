@@ -100,6 +100,11 @@ def make_app_db():
             "                { args.name, args.sku, args.price })\n"
             "    return { ok = true }\n"
             "  end\n"
+            "  if name == 'create_user' then\n"
+            "    local id, err = cellar.create_user(args.email, args.password, args.role)\n"
+            "    if not id then return { error = err } end\n"
+            "    return { id = id }\n"
+            "  end\n"
             "  if name == 'boom' then error('intentional hook fault') end\n"
             "  return nil, 'unknown rpc: ' .. name\n"
             "end\n")

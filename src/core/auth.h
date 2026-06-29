@@ -108,6 +108,14 @@ int cel_auth_create_password_reset(const char *email, char *out_token, size_t to
  * validates password length first. */
 int cel_auth_perform_password_reset(const char *token, const char *new_password);
 
+/* In-session "change password": verify `current_password` against the user's
+ * 'password' identity, then set `new_password`. Keyed by `user_id` (the
+ * authenticated caller). Sessions are left intact (the caller stays signed in).
+ * Returns CEL_AUTH_OK, CEL_AUTH_INVALID (wrong current password / no password
+ * identity), or CEL_AUTH_DBERR. The caller validates new-password length first. */
+int cel_auth_change_password(const char *user_id, const char *current_password,
+                             const char *new_password);
+
 /* Create a single-use email-verification token for `user_id`. On success writes
  * the raw token (>= 65 bytes) and the account email (for the caller to send to),
  * returning CEL_AUTH_OK. Returns CEL_AUTH_CONFLICT if the email is already

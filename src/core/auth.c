@@ -605,6 +605,55 @@ out:
     return rc;
 }
 
+int cel_auth_change_password(const char *user_id, const char *current_password,
+                             const char *new_password) {
+    if (!user_id || !user_id[0] || !current_password || !new_password)
+        return CEL_AUTH_INVALID;
+    char hash[256];
+    if (cel_password_hash(new_password, hash, sizeof hash) != 0) return CEL_AUTH_DBERR;
+
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
+    int rc = CEL_AUTH_DBERR;
+    bool in_txn = false;
+
+    if (!tx(c, "BEGIN")) goto out;
+    in_txn = true;
+
+    /* Read the current password secret for this user, then verify it (constant-time
+     * via cel_password_verify). No password identity → treat as invalid. */
+    {
+        char secret[256] = {0};
+        const char *p[1] = { user_id };
+        int f = cel_db_one_text(c,
+            "SELECT secret FROM cel_identities WHERE user_id=?1 AND provider='password'",
+            p, 1, secret, sizeof secret);
+        if (f != 1 || !secret[0] || !cel_password_verify(secret, current_password)) {
+            rc = CEL_AUTH_INVALID; goto out;
+        }
+    }
+    /* Set the new secret. */
+    {
+        const char *up[2] = { hash, user_id };
+        if (!cel_db_exec(c, "UPDATE cel_identities SET secret=?1 "
+                       "WHERE user_id=?2 AND provider='password'", up, 2) || sqlite3_changes(c) != 1) {
+            rc = CEL_AUTH_INVALID; goto out;
+        }
+    }
+
+    if (!tx(c, "COMMIT")) goto out;
+    in_txn = false;
+    rc = CEL_AUTH_OK;
+out:
+    if (in_txn) tx(c, "ROLLBACK");
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
+    return rc;
+}
+
 #define VERIFY_TTL_SECONDS 86400   /* an email-verification link is good for 24h */
 
 int cel_auth_create_email_verification(const char *user_id,

@@ -151,6 +151,35 @@ void cel_hook_rt_emit(const char *table, const char *op, const char *row_json) {
     cJSON_Delete(row);
 }
 
+/* Account creation is wired by the engine at boot (cel_hooks_set_user_creator),
+ * so this file stays free of the auth layer (and its libsodium/db deps) — the
+ * same decoupling as the realtime filter. NULL until wired (or in unit tests). */
+static cel_hook_create_user_fn g_create_user = NULL;
+void cel_hooks_set_user_creator(cel_hook_create_user_fn fn) { g_create_user = fn; }
+
+/* Create a login account (a 'password' identity) in the current app, exposed to
+ * hooks as cellar.create_user. The bundle decides WHO may call it and for which
+ * target role (e.g. an rpc that lets a manager mint clerks only) — the engine just
+ * provides the primitive. Refuses platform_admin (the out-of-band escalation
+ * boundary, mirroring POST /auth/users). Returns 0 + the new user id, or -1 + err. */
+int cel_hook_create_user(const char *email, const char *password, const char *role,
+                         char *out_id, int out_id_size, char *err, int errlen) {
+    if (err && errlen) err[0] = '\0';
+    if (!email || !email[0] || !password || !password[0] || !role || !role[0]) {
+        if (err && errlen) snprintf(err, errlen, "email, password and role are required");
+        return -1;
+    }
+    if (!strcmp(role, "platform_admin")) {
+        if (err && errlen) snprintf(err, errlen, "platform_admin cannot be created from a hook");
+        return -1;
+    }
+    if (!g_create_user) {
+        if (err && errlen) snprintf(err, errlen, "user creation is not available in this context");
+        return -1;
+    }
+    return g_create_user(email, password, role, out_id, out_id_size, err, errlen);
+}
+
 /* ---- the prelude: FFI cdef + `cellar` sugar + per-hook trampolines ---------
  * Loaded into every state before its hooks.lua. The trampolines box the raw
  * cel_val_t* (passed from C as a lightuserdata) into table-like proxies, call the
@@ -184,6 +213,7 @@ static const char *PRELUDE =
 "  void       cel_hook_emit (const char*, const char*, const char*, const char*);\n"
 "  long long  cel_hook_enqueue(const char*, const char*, long long, long long);\n"
 "  void       cel_hook_rt_emit(const char*, const char*, const char*);\n"
+"  int        cel_hook_create_user(const char*, const char*, const char*, char*, int, char*, int);\n"
 "]]\n"
 "local C = ffi.C\n"
 "local NUL, BOOL, NUM, STR, OBJ, ARR = 0,1,2,3,4,5\n"
@@ -244,6 +274,15 @@ static const char *PRELUDE =
 "-- Realtime: push a server-created row (e.g. a notification) to live subscribers.\n"
 "function cellar.rt_emit(tbl, op, row_json)\n"
 "  C.cel_hook_rt_emit(tostring(tbl), tostring(op), tostring(row_json))\n"
+"end\n"
+"-- Account creation: cellar.create_user(email, password, role) -> id, or nil+err.\n"
+"-- The bundle's rpc decides who may call this and which role; the engine refuses\n"
+"-- platform_admin. Pair it with an INSERT into your own roster table if needed.\n"
+"function cellar.create_user(email, password, role)\n"
+"  local idbuf, errbuf = ffi.new('char[64]'), ffi.new('char[256]')\n"
+"  local rc = C.cel_hook_create_user(tostring(email), tostring(password), tostring(role), idbuf, 64, errbuf, 256)\n"
+"  if rc ~= 0 then return nil, ffi.string(errbuf) end\n"
+"  return ffi.string(idbuf)\n"
 "end\n"
 "\n"
 "-- deep copy a result handle into plain Lua values (the handle is C-owned and\n"

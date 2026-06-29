@@ -29,6 +29,7 @@
 #include "engine/policy.h"
 #include "engine/api.h"   /* cel_rpc_audit_security_definer, cel_api_rt_recheck_member */
 #include "engine/cel_apps.h"
+#include "engine/cel_hooks.h"
 #include "engine/cel_control.h"
 #include "engine/cel_sync.h"
 #include <sqlite3.h>
@@ -799,6 +800,17 @@ static int run_sync_gc(int argc, char **argv) {
     return 0;
 }
 
+/* Adapter wiring the hook primitive cellar.create_user to the auth layer — kept
+ * here (not in cel_hooks.c) so the hook dispatcher stays free of the auth/crypto
+ * deps. Maps CEL_AUTH_* to the hook contract (0 / -1 + err). */
+static int hook_create_user_adapter(const char *email, const char *password, const char *role,
+                                    char *out_id, int out_id_size, char *err, int errlen) {
+    int rc = cel_auth_create_user(email, password, role, out_id, (size_t)out_id_size);
+    if (rc == CEL_AUTH_CONFLICT) { snprintf(err, (size_t)errlen, "email already registered"); return -1; }
+    if (rc != CEL_AUTH_OK)       { snprintf(err, (size_t)errlen, "could not create user");    return -1; }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   /* line-buffer logs even when redirected */
 
@@ -852,6 +864,7 @@ int main(int argc, char **argv) {
         logger_shutdown();
         return 1;
     }
+    cel_hooks_set_user_creator(hook_create_user_adapter);   /* wire cellar.create_user → auth */
     cel_metrics_init(CEL_VERSION);            /* /metrics registry: start time + version */
     cel_metrics_set_gauges(metrics_gauges);   /* live gauges sampled at scrape time */
     /* Opt-in session cache: CEL_SESSION_CACHE_TTL>0 skips the per-request auth DB

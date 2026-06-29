@@ -71,6 +71,7 @@ Base URL is the app's origin. Every authenticated request carries
 |---|---|---|
 | `POST /auth/login` | `{email, password}` | `{token, user:{id,email,role,…}}` — `token` is a 64-char bearer |
 | `POST /auth/register` | `{email, password, role?}` | `202` (self-service signup; gated by policy) |
+| `POST /auth/password/change` | `{current_password, new_password}` (Bearer) | `200` — in-session change; `401` if the current password is wrong. No email round-trip; the session stays valid. |
 
 ```js
 const r = await fetch("/auth/login", {
@@ -87,8 +88,26 @@ client-side; the session expires by TTL (operators can force-revoke server-side)
 
 Also available when the app enables them: `POST /auth/oauth` (OIDC sign-in),
 `POST /auth/password/forgot` + `/auth/password/reset`, `POST /auth/verify-email`,
-and the `POST /auth/mfa/*` (TOTP) flow. `POST /auth/users` (Bearer, admin) creates
-users out-of-band.
+and the `POST /auth/mfa/*` (TOTP) flow. `POST /auth/users` (Bearer, **superuser**)
+creates users out-of-band.
+
+**Letting a non-superuser role create accounts** (e.g. a `manager` onboarding a
+`clerk`): `POST /auth/users` is superuser-only, so do it from a hook instead. The
+`cellar.create_user(email, password, role) → id, err` Lua primitive mints a login
+(a password identity) and returns the new user id; your `hooks.lua` `rpc` enforces
+who-may-create-whom. The engine refuses `platform_admin`; everything else is the
+bundle's policy. Example — a manager mints clerks only, then writes the roster row:
+
+```lua
+if name == 'create_clerk' then
+  if who.role ~= 'manager' and who.role ~= 'admin' then return nil, 'forbidden' end
+  local id, err = cellar.create_user(args.email, args.password, 'clerk')  -- role forced
+  if not id then return nil, err end
+  cellar.exec('INSERT INTO staff_profiles(id, email, role) VALUES (?,?,?)',
+              { id, args.email, 'clerk' })
+  return { id = id }
+end
+```
 
 ### Reading data — `GET /api/<table>`
 

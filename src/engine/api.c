@@ -1568,6 +1568,27 @@ cel_api_result_t cel_api_password_reset(const cJSON *req) {
     return r;
 }
 
+cel_api_result_t cel_api_password_change(const cel_identity_t *who, const cJSON *req) {
+    if (!who->authenticated) return result_error(401, "authentication required");
+    const cJSON *cur = cJSON_GetObjectItemCaseSensitive(req, "current_password");
+    const cJSON *nw  = cJSON_GetObjectItemCaseSensitive(req, "new_password");
+    if (!cJSON_IsString(cur) || !cJSON_IsString(nw))
+        return result_error(400, "current_password and new_password required");
+    size_t nlen = strlen(nw->valuestring);
+    if (nlen < MIN_PASSWORD_LEN) return result_error(400, "password too short (min 8 characters)");
+    if (nlen > MAX_PASSWORD_LEN) return result_error(400, "password too long (max 128 characters)");
+
+    int rc = cel_auth_change_password(who->user_id, cur->valuestring, nw->valuestring);
+    if (rc == CEL_AUTH_INVALID) return result_error(401, "current password is incorrect");
+    if (rc != CEL_AUTH_OK)      return result_error(500, "server error");
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "status", "ok");
+    cJSON_AddStringToObject(o, "message", "password updated");
+    cel_api_result_t r = { o, 200 };
+    return r;
+}
+
 cel_api_result_t cel_api_oauth(const cJSON *req) {
     const cJSON *provider = cJSON_GetObjectItemCaseSensitive(req, "provider");
     const cJSON *token    = cJSON_GetObjectItemCaseSensitive(req, "id_token");

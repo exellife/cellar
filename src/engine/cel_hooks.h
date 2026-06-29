@@ -42,6 +42,16 @@ void       cel_hook_emit (const char *type, const char *actor, const char *subje
 long long  cel_hook_enqueue(const char *type, const char *payload, long long run_at, long long repeat_every);
 /* Realtime publish for a server-created row (e.g. a notification) → live subscribers. */
 void       cel_hook_rt_emit(const char *table, const char *op, const char *row_json);
+/* Create a login account (cellar.create_user) → 0 + new id in out_id, or -1 + err.
+ * The actual creator is wired by the engine at boot to keep this layer free of the
+ * auth/crypto deps; unwired (e.g. in unit tests) it returns -1 ("not available").
+ * The bundle's rpc enforces who-may-create-whom; this refuses platform_admin. */
+int        cel_hook_create_user(const char *email, const char *password, const char *role,
+                                char *out_id, int out_id_size, char *err, int errlen);
+/* Wire the account creator (cel_auth_create_user, via an adapter in main). */
+typedef int (*cel_hook_create_user_fn)(const char *email, const char *password, const char *role,
+                                       char *out_id, int out_id_size, char *err, int errlen);
+void       cel_hooks_set_user_creator(cel_hook_create_user_fn fn);
 
 /* Claim + dispatch up to `budget` due jobs from `q` (job_queue_t*) to the Lua
  * `job` hook on this thread's state; completes/retries per result. The caller
