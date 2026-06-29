@@ -118,6 +118,15 @@ migrations/
 
 Forward-only + a pre-migrate backup (below) is the rollback story; no down-migrations.
 
+**Authoring (bundle owners).** Migrations are bundle content — whoever owns the
+schema writes them. Rules: one file per change, `NNNN_` monotonic; **never edit an
+applied file** (checksummed → drift is rejected; fix-forward with a new file); SQL
+only, no `BEGIN`/`COMMIT`. The **first** migration is special — to adopt an
+*already-deployed* DB, `0001_init.sql` must be the current schema with `CREATE … IF
+NOT EXISTS` on every object, so `migrate` is a full create on a fresh DB and a no-op
+that just records the baseline on an existing one. Every later migration is plain
+forward SQL (`ALTER TABLE … ADD COLUMN …`; hard changes → the 12-step rebuild).
+
 ---
 
 ## 5. Backups & data safety (today)
