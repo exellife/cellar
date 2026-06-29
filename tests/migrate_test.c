@@ -97,9 +97,39 @@ int main(void) {
     chk(cel_migrate_run(NULL, dir, &r) != 0, "null db: error");
     sqlite3_close(db3);
 
+    /* ---- E) DATA survives an ALTER ADD COLUMN migration (the whole point) --- */
+    char dir3[] = "/tmp/cel-migrate3-XXXXXX";
+    if (!mkdtemp(dir3)) { perror("mkdtemp"); return 2; }
+    sqlite3 *dbE; sqlite3_open(":memory:", &dbE);
+    write_file(dir3, "0001_init.sql", "CREATE TABLE acct(id INTEGER PRIMARY KEY, name TEXT);");
+    cel_migrate_run(dbE, dir3, &r);
+    sqlite3_exec(dbE, "INSERT INTO acct(id,name) VALUES (1,'a'),(2,'b'),(3,'c');", NULL, NULL, NULL);
+    write_file(dir3, "0002_balance.sql", "ALTER TABLE acct ADD COLUMN balance INTEGER NOT NULL DEFAULT 7;");
+    rc = cel_migrate_run(dbE, dir3, &r);
+    chk(rc == 0 && r.applied == 1 && r.skipped == 1, "data: ALTER applied, 0001 skipped");
+    chk(scalar(dbE, "SELECT count(*) FROM acct") == 3, "data: all 3 rows preserved across the ALTER");
+    chk(scalar(dbE, "SELECT count(*) FROM acct WHERE balance=7") == 3, "data: new column defaulted on existing rows");
+    sqlite3_close(dbE);
+
+    /* ---- F) 0001 baseline ADOPTS an existing, populated DB (IF NOT EXISTS) -- */
+    char dir4[] = "/tmp/cel-migrate4-XXXXXX";
+    if (!mkdtemp(dir4)) { perror("mkdtemp"); return 2; }
+    sqlite3 *dbF; sqlite3_open(":memory:", &dbF);
+    /* simulate an already-deployed DB: schema + data, no _schema_migrations yet */
+    sqlite3_exec(dbF, "CREATE TABLE thing(id INTEGER PRIMARY KEY, v TEXT);"
+                      "INSERT INTO thing(id,v) VALUES (1,'x'),(2,'y');", NULL, NULL, NULL);
+    write_file(dir4, "0001_init.sql", "CREATE TABLE IF NOT EXISTS thing(id INTEGER PRIMARY KEY, v TEXT);");
+    rc = cel_migrate_run(dbF, dir4, &r);
+    chk(rc == 0 && r.applied == 1, "baseline: 0001 recorded against the existing schema");
+    chk(scalar(dbF, "SELECT count(*) FROM thing") == 2, "baseline: existing data preserved (no recreate)");
+    chk(scalar(dbF, "SELECT count(*) FROM _schema_migrations WHERE id='0001_init.sql'") == 1, "baseline: recorded as applied");
+    sqlite3_close(dbF);
+
     /* cleanup temp files/dirs */
     rm_file(dir, "0001_init.sql"); rm_file(dir, "0002_add.sql"); rm_file(dir, "0003_more.sql"); rmdir(dir);
     rm_file(dir2, "0001_ok.sql"); rm_file(dir2, "0002_bad.sql"); rmdir(dir2);
+    rm_file(dir3, "0001_init.sql"); rm_file(dir3, "0002_balance.sql"); rmdir(dir3);
+    rm_file(dir4, "0001_init.sql"); rmdir(dir4);
 
     printf("\n%s (%d checks failed)\n", failures ? "FAILED" : "ALL PASS", failures);
     return failures ? 1 : 0;
