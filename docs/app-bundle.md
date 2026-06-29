@@ -109,6 +109,9 @@ migrations/
   own transaction (atomic with the bookkeeping insert) → records it with a checksum.
   Idempotent, per-app, **explicit** (you run it; it does not fire silently on app-open).
   An already-applied file whose checksum changed is a hard error (drift detection).
+  **Run it with the app stopped** — a schema change (`ALTER`) takes a write lock and
+  must not contend with a live, writing server. The `dist/cellar-migrate.sh` wrapper
+  enforces stop → migrate → start (and restarts the service even if the migration fails).
 - **`schema.sql` stays** as the fast fresh-install path; long-term it becomes a
   *generated snapshot* of the migration end-state (the Rails model — migrations are
   truth, the snapshot is for speed + readability).
@@ -147,7 +150,7 @@ A self-contained bundle dir (the "frontend-side" deliverable), ready to drop on 
 
 - `public/` — production build, **same-origin** (client `baseUrl=""` → relative
   `/auth` `/sync` `/rpc`, no CORS; the bundle is portable across domains).
-- `schema.sql` (+ `migrations/` once §4 lands), `hooks.lua`, `policies.json`.
+- `schema.sql` + `migrations/` (§4), `hooks.lua`, `policies.json`.
 - **No `data.db`** — the server creates it (`provision`).
 
 Each deploy, state the server-affecting delta: (a) did the schema touch *existing*
@@ -156,7 +159,10 @@ tables (→ migrate) or only add tables (→ in-place); (b) any new role names i
 feature newer than the target's cellar binary (→ rebuild cellar there). And the login
 UI must match the policy (e.g. if self-register is off, no "create account" path).
 
-**Redeploy loop:**
-`export` backup → rsync `bundle/` → `provision` (new) **or** `cellar migrate` (existing)
-→ copy `public/`+`hooks.lua`+`policies.json` → restart cellar → smoke-test (a sync
-round-trip + a login). Rollback → `import` the pre-deploy snapshot.
+**Redeploy loop** (existing app):
+`export` backup → rsync `bundle/` → copy `public/`+`hooks.lua`+`policies.json` →
+**stop cellar → `cellar migrate <host>` → start cellar** → smoke-test (a sync
+round-trip + a login). The stop→migrate→start middle is what `dist/cellar-migrate.sh`
+does (a schema change takes a write lock — don't migrate under a live writer).
+First deploy of a *new* app: `provision` + `cellar migrate` instead of the stop/start.
+Rollback → `import` the pre-deploy snapshot (or restore `<bundle>/.backups/`).
