@@ -191,6 +191,43 @@ A **Flutter/native** app doesn't use `public/` at all — it's a client hitting 
 REST API directly. (CORS is a browser concern; it does **not** apply to native
 mobile. For Flutter *web*, the operator enables CORS.)
 
+### What the bundle actually contains (it's more than `public/`)
+
+`public/` is just the front-end slice. A full **app bundle** is the server-side
+contract too — and once an app is deployed, **these are yours to evolve**:
+
+```
+<app>/                  # the deployable bundle you build + hand to the platform
+├── public/             # your built SPA (index.html + hashed assets)
+├── schema.sql          # the data model (tables)
+├── migrations/         # ordered schema deltas — see "Schema changes" below
+├── hooks.lua           # server-side behavior (validation, rpc, sync resolve)
+└── policies.json       # role grants per table
+                        # (data.db is created on the server, never shipped)
+```
+
+Full spec: [`app-bundle.md`](app-bundle.md). Keep `public/` **same-origin** — the
+client's `baseUrl` defaults to `""` so `/auth` `/api` `/rpc` `/sync` are relative;
+that makes the one bundle portable across domains (localhost → prod) with no rebuild.
+
+**Build:** produce a self-contained bundle dir — build the SPA into `public/`, then
+assemble it with `schema.sql` / `migrations/` / `hooks.lua` / `policies.json`. Ship
+that; the platform provisions/deploys it. Do **not** ship a `data.db`.
+
+### Schema changes — use migrations, never a wipe
+
+After an app holds real data, you can't just re-run `schema.sql` (it's create-only;
+it can't alter an existing table) and you must not wipe the DB. **Every schema change
+is a new forward-only file** `migrations/NNNN_name.sql`; the platform runs
+`cellar migrate <app>` on deploy (it backs up first, applies pending migrations in
+order, with the app stopped). Rules: monotonic `NNNN_` prefix, **never edit a
+migration once applied** (checksummed — fix-forward with a new file), plain SQL (no
+`BEGIN`/`COMMIT`). The first one (`0001_init.sql`) uses `CREATE … IF NOT EXISTS` so it
+adopts already-deployed DBs as a no-op. A change to a **syncable** table (one with
+`rev`/`deleted`) is also a *client* local-schema change — roll out additive-first.
+Full how-to: [`app-bundle.md` §4](app-bundle.md) (+ the ClerkHalls
+`MIGRATIONS.md` worked example).
+
 ---
 
 ## 5. Realtime (optional)
