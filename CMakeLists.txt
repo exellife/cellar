@@ -590,6 +590,11 @@ if(CELLAR_BUILD_TESTS)
         # before/authorize/after bundle (CEL_HOOKS_FILE=tests/hooks_crud.lua).
         add_test(NAME hooks_crud
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/hooks_crud_test.sh $<TARGET_FILE:cellar>)
+        # cellar.create_user context guard: rpc path mints a user; a before() hook
+        # calling it under the write lock is refused (no deadlock), superuser/weak
+        # roles refused. Regression for the auth-review HIGH findings.
+        add_test(NAME create_user_ctx
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/create_user_ctx_test.sh $<TARGET_FILE:cellar>)
         # on_realtime hook (Phase 2 §8): a delivery filter drops SILENT-titled notes
         # while normal notes still push (CEL_HOOKS_FILE=tests/hooks_realtime.lua).
         add_test(NAME realtime_filter

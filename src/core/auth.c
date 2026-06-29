@@ -631,17 +631,19 @@ int cel_auth_change_password(const char *user_id, const char *current_password,
         int f = cel_db_one_text(c,
             "SELECT secret FROM cel_identities WHERE user_id=?1 AND provider='password'",
             p, 1, secret, sizeof secret);
+        if (f < 0) { rc = CEL_AUTH_DBERR; goto out; }   /* read failure → 500, not a wrong-pw 401 */
         if (f != 1 || !secret[0] || !cel_password_verify(secret, current_password)) {
-            rc = CEL_AUTH_INVALID; goto out;
+            rc = CEL_AUTH_INVALID; goto out;            /* no password identity, or wrong current pw */
         }
     }
     /* Set the new secret. */
     {
         const char *up[2] = { hash, user_id };
         if (!cel_db_exec(c, "UPDATE cel_identities SET secret=?1 "
-                       "WHERE user_id=?2 AND provider='password'", up, 2) || sqlite3_changes(c) != 1) {
-            rc = CEL_AUTH_INVALID; goto out;
+                       "WHERE user_id=?2 AND provider='password'", up, 2)) {
+            rc = CEL_AUTH_DBERR; goto out;              /* write failure → 500 */
         }
+        if (sqlite3_changes(c) != 1) { rc = CEL_AUTH_INVALID; goto out; }
     }
 
     if (!tx(c, "COMMIT")) goto out;

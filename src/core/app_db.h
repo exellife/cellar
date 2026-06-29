@@ -96,6 +96,11 @@ sqlite3_stmt *app_db_stmt_cached(app_db_t *db, sqlite3 *conn, const char *sql);
  * different apps never block each other. Readers do NOT take this lock. */
 void app_db_write_lock(app_db_t *db);
 void app_db_write_unlock(app_db_t *db);
+/* True if the calling thread currently holds an app write lock (CRUD before/after/
+ * resolve hooks + job hooks run under it). Lets a re-entrant write path detect +
+ * refuse re-acquiring the non-recursive mutex — e.g. cellar.create_user from a
+ * write hook (only the rpc path, which holds no write lock, is safe). */
+int  app_db_in_write_lock(void);
 
 /* Convenience for a write/DDL statement (or several, ';'-separated): takes the
  * write lock, borrows a connection, runs sqlite3_exec, then releases both.

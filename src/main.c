@@ -806,8 +806,8 @@ static int run_sync_gc(int argc, char **argv) {
 static int hook_create_user_adapter(const char *email, const char *password, const char *role,
                                     char *out_id, int out_id_size, char *err, int errlen) {
     int rc = cel_auth_create_user(email, password, role, out_id, (size_t)out_id_size);
-    if (rc == CEL_AUTH_CONFLICT) { snprintf(err, (size_t)errlen, "email already registered"); return -1; }
-    if (rc != CEL_AUTH_OK)       { snprintf(err, (size_t)errlen, "could not create user");    return -1; }
+    if (rc == CEL_AUTH_CONFLICT) { if (err && errlen) snprintf(err, (size_t)errlen, "email already registered"); return -1; }
+    if (rc != CEL_AUTH_OK)       { if (err && errlen) snprintf(err, (size_t)errlen, "could not create user");    return -1; }
     return 0;
 }
 

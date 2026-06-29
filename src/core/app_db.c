@@ -295,8 +295,13 @@ sqlite3_stmt *app_db_stmt_cached(app_db_t *db, sqlite3 *conn, const char *sql)
     return st;
 }
 
-void app_db_write_lock(app_db_t *db)   { pthread_mutex_lock(&db->write_mtx); }
-void app_db_write_unlock(app_db_t *db) { pthread_mutex_unlock(&db->write_mtx); }
+/* Per-thread depth of held app write locks. The mutex is non-recursive, so a
+ * worker that already holds it (CRUD before/after/resolve hooks, job hooks) must
+ * not re-acquire it — app_db_in_write_lock lets such paths detect + refuse that. */
+static __thread int t_wlock_depth = 0;
+void app_db_write_lock(app_db_t *db)   { pthread_mutex_lock(&db->write_mtx); t_wlock_depth++; }
+void app_db_write_unlock(app_db_t *db) { t_wlock_depth--; pthread_mutex_unlock(&db->write_mtx); }
+int  app_db_in_write_lock(void)        { return t_wlock_depth > 0; }
 
 int app_db_exec(app_db_t *db, const char *sql, char **errmsg)
 {

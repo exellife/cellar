@@ -84,10 +84,20 @@ def main():
                {"email": "hired@cellar.dev", "password": "another-pw", "role": "editor"}, token=admin)
     chk("create_user duplicate -> error", s == 200 and "already registered" in ((b or {}).get("result", {}).get("error") or ""),
         str(b))
-    # the escalation boundary holds: platform_admin can't be minted from a hook
+    # the escalation boundary holds: NO superuser role can be minted from a hook —
+    # not platform_admin, and not 'admin' (which the engine treats as a superuser).
     s, b = req("POST", "/rpc/create_user",
                {"email": "evil@cellar.dev", "password": "evil-pw12", "role": "platform_admin"}, token=admin)
-    chk("create_user platform_admin refused", s == 200 and "platform_admin" in ((b or {}).get("result", {}).get("error") or ""),
+    chk("create_user platform_admin refused", s == 200 and "superuser" in ((b or {}).get("result", {}).get("error") or "").lower(),
+        str(b))
+    s, b = req("POST", "/rpc/create_user",
+               {"email": "wannabe-admin@cellar.dev", "password": "sneaky-pw1", "role": "admin"}, token=admin)
+    chk("create_user 'admin' (superuser) refused", s == 200 and "superuser" in ((b or {}).get("result", {}).get("error") or "").lower(),
+        str(b))
+    # and weak passwords are rejected (the primitive isn't a weaker creation path)
+    s, b = req("POST", "/rpc/create_user",
+               {"email": "weak@cellar.dev", "password": "short", "role": "editor"}, token=admin)
+    chk("create_user weak password refused", s == 200 and "too short" in ((b or {}).get("result", {}).get("error") or ""),
         str(b))
 
     # ---- unknown handler + faulting handler ----

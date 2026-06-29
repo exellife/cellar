@@ -409,6 +409,12 @@ static int route(const portico_request_t *req, portico_response_t *res) {
 
     /* POST /auth/password/change — authenticated in-session password change (Bearer) */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/password/change")) {
+        /* rate-limit: this verifies the current password (an Argon2 hash) — throttle
+         * to stop brute-forcing it on a stolen session and to cap the CPU/DoS cost. */
+        if (!cel_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
+            cel_metric_inc(CEL_M_RATELIMITED);
+            return send_error(res, 429, "too many requests");
+        }
         cel_identity_t who;
         identity_from_request(req, &who);
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);

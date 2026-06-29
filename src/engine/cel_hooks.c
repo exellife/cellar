@@ -2,6 +2,7 @@
 #include "cel_hooks.h"
 #include "cel_apps.h"
 #include "realtime.h"
+#include "policy.h"
 #include "logger.h"
 
 #include <stdio.h>
@@ -169,8 +170,24 @@ int cel_hook_create_user(const char *email, const char *password, const char *ro
         if (err && errlen) snprintf(err, errlen, "email, password and role are required");
         return -1;
     }
-    if (!strcmp(role, "platform_admin")) {
-        if (err && errlen) snprintf(err, errlen, "platform_admin cannot be created from a hook");
+    /* Refuse ANY superuser role — the engine treats 'admin' and any superuser:true
+     * config role as a full superuser (policy.c), not just 'platform_admin'. The
+     * /rpc path has no caller authz, so this engine-side guard is the floor that
+     * stops a hook minting a privileged account. */
+    if (cel_role_is_superuser(role)) {
+        if (err && errlen) snprintf(err, errlen, "cannot create a superuser role ('%s') from a hook", role);
+        return -1;
+    }
+    /* Password policy (mirror cel_api_create_user; the primitive must not be a
+     * weaker creation path). */
+    size_t plen = strlen(password);
+    if (plen < 8)   { if (err && errlen) snprintf(err, errlen, "password too short (min 8 characters)"); return -1; }
+    if (plen > 128) { if (err && errlen) snprintf(err, errlen, "password too long (max 128 characters)"); return -1; }
+    /* cel_auth_create_user takes the app's non-recursive write lock. before()/
+     * after()/resolve()/job hooks ALREADY run under it, so re-locking would
+     * self-deadlock the worker. Only the rpc path (no write lock held) is safe. */
+    if (app_db_in_write_lock()) {
+        if (err && errlen) snprintf(err, errlen, "create_user is only available from an rpc hook (not before/after/resolve/job)");
         return -1;
     }
     if (!g_create_user) {
