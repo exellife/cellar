@@ -22,6 +22,7 @@
 #include "core/oauth.h"
 #include "core/mailer.h"
 #include "core/cors.h"
+#include "core/migrate.h"
 
 #include <curl/curl.h>
 #include "engine/schema_catalog.h"
@@ -494,6 +495,71 @@ static int run_provision(int argc, char **argv) {
     return 0;
 }
 
+/* `cellar migrate <host>` — apply pending app-schema migrations from the bundle's
+ * migrations/ dir to its data.db, after a consistent VACUUM-INTO backup. Idempotent;
+ * see docs/app-bundle.md §4. Forward-only; restore from the backup (or `cellar
+ * import`) if a migration was wrong-but-committed. */
+static int run_migrate(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: cellar migrate <host>\n"); return 2; }
+    const char *lvl = getenv("CEL_LOG_LEVEL");
+    logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
+
+    const char *apps_dir = env_str("CEL_APPS_DIR", "");
+    if (!*apps_dir) { LOG_ERROR("migrate needs CEL_APPS_DIR"); logger_shutdown(); return 1; }
+    char host[256];
+    if (cel_apps_norm_host(argv[2], host, sizeof host) != 0) {
+        LOG_ERROR("invalid host '%s'", argv[2]); logger_shutdown(); return 1;
+    }
+
+    char bundle[1300], db_path[1400], mig_dir[1400];
+    snprintf(bundle,  sizeof bundle,  "%s/%s", apps_dir, host);
+    snprintf(db_path, sizeof db_path, "%s/data.db", bundle);
+    snprintf(mig_dir, sizeof mig_dir, "%s/migrations", bundle);
+
+    struct stat sst;
+    if (lstat(db_path, &sst) != 0 || !S_ISREG(sst.st_mode)) {
+        LOG_ERROR("migrate: '%s' missing — provision the app first", db_path);
+        logger_shutdown(); return 1;
+    }
+
+    app_db_global_init();
+    app_db_t *app = app_db_get(db_path);
+    if (!app) { LOG_ERROR("migrate: could not open %s", db_path); app_db_global_shutdown(); logger_shutdown(); return 1; }
+
+    /* 1) consistent backup BEFORE touching the schema (a wrong-but-committed
+     *    migration is only recoverable from here — the txn only protects failures). */
+    char bdir[1500], bpath[1700], sql[1800], *err = NULL;
+    snprintf(bdir, sizeof bdir, "%s/.backups", bundle);
+    mkdir(bdir, 0755);   /* ignore EEXIST */
+    /* time + pid so two migrate invocations in the same second don't collide
+     * (VACUUM INTO hard-fails on an existing target). */
+    snprintf(bpath, sizeof bpath, "%s/pre-migrate-%lld-%d.db", bdir, (long long)time(NULL), (int)getpid());
+    snprintf(sql, sizeof sql, "VACUUM INTO '%s'", bpath);
+    if (app_db_exec(app, sql, &err) != 0) {
+        LOG_ERROR("migrate: backup failed: %s — refusing to migrate", err ? err : "?");
+        if (err) sqlite3_free(err);
+        app_db_global_shutdown(); logger_shutdown(); return 1;
+    }
+    LOG_INFO("migrate: backed up -> %s", bpath);
+
+    /* 2) apply pending migrations on one connection. */
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { LOG_ERROR("migrate: no connection"); app_db_global_shutdown(); logger_shutdown(); return 1; }
+    cel_migrate_result_t res;
+    int rc = cel_migrate_run(c, mig_dir, &res);
+    app_db_conn_release(app, c);
+    app_db_global_shutdown();
+
+    if (rc != 0) {
+        LOG_ERROR("migrate '%s' FAILED: %s (restore from %s)", host, res.err, bpath);
+        logger_shutdown(); return 1;
+    }
+    LOG_INFO("migrate '%s': %d applied, %d already current (%d total)",
+             host, res.applied, res.skipped, res.total);
+    logger_shutdown();
+    return 0;
+}
+
 /* Run argv[0] with execvp (no shell → no injection from paths); return its exit
  * code, or -1 if it couldn't run. */
 static int run_argv(char *const argv[]) {
@@ -746,6 +812,8 @@ int main(int argc, char **argv) {
         return run_send_test_mail(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "provision") == 0)
         return run_provision(argc, argv);
+    if (argc >= 2 && strcmp(argv[1], "migrate") == 0)
+        return run_migrate(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "export") == 0)
         return run_export(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "import") == 0)

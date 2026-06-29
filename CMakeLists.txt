@@ -403,6 +403,13 @@ if(CELLAR_BUILD_TESTS)
     target_include_directories(base64url_test PRIVATE src/core)
     add_test(NAME base64url COMMAND base64url_test)
 
+    # app-schema migration runner: apply/idempotent/incremental, drift detection,
+    # transactional rollback of a failing migration. In-memory DB + /tmp dirs.
+    add_executable(migrate_test tests/migrate_test.c src/core/migrate.c)
+    target_include_directories(migrate_test PRIVATE src/core)
+    target_link_libraries(migrate_test SQLite::SQLite3 Threads::Threads)
+    add_test(NAME migrate COMMAND migrate_test)
+
     # DB-free BlobStore disk-adapter unit test (port-first object store; E0.1).
     add_executable(blob_store_test tests/blob_store_test.c src/core/blob_store_disk.c)
     target_include_directories(blob_store_test PRIVATE src/core)
