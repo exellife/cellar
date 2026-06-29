@@ -56,6 +56,16 @@ instead of working around it silently** — engine problems get fixed in the eng
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
 
+- **No authenticated in-session "change password" endpoint** — added
+  `POST /auth/password/change {current_password, new_password}` (Bearer): verifies the
+  current password (constant-time) then sets the new one; no email round-trip, the session
+  stays valid; `401` on wrong current. `fee1617` (e2e in `password_reset_test.py`).
+- **No way for a non-superuser role to create a login account** — added the
+  `cellar.create_user(email, password, role) → id, err` Lua primitive, so a bundle `rpc`
+  can mint logins under its own authz (e.g. a `manager` creates `clerk`s only) and capture
+  the new id for a roster row. `POST /auth/users` stays superuser-only; the engine refuses
+  `platform_admin`, the bundle enforces who-may-create-whom. `fee1617` (e2e in `rpc_test.py`;
+  example in `docs/frontend-guide.md`).
 - **Cascade soft-delete didn't emit realtime** — a parent delete tombstoned children but
   subscribers to child tables only saw it on the next pull. Now fires a live `DELETE` per
   cascaded child. `016737a` (+ rev-waste follow-up `ef196c0`).
