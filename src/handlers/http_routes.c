@@ -424,6 +424,49 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         return st;
     }
 
+    /* POST /auth/device — mint a device token for the authenticated caller (Bearer) */
+    if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/device")) {
+        cel_identity_t who;
+        identity_from_request(req, &who);
+        cJSON *body = req->body_len ? cJSON_ParseWithLength(req->body, req->body_len) : NULL;
+        if (req->body_len && !body) return send_error(res, 400, "invalid JSON");
+        int st = send_api(res, cel_api_device_create(&who, body));   /* label optional → body may be NULL */
+        cJSON_Delete(body);
+        return st;
+    }
+
+    /* POST /auth/session/from-device — exchange a device token for a session (public) */
+    if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/session/from-device")) {
+        /* the device token is a reusable credential → throttle like login */
+        if (!cel_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
+            cel_metric_inc(CEL_M_RATELIMITED);
+            return send_error(res, 429, "too many requests");
+        }
+        cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
+        if (!body) return send_error(res, 400, "invalid JSON");
+        int st = send_api(res, cel_api_device_exchange(body));
+        cJSON_Delete(body);
+        return st;
+    }
+
+    /* GET /auth/devices — list the caller's own device tokens (Bearer) */
+    if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/auth/devices")) {
+        cel_identity_t who;
+        identity_from_request(req, &who);
+        return send_api(res, cel_api_device_list(&who));
+    }
+
+    /* POST /auth/devices/revoke — revoke one of the caller's own devices (Bearer) */
+    if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/devices/revoke")) {
+        cel_identity_t who;
+        identity_from_request(req, &who);
+        cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
+        if (!body) return send_error(res, 400, "invalid JSON");
+        int st = send_api(res, cel_api_device_revoke(&who, body));
+        cJSON_Delete(body);
+        return st;
+    }
+
     /* POST /rpc/<fn> — call a whitelisted Postgres function (body = args object) */
     if (portico_req_method_is(req, "POST") && req->path_len > 5 && memcmp(req->path, "/rpc/", 5) == 0) {
         cel_identity_t who;

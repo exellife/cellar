@@ -9,6 +9,7 @@
 #include "cel_sync.h"
 #include "core/app_db.h"
 #include "core/auth.h"
+#include "core/session.h"
 #include "core/mfa.h"
 #include "core/oauth.h"
 #include "core/mailer.h"
@@ -1584,6 +1585,93 @@ cel_api_result_t cel_api_password_change(const cel_identity_t *who, const cJSON 
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
     cJSON_AddStringToObject(o, "message", "password updated");
+    cel_api_result_t r = { o, 200 };
+    return r;
+}
+
+/* ---- device tokens (PIN fast-login) --------------------------------------- */
+
+#define DEVICE_LABEL_MAX 64
+
+/* Mint a device token for the authenticated caller. Gated on the app opting in
+ * (_session.device_ttl_seconds > 0). */
+cel_api_result_t cel_api_device_create(const cel_identity_t *who, const cJSON *req) {
+    if (!who->authenticated) return result_error(401, "authentication required");
+    int ttl = cel_session_active()->device_ttl_seconds;
+    if (ttl <= 0) return result_error(404, "device tokens are not enabled");
+
+    const cJSON *label_j = cJSON_GetObjectItemCaseSensitive(req, "label");
+    const char *label = cJSON_IsString(label_j) ? label_j->valuestring : NULL;
+    if (label && strlen(label) > DEVICE_LABEL_MAX)
+        return result_error(400, "label too long (max 64 characters)");
+
+    char token[129], id[37];
+    int rc = cel_auth_device_create(who->user_id, label, ttl, token, sizeof token, id, sizeof id);
+    if (rc != CEL_AUTH_OK) return result_error(500, "server error");
+
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "status", "ok");
+    cJSON_AddStringToObject(o, "id", id);
+    cJSON_AddStringToObject(o, "device_token", token);   /* shown once — the client stores it */
+    cel_api_result_t r = { o, 201 };
+    return r;
+}
+
+/* Exchange a device token for a fresh session. Public (the device token IS the
+ * credential); throttled at the route like login. */
+cel_api_result_t cel_api_device_exchange(const cJSON *req) {
+    if (cel_session_active()->device_ttl_seconds <= 0)
+        return result_error(404, "device tokens are not enabled");
+    const cJSON *dt = cJSON_GetObjectItemCaseSensitive(req, "device_token");
+    if (!cJSON_IsString(dt) || !dt->valuestring[0]) return result_error(400, "device_token required");
+
+    char token[129];
+    cel_user_t user;
+    int rc = cel_auth_device_exchange(dt->valuestring, token, sizeof token, &user);
+    if (rc == CEL_AUTH_INVALID) return result_error(401, "invalid device token");
+    if (rc != CEL_AUTH_OK)      return result_error(500, "server error");
+    return session_result(token, &user);
+}
+
+static void device_row_cb(void *ctx, const char *id, const char *label,
+                          long created_at, long last_used_at, long expires_at) {
+    cJSON *arr = (cJSON *)ctx;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "id", id);
+    cJSON_AddStringToObject(o, "label", label);
+    cJSON_AddNumberToObject(o, "created_at", (double)created_at);
+    if (last_used_at > 0) cJSON_AddNumberToObject(o, "last_used_at", (double)last_used_at);
+    else                  cJSON_AddNullToObject(o, "last_used_at");
+    cJSON_AddNumberToObject(o, "expires_at", (double)expires_at);
+    cJSON_AddItemToArray(arr, o);
+}
+
+/* List the caller's own active device tokens (no token values). */
+cel_api_result_t cel_api_device_list(const cel_identity_t *who) {
+    if (!who->authenticated) return result_error(401, "authentication required");
+    if (cel_session_active()->device_ttl_seconds <= 0)
+        return result_error(404, "device tokens are not enabled");
+    cJSON *arr = cJSON_CreateArray();
+    if (cel_auth_device_list(who->user_id, device_row_cb, arr) != CEL_AUTH_OK) {
+        cJSON_Delete(arr); return result_error(500, "server error");
+    }
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddItemToObject(o, "devices", arr);
+    cel_api_result_t r = { o, 200 };
+    return r;
+}
+
+/* Revoke one of the caller's own devices by id. Not feature-gated, so a user can
+ * always clean up devices even if the app later disabled the feature. */
+cel_api_result_t cel_api_device_revoke(const cel_identity_t *who, const cJSON *req) {
+    if (!who->authenticated) return result_error(401, "authentication required");
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(req, "id");
+    if (!cJSON_IsString(id) || !id->valuestring[0]) return result_error(400, "id required");
+    int rc = cel_auth_device_revoke(who->user_id, id->valuestring);
+    if (rc == CEL_AUTH_INVALID) return result_error(404, "no such device");
+    if (rc != CEL_AUTH_OK)      return result_error(500, "server error");
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "status", "revoked");
     cel_api_result_t r = { o, 200 };
     return r;
 }

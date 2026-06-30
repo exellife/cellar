@@ -112,10 +112,12 @@ an unknown strategy fails *safe* to `fixed` (logged); strategies are C, not hook
 ## 5. Future code-pluggability (NOT built)
 
 The seam in §2 is the stable extension point. Everything above is **config-driven over one shared
-storage** (`cel_sessions`) — which covers `fixed`, `sliding`, and the planned **refresh/device
-token** (the [`FEEDBACK.md`](../FEEDBACK.md) item; it's a new adapter `+` a `refresh()` method `+`
-a long-lived revocable credential table, still SQLite-backed). The following are **structurally
-different** — they *replace* the storage assumption rather than tune it — and would each be a new
+storage** (`cel_sessions`) — which covers `fixed` and `sliding`. The **device token** (PIN
+fast-login; the [`FEEDBACK.md`](../FEEDBACK.md) item) **shipped** — but as a *standalone* revocable
+credential (`cel_device_tokens` + `/auth/device*`) that mints sessions through the active strategy,
+**not** as a session-strategy adapter (it's orthogonal to how a session, once minted, lives). It
+reuses the `_session` block only for its config (`device_ttl_seconds`). The following are
+**structurally different** — they *replace* the storage assumption rather than tune it — and would each be a new
 adapter registered behind `cel_session_strategy_t`, selected by `_session.strategy`. We are **not
 building these now**; this section records how they slot in so the seam is designed to admit them.
 
@@ -166,5 +168,9 @@ implementation detail of an adapter. As long as that holds, 5a–5c are additive
 4. Tests: a per-app `_session` e2e (fixed unchanged; sliding renews an active session, drops an idle
    one, honors the absolute cap; unknown strategy → safe default) + the config-resolution unit test.
    Target: full suite green + ASan-clean.
-5. Docs: `policy-guide.md` gains the `_session` block; this file is the design ref. The device-token
-   FEEDBACK item becomes the next adapter (`refresh()`), not a separate subsystem.
+5. Docs: `policy-guide.md` gains the `_session` block; this file is the design ref.
+
+**Update (shipped):** the device-token FEEDBACK item landed as a standalone revocable credential
+(`cel_device_tokens` + `/auth/device*`, opt-in via `_session.device_ttl_seconds`) that mints sessions
+through the active strategy — see [`frontend-guide.md`](frontend-guide.md) §Device tokens — rather than
+a `cel_session_strategy_t` adapter, since it's orthogonal to per-session lifetime/renewal.

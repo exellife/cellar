@@ -41,6 +41,23 @@ static const char *AUTH_SCHEMA =
     "CREATE INDEX IF NOT EXISTS idx_cel_sessions_user    ON cel_sessions(user_id);"
     "CREATE INDEX IF NOT EXISTS idx_cel_sessions_expires ON cel_sessions(expires_at);"
 
+    /* Long-lived, revocable device tokens (PIN fast-login): a client stores one
+     * (encrypted, e.g. behind a PIN) and exchanges it for a fresh session without
+     * re-entering the password. `token` is the sha-256 hash (never raw at rest);
+     * `id` is the public handle for list/revoke. Opt-in per app via
+     * _session.device_ttl_seconds. */
+    "CREATE TABLE IF NOT EXISTS cel_device_tokens ("
+    "  token        TEXT PRIMARY KEY,"
+    "  id           TEXT NOT NULL UNIQUE,"
+    "  user_id      TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,"
+    "  label        TEXT,"
+    "  created_at   INTEGER NOT NULL DEFAULT (unixepoch()),"
+    "  last_used_at INTEGER,"
+    "  expires_at   INTEGER NOT NULL,"
+    "  revoked_at   INTEGER"
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_cel_device_tokens_user ON cel_device_tokens(user_id);"
+
     "CREATE TABLE IF NOT EXISTS cel_password_resets ("
     "  token      TEXT PRIMARY KEY,"
     "  user_id    TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,"

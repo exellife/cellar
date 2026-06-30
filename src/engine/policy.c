@@ -360,6 +360,11 @@ void cel_policy_session(cel_session_policy_t *out) {
     if (cJSON_IsNumber(cap) && cap->valuedouble >= 0)
         out->absolute_max_seconds = cap->valuedouble >= (double)INT_MAX ? INT_MAX : (int)cap->valuedouble;
 
+    /* Device tokens are opt-in: a positive lifetime enables the feature; absent/<=0 keeps it off. */
+    const cJSON *dev = cJSON_GetObjectItemCaseSensitive(s, "device_ttl_seconds");
+    if (cJSON_IsNumber(dev) && dev->valuedouble > 0)
+        out->device_ttl_seconds = dev->valuedouble >= (double)INT_MAX ? INT_MAX : (int)dev->valuedouble;
+
     /* sliding without an explicit ttl: the idle window defaults to 1h, not fixed's 24h. */
     if (out->strategy == CEL_SESSION_SLIDING && !ttl_set) out->ttl_seconds = 3600;
 }

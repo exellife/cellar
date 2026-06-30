@@ -81,10 +81,33 @@ const r = await fetch("/auth/login", {
 const { token, user } = await r.json();   // store `token`; send it as Bearer
 ```
 
-Tokens are **opaque server-side sessions** (not JWTs), 24h TTL. Store the token
-(localStorage on web, secure storage on mobile) and re-login on a `401` — there's
-no refresh-token dance. **There is no REST logout endpoint**: drop the token
-client-side; the session expires by TTL (operators can force-revoke server-side).
+Tokens are **opaque server-side sessions** (not JWTs). Lifetime + renewal are
+**per-app policy** (`_session` in `policies.json` — fixed/sliding; default fixed
+24h; see [`policy-guide.md`](policy-guide.md)). Store the token (localStorage on web,
+secure storage on mobile) and re-login on a `401`. **There is no REST logout
+endpoint**: drop the token client-side; the session expires by policy (operators can
+force-revoke server-side).
+
+#### Device tokens — PIN fast-login (opt-in)
+
+When the app enables it (`_session.device_ttl_seconds > 0`), a client can mint a
+**long-lived, revocable device token**, store it (e.g. encrypted behind a PIN), and
+exchange it for a fresh session on unlock — so the user never re-types the password,
+yet the raw password is never stored on the device and the operator can revoke a lost
+device. (If disabled, these endpoints return `404`.)
+
+| Call | Body | Returns |
+|---|---|---|
+| `POST /auth/device` | `{label?}` (Bearer) | `201 {id, device_token}` — **shown once**; store `device_token` (e.g. PIN-encrypted) |
+| `POST /auth/session/from-device` | `{device_token}` | `200 {token, user}` — a normal session; `401` if bad/expired/revoked. (No MFA step — the enrolled device is the possession factor.) |
+| `GET /auth/devices` | (Bearer) | `200 {devices:[{id,label,created_at,last_used_at,expires_at}]}` — the caller's own (never the token value) |
+| `POST /auth/devices/revoke` | `{id}` (Bearer) | `200`; `404` if not the caller's device |
+
+The device token is **static/reusable** (exchange as often as you like). It's hashed
+at rest, and a full account recovery — password reset, admin `set_password`, or
+"log out everywhere" — **revokes all of the user's device tokens**. Flow: after a
+normal login, `POST /auth/device` once and stash the token under the PIN; on each
+unlock, `POST /auth/session/from-device` to get a session.
 
 Also available when the app enables them: `POST /auth/oauth` (OIDC sign-in),
 `POST /auth/password/forgot` + `/auth/password/reset`, `POST /auth/verify-email`,

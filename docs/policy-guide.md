@@ -189,7 +189,8 @@ renewal). The block selects a strategy and its parameters:
 "_session": {
   "strategy": "fixed",          // "fixed" (default) | "sliding"
   "ttl_seconds": 86400,         // fixed: absolute lifetime. sliding: the IDLE window.
-  "absolute_max_seconds": 0     // sliding only: hard cap measured from login; 0 = none
+  "absolute_max_seconds": 0,    // sliding only: hard cap measured from login; 0 = none
+  "device_ttl_seconds": 0       // device tokens (PIN fast-login): lifetime; 0/absent = OFF
 }
 ```
 
@@ -203,6 +204,7 @@ Notes:
 - **Unknown `strategy`** → logged as an error and falls back to the safe default (`fixed`); the app still serves.
 - **Loaded once at startup** (like the rest of `policies.json`) — a change needs a cellar restart, not just a file copy.
 - **Sliding × the session cache:** if `CEL_SESSION_CACHE_TTL` is set, a cache hit skips the DB (so it neither renews nor re-checks expiry until the cache entry lapses) → idle expiry is enforced only within ~the cache TTL. For tight idle enforcement keep the cache TTL small or off. Full design + the future stateless/JWT + external-store strategies: [`session-management.md`](session-management.md).
+- **`device_ttl_seconds` (device tokens / PIN fast-login):** opt-in — `> 0` enables a per-app long-lived, revocable **device token** a client stores (e.g. encrypted behind a PIN) and exchanges for fresh sessions without re-entering the password; `0`/absent disables it (the `/auth/device*` endpoints return 404). The token is hashed at rest and revoked on account recovery (password reset / `set_password` / log-out-everywhere). Client contract: [`frontend-guide.md`](frontend-guide.md).
 
 ---
 

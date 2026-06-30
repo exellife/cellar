@@ -457,6 +457,8 @@ int cel_auth_revoke_user_sessions(const char *email) {
         if (cel_db_exec(c, "DELETE FROM cel_sessions WHERE user_id = "
                       "(SELECT id FROM cel_users WHERE email=?1)", p, 1))
             n = sqlite3_changes(c);
+        cel_db_exec(c, "UPDATE cel_device_tokens SET revoked_at=unixepoch() WHERE revoked_at IS NULL "
+                    "AND user_id = (SELECT id FROM cel_users WHERE email=?1)", p, 1);   /* + device tokens */
         app_db_conn_release(app, c);
     }
     app_db_write_unlock(app);
@@ -545,6 +547,8 @@ int cel_auth_perform_password_reset(const char *token, const char *new_password)
         const char *us[1] = { user_id };
         cel_db_exec(c, "DELETE FROM cel_sessions WHERE user_id=?1", us, 1);
         cel_db_exec(c, "DELETE FROM cel_mfa_challenges WHERE user_id=?1", us, 1);
+        cel_db_exec(c, "UPDATE cel_device_tokens SET revoked_at=unixepoch() "
+                    "WHERE user_id=?1 AND revoked_at IS NULL", us, 1);   /* kill trusted devices on recovery */
         lockout_reset(c, user_id);
     }
 
@@ -663,6 +667,8 @@ int cel_auth_set_password(const char *email, const char *new_password) {
         const char *us[1] = { user_id };
         cel_db_exec(c, "DELETE FROM cel_sessions WHERE user_id=?1", us, 1);
         cel_db_exec(c, "DELETE FROM cel_mfa_challenges WHERE user_id=?1", us, 1);
+        cel_db_exec(c, "UPDATE cel_device_tokens SET revoked_at=unixepoch() "
+                    "WHERE user_id=?1 AND revoked_at IS NULL", us, 1);   /* kill trusted devices on recovery */
         lockout_reset(c, user_id);
     }
 
@@ -674,6 +680,116 @@ out:
     if (in_txn) tx(c, "ROLLBACK");
     app_db_conn_release(app, c);
     app_db_write_unlock(app);
+    return rc;
+}
+
+/* ---- device tokens (PIN fast-login) --------------------------------------- */
+
+int cel_auth_device_create(const char *user_id, const char *label, int ttl_seconds,
+                           char *out_token, size_t token_size, char *out_id, size_t id_size) {
+    if (!user_id || !user_id[0] || ttl_seconds <= 0) return CEL_AUTH_INVALID;
+    if (cel_random_token_hex(out_token, token_size, TOKEN_BYTES) != 0) return CEL_AUTH_DBERR;
+    char thash[65];
+    if (cel_token_hash(out_token, thash, sizeof thash) != 0) return CEL_AUTH_DBERR;
+    char id[37]; cel_uuid_v4(id, sizeof id);
+
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    int rc = CEL_AUTH_DBERR;
+    if (c) {
+        char exp[24]; snprintf(exp, sizeof exp, "%ld", cel_now_epoch() + ttl_seconds);
+        const char *p[5] = { thash, id, user_id, (label && label[0]) ? label : "", exp };
+        if (cel_db_exec(c, "INSERT INTO cel_device_tokens(token, id, user_id, label, expires_at) "
+                       "VALUES(?1, ?2, ?3, ?4, ?5)", p, 5)) {
+            snprintf(out_id, id_size, "%s", id);
+            rc = CEL_AUTH_OK;
+        }
+        app_db_conn_release(app, c);
+    }
+    app_db_write_unlock(app);
+    return rc;
+}
+
+int cel_auth_device_exchange(const char *device_token, char *out_token, size_t token_size,
+                             cel_user_t *out_user) {
+    if (!device_token || !device_token[0]) return CEL_AUTH_INVALID;
+    char thash[65];
+    if (cel_token_hash(device_token, thash, sizeof thash) != 0) return CEL_AUTH_INVALID;
+
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    char user_id[37] = {0};
+
+    /* Atomically validate (unexpired, not revoked, active user) AND stamp last_used_at,
+     * returning the owner. ?1 = now (used for both the stamp and the expiry compare). */
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
+    char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", cel_now_epoch());
+    const char *p[2] = { nowbuf, thash };
+    int found = cel_db_one_text(c,
+        "UPDATE cel_device_tokens SET last_used_at=?1 "
+        "WHERE token=?2 AND revoked_at IS NULL AND expires_at > ?1 "
+        "AND user_id IN (SELECT id FROM cel_users WHERE is_active=1) "
+        "RETURNING user_id", p, 2, user_id, sizeof user_id);
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
+    if (found < 0) return CEL_AUTH_DBERR;
+    if (found != 1 || !user_id[0]) return CEL_AUTH_INVALID;
+
+    /* Mint a fresh session for the owner (active session strategy). No MFA step —
+     * the enrolled device is the possession factor. */
+    int rc = cel_auth_issue_session(user_id, out_token, token_size);
+    if (rc != CEL_AUTH_OK) return rc;
+    return cel_auth_verify(out_token, out_user);
+}
+
+int cel_auth_device_revoke(const char *user_id, const char *id) {
+    if (!user_id || !user_id[0] || !id || !id[0]) return CEL_AUTH_INVALID;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    int rc = CEL_AUTH_DBERR;
+    if (c) {
+        const char *p[2] = { id, user_id };
+        if (cel_db_exec(c, "UPDATE cel_device_tokens SET revoked_at=unixepoch() "
+                       "WHERE id=?1 AND user_id=?2 AND revoked_at IS NULL", p, 2))
+            rc = sqlite3_changes(c) == 1 ? CEL_AUTH_OK : CEL_AUTH_INVALID;   /* 0 → not yours / unknown */
+        app_db_conn_release(app, c);
+    }
+    app_db_write_unlock(app);
+    return rc;
+}
+
+int cel_auth_device_list(const char *user_id, cel_device_cb cb, void *ctx) {
+    if (!user_id || !user_id[0] || !cb) return CEL_AUTH_INVALID;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) return CEL_AUTH_DBERR;
+    int rc = CEL_AUTH_DBERR;
+    char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", cel_now_epoch());
+    const char *p[2] = { user_id, nowbuf };
+    sqlite3_stmt *st;
+    if (cel_db_prep(c,
+        "SELECT id, label, created_at, last_used_at, expires_at FROM cel_device_tokens "
+        "WHERE user_id=?1 AND revoked_at IS NULL AND expires_at > ?2 ORDER BY created_at",
+        p, 2, &st) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const char *id    = (const char *)sqlite3_column_text(st, 0);
+            const char *label = (const char *)sqlite3_column_text(st, 1);
+            cb(ctx, id ? id : "", label ? label : "",
+               (long)sqlite3_column_int64(st, 2),
+               (long)sqlite3_column_int64(st, 3),
+               (long)sqlite3_column_int64(st, 4));
+        }
+        sqlite3_finalize(st);
+        rc = CEL_AUTH_OK;
+    }
+    app_db_conn_release(app, c);
     return rc;
 }
 

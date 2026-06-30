@@ -124,6 +124,10 @@ def main():
     chk("set_password weak password refused", s == 200 and "too short" in ((b or {}).get("result", {}).get("error") or ""),
         str(b))
 
+    # ---- device tokens are OFF unless the app opts in (no _session here) ----
+    s, b = req("POST", "/auth/device", {"label": "x"}, token=admin)
+    chk("device tokens off by default -> 404", s == 404, f"status={s}")
+
     # ---- unknown handler + faulting handler ----
     s, b = req("POST", "/rpc/nope", token=admin)
     chk("unknown rpc -> 400 with reason", s == 400 and "unknown rpc" in (b or {}).get("message", ""),

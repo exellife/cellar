@@ -80,6 +80,16 @@ cel_api_result_t cel_api_password_reset(const cJSON *req);
  * 400 (weak new password). Sessions are left intact. */
 cel_api_result_t cel_api_password_change(const cel_identity_t *who, const cJSON *req);
 
+/* Device tokens (PIN fast-login; opt-in via _session.device_ttl_seconds, else 404).
+ *   device         (Bearer): { label? } -> 201 { id, device_token }  (token shown once)
+ *   session/from-device     : { device_token } -> 200 { token, user } (public; throttled)
+ *   devices        (Bearer): -> 200 { devices: [...] }   (caller's own, no token values)
+ *   devices/revoke (Bearer): { id } -> 200 / 404 (no such device) */
+cel_api_result_t cel_api_device_create(const cel_identity_t *who, const cJSON *req);
+cel_api_result_t cel_api_device_exchange(const cJSON *req);
+cel_api_result_t cel_api_device_list(const cel_identity_t *who);
+cel_api_result_t cel_api_device_revoke(const cel_identity_t *who, const cJSON *req);
+
 /* Email verification (emailed single-use token; sent on register). verify redeems
  * the token; resend re-sends to the authenticated caller (idempotent).
  *   verify-email        : { token }  -> 200 / 400

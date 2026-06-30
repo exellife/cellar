@@ -22,6 +22,7 @@ typedef struct {
     cel_session_strategy_e strategy;
     int ttl_seconds;           /* fixed: absolute lifetime; sliding: the idle window */
     int absolute_max_seconds;  /* sliding only: hard cap from created_at; 0 = none */
+    int device_ttl_seconds;    /* device-token lifetime; 0 = device tokens DISABLED for the app */
 } cel_session_policy_t;
 
 /* The built-in default an app inherits when it has no `_session` block: the

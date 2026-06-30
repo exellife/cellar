@@ -23,6 +23,12 @@ int  cel_mfa_create_challenge(const char *user_id, char *out, size_t n) {
     (void)user_id; (void)out; (void)n; return -1;
 }
 
+static void count_devices_cb(void *ctx, const char *id, const char *label,
+                             long created_at, long last_used_at, long expires_at) {
+    (void)id; (void)label; (void)created_at; (void)last_used_at; (void)expires_at;
+    (*(int *)ctx)++;
+}
+
 static int failures = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { fprintf(stderr, "FAIL: %s\n", msg); failures++; } \
@@ -105,6 +111,47 @@ int main(void) {
     CHECK(cel_auth_seed_user("root@x.com", "rootpass2", "admin") == 0, "re-seed (upsert) admin");
     rc = cel_auth_login("root@x.com", "rootpass2", tok, sizeof tok, chal, sizeof chal, &u);
     CHECK(rc == CEL_AUTH_OK && strcmp(u.role, "admin") == 0, "seeded admin logs in with new password");
+
+    /* ---- device tokens (PIN fast-login) ---- */
+    char dtok[129], did[37], stok[129];
+    cel_user_t du;
+    rc = cel_auth_device_create(id2, "phone", 3600, dtok, sizeof dtok, did, sizeof did);
+    CHECK(rc == CEL_AUTH_OK && strlen(did) == 36, "device_create -> token + id");
+    rc = cel_auth_device_exchange(dtok, stok, sizeof stok, &du);
+    CHECK(rc == CEL_AUTH_OK && strcmp(du.id, id2) == 0, "device_exchange mints a session for the owner");
+    CHECK(cel_auth_verify(stok, &du) == CEL_AUTH_OK, "exchanged session token is valid");
+    CHECK(cel_auth_device_exchange(dtok, stok, sizeof stok, &du) == CEL_AUTH_OK, "device token is reusable");
+
+    int dcount = 0; cel_auth_device_list(id2, count_devices_cb, &dcount);
+    CHECK(dcount == 1, "device_list counts the active device");
+
+    /* a user can only revoke their own device */
+    CHECK(cel_auth_device_revoke(first_id, did) == CEL_AUTH_INVALID, "cannot revoke another user's device");
+    CHECK(cel_auth_device_revoke(id2, did) == CEL_AUTH_OK, "device_revoke (own) ok");
+    CHECK(cel_auth_device_exchange(dtok, stok, sizeof stok, &du) == CEL_AUTH_INVALID, "revoked device rejected");
+    dcount = 0; cel_auth_device_list(id2, count_devices_cb, &dcount);
+    CHECK(dcount == 0, "device_list excludes the revoked device");
+
+    /* tie-in: an admin password reset (set_password) revokes the user's devices */
+    char dtok2[129], did2[37];
+    CHECK(cel_auth_device_create(id2, "tablet", 3600, dtok2, sizeof dtok2, did2, sizeof did2) == CEL_AUTH_OK,
+          "second device for the reset test");
+    CHECK(cel_auth_device_exchange(dtok2, stok, sizeof stok, &du) == CEL_AUTH_OK, "device works before reset");
+    CHECK(cel_auth_set_password("b@x.com", "newpass-b1") == CEL_AUTH_OK, "set_password (admin reset)");
+    CHECK(cel_auth_device_exchange(dtok2, stok, sizeof stok, &du) == CEL_AUTH_INVALID,
+          "set_password revoked the device token");
+
+    /* tie-in: revoke_user_sessions ("log out everywhere") also kills device tokens */
+    char dtok3[129], did3[37];
+    CHECK(cel_auth_device_create(id2, "laptop", 3600, dtok3, sizeof dtok3, did3, sizeof did3) == CEL_AUTH_OK,
+          "third device for the revoke-everywhere test");
+    cel_auth_revoke_user_sessions("b@x.com");
+    CHECK(cel_auth_device_exchange(dtok3, stok, sizeof stok, &du) == CEL_AUTH_INVALID,
+          "revoke_user_sessions killed the device token");
+
+    /* a bad token never exchanges */
+    CHECK(cel_auth_device_exchange("not-a-real-token", stok, sizeof stok, &du) == CEL_AUTH_INVALID,
+          "garbage device token rejected");
 
     app_db_global_shutdown();
     unlink(path);

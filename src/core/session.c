@@ -14,6 +14,7 @@ void cel_session_policy_default(cel_session_policy_t *out) {
     out->strategy = CEL_SESSION_FIXED;
     out->ttl_seconds = 24 * 3600;       /* the historical default */
     out->absolute_max_seconds = 0;
+    out->device_ttl_seconds = 0;        /* device tokens off unless the app opts in */
 }
 
 void cel_session_set_active(const cel_session_policy_t *pol) {
@@ -24,6 +25,6 @@ void cel_session_set_active(const cel_session_policy_t *pol) {
 void cel_session_clear_active(void) { t_policy_set = false; }
 
 const cel_session_policy_t *cel_session_active(void) {
-    static const cel_session_policy_t dflt = { CEL_SESSION_FIXED, 24 * 3600, 0 };
+    static const cel_session_policy_t dflt = { CEL_SESSION_FIXED, 24 * 3600, 0, 0 };
     return t_policy_set ? &t_policy : &dflt;
 }

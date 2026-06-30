@@ -601,6 +601,11 @@ if(CELLAR_BUILD_TESTS)
         # idle session expires. Boots with a short-window sliding policy fixture.
         add_test(NAME session_sliding
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/session_sliding_test.sh $<TARGET_FILE:cellar>)
+        # Device tokens (PIN fast-login): mint (Bearer) → exchange for a session →
+        # reusable → list → revoke → revoked/garbage rejected. Boots with a policy
+        # that opts in via _session.device_ttl_seconds.
+        add_test(NAME device_token
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/device_token_test.sh $<TARGET_FILE:cellar>)
         # on_realtime hook (Phase 2 §8): a delivery filter drops SILENT-titled notes
         # while normal notes still push (CEL_HOOKS_FILE=tests/hooks_realtime.lua).
         add_test(NAME realtime_filter

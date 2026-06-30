@@ -1,0 +1,6 @@
+{
+  "_comment": "Fixture for device_token_test: device tokens enabled with a 1-year lifetime. admin is a superuser so the seeded products table is readable as the authed probe; a self-registerable 'user' role lets the test make a second non-admin account for the password-reset-revokes-devices case.",
+  "_default": "allow",
+  "_roles": { "admin": { "superuser": true }, "user": { "allow": ["list", "get"], "self_register": true } },
+  "_session": { "strategy": "fixed", "ttl_seconds": 3600, "device_ttl_seconds": 31536000 }
+}

@@ -133,6 +133,35 @@ int cel_auth_set_password(const char *email, const char *new_password);
  * CEL_AUTH_DBERR. */
 int cel_auth_user_role(const char *email, char *out_role, size_t out_role_size);
 
+/* ---- device tokens (PIN fast-login) --------------------------------------- *
+ * A long-lived, revocable credential a client stores (encrypted, e.g. behind a
+ * PIN) and exchanges for fresh sessions without re-entering the password. Opt-in
+ * per app via _session.device_ttl_seconds; the token is hashed at rest. */
+
+/* Mint a device token for `user_id`. Writes the raw token (>= 65) + the public id
+ * (>= 37, for list/revoke). `ttl_seconds` is the app's device_ttl_seconds. Returns
+ * CEL_AUTH_OK / CEL_AUTH_INVALID (bad args) / CEL_AUTH_DBERR. */
+int cel_auth_device_create(const char *user_id, const char *label, int ttl_seconds,
+                           char *out_token, size_t token_size, char *out_id, size_t id_size);
+
+/* Exchange a device token for a fresh session via the active session strategy:
+ * validates unexpired + not-revoked + active user, bumps last_used_at, issues the
+ * session into `out_token` (>= 65) and fills `out_user`. Returns CEL_AUTH_OK /
+ * CEL_AUTH_INVALID (bad/expired/revoked) / CEL_AUTH_DBERR. Does NOT require MFA —
+ * the enrolled device is the possession factor. */
+int cel_auth_device_exchange(const char *device_token, char *out_token, size_t token_size,
+                             cel_user_t *out_user);
+
+/* Revoke one of `user_id`'s OWN device tokens by public id. CEL_AUTH_OK /
+ * CEL_AUTH_INVALID (no such active device for this user) / CEL_AUTH_DBERR. */
+int cel_auth_device_revoke(const char *user_id, const char *id);
+
+/* List a user's active (unexpired, unrevoked) device tokens; `cb` fires once per
+ * row (never the token value). CEL_AUTH_OK / CEL_AUTH_DBERR. */
+typedef void (*cel_device_cb)(void *ctx, const char *id, const char *label,
+                              long created_at, long last_used_at, long expires_at);
+int cel_auth_device_list(const char *user_id, cel_device_cb cb, void *ctx);
+
 /* Create a single-use email-verification token for `user_id`. On success writes
  * the raw token (>= 65 bytes) and the account email (for the caller to send to),
  * returning CEL_AUTH_OK. Returns CEL_AUTH_CONFLICT if the email is already
