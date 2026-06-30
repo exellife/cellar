@@ -105,13 +105,30 @@ static const char *AUTH_SCHEMA =
 /* Bump this when the cel_* infra schema changes, and add the matching ALTER step
  * in cel_auth_schema_apply below. Tracked per app via SQLite's PRAGMA
  * user_version, so a newer cellar can evolve an existing app's bundle in place. */
-#define CEL_AUTH_SCHEMA_VERSION 2
+#define CEL_AUTH_SCHEMA_VERSION 3
 
 /* v1 -> v2: per-user MFA-verify lockout (M-1). A fresh db gets these via the base
  * AUTH_SCHEMA above; only a db already at v1 needs the ALTERs. */
 static const char *AUTH_SCHEMA_V2 =
     "ALTER TABLE cel_mfa ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0;"
     "ALTER TABLE cel_mfa ADD COLUMN locked_until INTEGER;";
+
+/* v2 -> v3: device tokens (PIN fast-login). The table is also in the base AUTH_SCHEMA
+ * (a fresh db gets it there); this step adds it to an ALREADY-PROVISIONED db, which
+ * the version gate would otherwise skip. CREATE ... IF NOT EXISTS, so it's safe to
+ * run on a fresh db too (unlike the V2 ADD COLUMNs). */
+static const char *AUTH_SCHEMA_V3 =
+    "CREATE TABLE IF NOT EXISTS cel_device_tokens ("
+    "  token        TEXT PRIMARY KEY,"
+    "  id           TEXT NOT NULL UNIQUE,"
+    "  user_id      TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,"
+    "  label        TEXT,"
+    "  created_at   INTEGER NOT NULL DEFAULT (unixepoch()),"
+    "  last_used_at INTEGER,"
+    "  expires_at   INTEGER NOT NULL,"
+    "  revoked_at   INTEGER"
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_cel_device_tokens_user ON cel_device_tokens(user_id);";
 
 static long user_version(struct sqlite3 *db) {
     sqlite3_stmt *st = NULL;
@@ -141,6 +158,9 @@ int cel_auth_schema_apply(struct sqlite3 *db) {
     /* Only an existing v1 db needs the ALTERs (a fresh db got the columns from the
      * base schema above, so applying them again would error on a duplicate column). */
     if (v == 1 && exec_or_log(db, AUTH_SCHEMA_V2) != 0) return -1;
+    /* v < 3 adds cel_device_tokens to an already-provisioned db. IF NOT EXISTS, so
+     * harmless on a fresh db that just got it from the base schema. */
+    if (v < 3 && exec_or_log(db, AUTH_SCHEMA_V3) != 0) return -1;
 
     char stamp[48];
     snprintf(stamp, sizeof stamp, "PRAGMA user_version = %d", CEL_AUTH_SCHEMA_VERSION);

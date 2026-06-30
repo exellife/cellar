@@ -153,6 +153,20 @@ int main(void) {
     CHECK(cel_auth_device_exchange("not-a-real-token", stok, sizeof stok, &du) == CEL_AUTH_INVALID,
           "garbage device token rejected");
 
+    /* Migration regression: an ALREADY-PROVISIONED db at an older user_version must
+     * still gain cel_device_tokens on re-apply (the table was first shipped without a
+     * version bump → existing dbs 500'd on the feature). Simulate a v2 db missing it. */
+    {
+        sqlite3 *mc = app_db_conn_acquire(app);
+        CHECK(sqlite3_exec(mc, "DROP TABLE cel_device_tokens; PRAGMA user_version = 2;",
+                           NULL, NULL, NULL) == SQLITE_OK, "simulate a v2 db without the device table");
+        CHECK(cel_auth_schema_apply(mc) == 0, "re-apply schema upgrades v2 -> current");
+        app_db_conn_release(app, mc);
+    }
+    char dtok5[129], did5[37];
+    CHECK(cel_auth_device_create(id2, "after-upgrade", 3600, dtok5, sizeof dtok5, did5, sizeof did5) == CEL_AUTH_OK,
+          "device table present again after the version upgrade");
+
     app_db_global_shutdown();
     unlink(path);
     { char x[300]; snprintf(x,sizeof x,"%s-wal",path); unlink(x); snprintf(x,sizeof x,"%s-shm",path); unlink(x); }
