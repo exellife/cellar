@@ -247,7 +247,7 @@ int cel_mfa_create_challenge(const char *user_id, char *out_challenge, size_t si
     return rc;
 }
 
-int cel_mfa_verify_login(const char *challenge, const char *code, int ttl_seconds,
+int cel_mfa_verify_login(const char *challenge, const char *code,
                          char *out_token, size_t token_size, cel_user_t *out_user) {
     if (!challenge || !code) return CEL_MFA_INVALID;
     char h[65];
@@ -330,7 +330,7 @@ out:
     if (!success) return rc;
 
     /* Session issuance takes its own write lock — do it after releasing ours. */
-    if (cel_auth_issue_session(user_id, ttl_seconds, out_token, token_size) != CEL_AUTH_OK)
+    if (cel_auth_issue_session(user_id, out_token, token_size) != CEL_AUTH_OK)
         return CEL_MFA_DBERR;
     if (cel_auth_verify(out_token, out_user) != CEL_AUTH_OK) return CEL_MFA_DBERR;
     cel_metric_inc(CEL_M_LOGIN_OK);

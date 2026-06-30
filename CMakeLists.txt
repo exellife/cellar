@@ -240,7 +240,7 @@ if(CELLAR_BUILD_TESTS)
     # so the unit target links the same engine slice as cel_apps_test.
     add_executable(cel_hooks_test tests/cel_hooks_test.c
         src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c
-        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c
+        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c src/core/session.c
         src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
         src/engine/cel_control.c src/engine/cel_sync.c src/engine/realtime.c src/core/metrics.c
         src/core/event_sink_sqlite.c src/core/job_queue_sqlite.c src/engine/cel_hook_state.c)
@@ -255,7 +255,7 @@ if(CELLAR_BUILD_TESTS)
     # independence. No server needed (drives a temp bundle dir).
     add_executable(cel_hook_state_test tests/cel_hook_state_test.c
         src/engine/cel_hook_state.c src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c
-        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c
+        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c src/core/session.c
         src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
         src/engine/cel_control.c src/engine/cel_sync.c src/engine/realtime.c src/core/metrics.c
         src/core/event_sink_sqlite.c src/core/job_queue_sqlite.c)
@@ -317,7 +317,8 @@ if(CELLAR_BUILD_TESTS)
     # SQLite app. MFA stubbed off in the test, so no Postgres. libpq-free.
     add_executable(auth_sqlite_test tests/auth_sqlite_test.c
         src/core/auth.c src/core/auth_schema.c src/core/app_db.c src/core/db_sqlite.c
-        src/core/password.c src/core/session_cache.c src/core/metrics.c)
+        src/core/password.c src/core/session_cache.c src/core/metrics.c
+        src/core/session.c src/core/session_strategy.c)
     target_include_directories(auth_sqlite_test PRIVATE src/core src)
     target_link_libraries(auth_sqlite_test SQLite::SQLite3 logger Threads::Threads
         ${SODIUM_LIB} ${UUID_LIB})
@@ -327,7 +328,7 @@ if(CELLAR_BUILD_TESTS)
     # :port stripping, invalid-host rejection, per-app catalogs, enter/leave
     # thread-local binding. Builds throwaway bundle dirs under /tmp; no Postgres.
     add_executable(cel_apps_test tests/cel_apps_test.c
-        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c
+        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c src/core/session.c
         src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
         src/engine/cel_control.c src/engine/cel_sync.c src/engine/realtime.c src/core/metrics.c
         src/core/event_sink_sqlite.c src/core/job_queue_sqlite.c
@@ -345,7 +346,7 @@ if(CELLAR_BUILD_TESTS)
     add_executable(mfa_sqlite_test tests/mfa_sqlite_test.c
         src/core/mfa.c src/core/auth.c src/core/auth_schema.c src/core/app_db.c
         src/core/db_sqlite.c src/core/password.c src/core/session_cache.c
-        src/core/metrics.c src/core/totp.c)
+        src/core/metrics.c src/core/totp.c src/core/session.c src/core/session_strategy.c)
     target_include_directories(mfa_sqlite_test PRIVATE src/core src)
     target_link_libraries(mfa_sqlite_test SQLite::SQLite3 logger Threads::Threads
         ${SODIUM_LIB} ${UUID_LIB} OpenSSL::Crypto)
@@ -354,7 +355,7 @@ if(CELLAR_BUILD_TESTS)
     # DB-free unit test for the declarative-roles authorization engine (#50):
     # built-in defaults stay byte-for-byte, and a "_roles" config bundle defines
     # a custom role vocabulary. Links policy.c (auth stubbed in the test).
-    add_executable(policy_test tests/policy_test.c src/engine/policy.c)
+    add_executable(policy_test tests/policy_test.c src/engine/policy.c src/core/session.c)
     target_include_directories(policy_test PRIVATE src/engine src)
     target_link_libraries(policy_test cjson logger)
     add_test(NAME policy COMMAND policy_test)
@@ -595,6 +596,11 @@ if(CELLAR_BUILD_TESTS)
         # roles refused. Regression for the auth-review HIGH findings.
         add_test(NAME create_user_ctx
             COMMAND bash ${CMAKE_SOURCE_DIR}/tests/create_user_ctx_test.sh $<TARGET_FILE:cellar>)
+        # Per-app sliding session policy (_session): renew-on-use keeps an active
+        # session past the idle window, the absolute cap still bounds it, and an
+        # idle session expires. Boots with a short-window sliding policy fixture.
+        add_test(NAME session_sliding
+            COMMAND bash ${CMAKE_SOURCE_DIR}/tests/session_sliding_test.sh $<TARGET_FILE:cellar>)
         # on_realtime hook (Phase 2 §8): a delivery filter drops SILENT-titled notes
         # while normal notes still push (CEL_HOOKS_FILE=tests/hooks_realtime.lua).
         add_test(NAME realtime_filter

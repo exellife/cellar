@@ -1,4 +1,5 @@
 #include "policy.h"
+#include "core/session.h"
 #include "logger.h"
 
 #include <cjson/cJSON.h>
@@ -327,6 +328,34 @@ cel_policy_t *cel_policy_load(const char *config_path) {
 void cel_policy_free(cel_policy_t *p)       { cJSON_Delete((cJSON *)p); }
 void cel_policy_set_active(cel_policy_t *p) { t_active = (cJSON *)p; }
 void cel_policy_clear_active(void)          { t_active = NULL; }
+
+/* Resolve the `_session` block of the active policy into a session policy. Starts
+ * from the built-in default (fixed, 24h) and overlays whatever the block sets; an
+ * unknown strategy is logged and left at the safe default. Numbers <= 0 (or < 0 for
+ * the cap) are ignored, keeping the default. */
+void cel_policy_session(cel_session_policy_t *out) {
+    if (!out) return;
+    cel_session_policy_default(out);
+    const cJSON *s = cJSON_GetObjectItemCaseSensitive(active(), "_session");
+    if (!cJSON_IsObject(s)) return;
+
+    bool ttl_set = false;
+    const cJSON *strat = cJSON_GetObjectItemCaseSensitive(s, "strategy");
+    if (cJSON_IsString(strat) && strat->valuestring) {
+        if      (strcmp(strat->valuestring, "fixed")   == 0) out->strategy = CEL_SESSION_FIXED;
+        else if (strcmp(strat->valuestring, "sliding") == 0) out->strategy = CEL_SESSION_SLIDING;
+        else LOG_ERROR("policy: unknown _session.strategy '%s' — using the safe default (fixed)",
+                       strat->valuestring);
+    }
+    const cJSON *ttl = cJSON_GetObjectItemCaseSensitive(s, "ttl_seconds");
+    if (cJSON_IsNumber(ttl) && ttl->valuedouble > 0) { out->ttl_seconds = (int)ttl->valuedouble; ttl_set = true; }
+
+    const cJSON *cap = cJSON_GetObjectItemCaseSensitive(s, "absolute_max_seconds");
+    if (cJSON_IsNumber(cap) && cap->valuedouble >= 0) out->absolute_max_seconds = (int)cap->valuedouble;
+
+    /* sliding without an explicit ttl: the idle window defaults to 1h, not fixed's 24h. */
+    if (out->strategy == CEL_SESSION_SLIDING && !ttl_set) out->ttl_seconds = 3600;
+}
 
 void cel_policy_cleanup(void) {
     if (g_default) { cJSON_Delete(g_default); g_default = NULL; }

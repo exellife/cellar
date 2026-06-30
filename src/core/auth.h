@@ -40,16 +40,17 @@ int cel_auth_unlock(const char *email);
  * CEL_AUTH_MFA_REQUIRED with a short-lived challenge in `out_challenge` (the
  * caller completes login via cel_mfa_verify_login). `out_user` is filled in both
  * cases. Both buffers must be >= 65 bytes. Returns CEL_AUTH_*. */
-int cel_auth_login(const char *email, const char *password, int ttl_seconds,
+int cel_auth_login(const char *email, const char *password,
                    char *out_token, size_t token_size,
                    char *out_challenge, size_t challenge_size,
                    cel_user_t *out_user);
 
 /* Mint a session for an ALREADY-authenticated user: insert a hashed-token row and
  * return the raw token (>= 65 bytes), refreshing last_login_at. Shared by the
- * password path, MFA verification, and federated login. Returns CEL_AUTH_*. */
-int cel_auth_issue_session(const char *user_id, int ttl_seconds,
-                           char *out_token, size_t token_size);
+ * password path, MFA verification, and federated login. The session lifetime +
+ * renewal come from the active per-app session policy (cel_session_set_active),
+ * not a caller arg. Returns CEL_AUTH_*. */
+int cel_auth_issue_session(const char *user_id, char *out_token, size_t token_size);
 
 /* Federated sign-in (the DB half of OAuth — the ID token is already verified):
  * resolve a (provider, sub) identity to a session. An existing identity logs in;
@@ -64,7 +65,7 @@ int cel_auth_issue_session(const char *user_id, int ttl_seconds,
  * Returns CEL_AUTH_OK / MFA_REQUIRED / INVALID (no/again untrusted account) / DBERR. */
 int cel_auth_oauth_login(const char *provider, const char *sub,
                          const char *email, bool email_verified, bool email_link_trusted,
-                         const char *provision_role, int ttl_seconds,
+                         const char *provision_role,
                          char *out_token, size_t token_size,
                          char *out_challenge, size_t challenge_size, cel_user_t *out_user);
 
@@ -74,7 +75,7 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
  * responsible for deciding whether `role` is permitted for signup (see
  * cel_role_can_self_register). */
 int cel_auth_register(const char *email, const char *password, const char *role,
-                      int ttl_seconds, char *out_token, size_t token_size,
+                      char *out_token, size_t token_size,
                       cel_user_t *out_user);
 
 /* Admin-provisioned account creation: insert a user with `role`. No session is

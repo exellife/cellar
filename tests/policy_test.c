@@ -242,6 +242,48 @@ int main(void) {
     chk("realtime-only, no _default: deny",         cel_policy_allows("live", CEL_ACT_LIST, "staff"), false);
     chk("realtime-only, no _default: superuser ok", cel_policy_allows("live", CEL_ACT_LIST, "platform_admin"), true);
 
+    /* ---- 9. per-app session policy (_session) resolution ---- */
+    printf("[_session policy resolution]\n");
+    cel_session_policy_t sp;
+
+    /* no config -> built-in default (fixed, 24h, no cap) — the back-compat guarantee */
+    cel_policy_cleanup(); cel_policy_init(NULL);
+    cel_policy_session(&sp);
+    chk("default strategy fixed", sp.strategy == CEL_SESSION_FIXED, true);
+    chk("default ttl 24h",        sp.ttl_seconds == 24 * 3600, true);
+    chk("default no cap",         sp.absolute_max_seconds == 0, true);
+
+    /* explicit fixed with a custom lifetime */
+    load_policy("{ \"_session\": { \"strategy\": \"fixed\", \"ttl_seconds\": 3600 } }");
+    cel_policy_session(&sp);
+    chk("fixed strategy",   sp.strategy == CEL_SESSION_FIXED, true);
+    chk("fixed custom ttl", sp.ttl_seconds == 3600, true);
+
+    /* sliding with explicit idle window + absolute cap */
+    load_policy("{ \"_session\": { \"strategy\": \"sliding\", \"ttl_seconds\": 900, \"absolute_max_seconds\": 43200 } }");
+    cel_policy_session(&sp);
+    chk("sliding strategy", sp.strategy == CEL_SESSION_SLIDING, true);
+    chk("sliding idle 900", sp.ttl_seconds == 900, true);
+    chk("sliding cap 12h",  sp.absolute_max_seconds == 43200, true);
+
+    /* sliding without ttl -> 1h idle default, no cap */
+    load_policy("{ \"_session\": { \"strategy\": \"sliding\" } }");
+    cel_policy_session(&sp);
+    chk("sliding default idle 1h", sp.ttl_seconds == 3600, true);
+    chk("sliding default no cap",  sp.absolute_max_seconds == 0, true);
+
+    /* unknown strategy -> safe default (fixed); other parsed fields still applied */
+    load_policy("{ \"_session\": { \"strategy\": \"bogus\", \"ttl_seconds\": 100 } }");
+    cel_policy_session(&sp);
+    chk("unknown -> fixed",      sp.strategy == CEL_SESSION_FIXED, true);
+    chk("unknown keeps ttl",     sp.ttl_seconds == 100, true);
+
+    /* non-positive ttl ignored (keeps the default), negative cap ignored */
+    load_policy("{ \"_session\": { \"strategy\": \"fixed\", \"ttl_seconds\": 0, \"absolute_max_seconds\": -5 } }");
+    cel_policy_session(&sp);
+    chk("ttl<=0 ignored -> 24h",  sp.ttl_seconds == 24 * 3600, true);
+    chk("cap<0 ignored -> 0",     sp.absolute_max_seconds == 0, true);
+
     cel_policy_cleanup();
     printf(failures ? "\nFAILED (%d)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;

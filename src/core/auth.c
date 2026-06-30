@@ -1,4 +1,5 @@
 #include "auth.h"
+#include "session.h"
 #include "password.h"
 #include "app_db.h"
 #include "db_sqlite.h"
@@ -90,7 +91,7 @@ int cel_auth_unlock(const char *email) {
 
 /* ---- login ----------------------------------------------------------------- */
 
-int cel_auth_login(const char *email, const char *password, int ttl_seconds,
+int cel_auth_login(const char *email, const char *password,
                    char *out_token, size_t token_size,
                    char *out_challenge, size_t challenge_size,
                    cel_user_t *out_user) {
@@ -186,7 +187,7 @@ int cel_auth_login(const char *email, const char *password, int ttl_seconds,
                  ? CEL_AUTH_MFA_REQUIRED : CEL_AUTH_DBERR;
         goto out;
     }
-    rc = cel_auth_issue_session(out_user->id, ttl_seconds, out_token, token_size);
+    rc = cel_auth_issue_session(out_user->id, out_token, token_size);
 out:
     if      (rc == CEL_AUTH_OK)                                  cel_metric_inc(CEL_M_LOGIN_OK);
     else if (rc == CEL_AUTH_INVALID || rc == CEL_AUTH_LOCKED)    cel_metric_inc(CEL_M_LOGIN_FAIL);
@@ -194,42 +195,18 @@ out:
 }
 
 /* Mint a session for an already-authenticated user (shared by the password path,
- * MFA verify, and federated login). Token stored hashed; raw returned. */
-int cel_auth_issue_session(const char *user_id, int ttl_seconds,
-                           char *out_token, size_t token_size) {
-    if (cel_random_token_hex(out_token, token_size, TOKEN_BYTES) != 0) return CEL_AUTH_DBERR;
-    char thash[65];
-    if (cel_token_hash(out_token, thash, sizeof thash) != 0) return CEL_AUTH_DBERR;
-
-    app_db_t *app = app_db_current();
-    if (!app) return CEL_AUTH_DBERR;
-    app_db_write_lock(app);
-    sqlite3 *c = app_db_conn_acquire(app);
-    int rc = CEL_AUTH_DBERR;
-    if (c) {
-        char exp[24], now[24];
-        snprintf(exp, sizeof exp, "%ld", cel_now_epoch() + ttl_seconds);
-        snprintf(now, sizeof now, "%ld", cel_now_epoch());
-        if (tx(c, "BEGIN")) {
-            const char *ins[3] = { thash, user_id, exp };
-            bool ok = cel_db_exec(c, "INSERT INTO cel_sessions(token, user_id, expires_at) "
-                                "VALUES(?1, ?2, ?3)", ins, 3);
-            if (ok) {
-                const char *up[2] = { now, user_id };
-                cel_db_exec(c, "UPDATE cel_users SET last_login_at=?1 WHERE id=?2", up, 2);
-            }
-            rc = (ok && tx(c, "COMMIT")) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
-            if (rc != CEL_AUTH_OK) tx(c, "ROLLBACK");
-        }
-        app_db_conn_release(app, c);
-    }
-    app_db_write_unlock(app);
-    return rc;
+ * MFA verify, and federated login). Delegates to the active per-app session
+ * strategy (see session.c); token stored hashed, raw returned. */
+int cel_auth_issue_session(const char *user_id, char *out_token, size_t token_size) {
+    const cel_session_policy_t *pol = cel_session_active();
+    const cel_session_strategy_t *s = cel_session_strategy_for(pol->strategy);
+    if (!s) s = cel_session_strategy_for(CEL_SESSION_FIXED);   /* unknown → safe default */
+    return s->issue(pol, user_id, out_token, token_size);
 }
 
 int cel_auth_oauth_login(const char *provider, const char *sub,
                          const char *email, bool email_verified, bool email_link_trusted,
-                         const char *provision_role, int ttl_seconds,
+                         const char *provision_role,
                          char *out_token, size_t token_size,
                          char *out_challenge, size_t challenge_size, cel_user_t *out_user) {
     if (!provider || !*provider || !sub || !*sub) return CEL_AUTH_INVALID;
@@ -305,7 +282,7 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
         return (cel_mfa_create_challenge(user_id, out_challenge, challenge_size) == 0)
                    ? CEL_AUTH_MFA_REQUIRED : CEL_AUTH_DBERR;
     }
-    rc = cel_auth_issue_session(user_id, ttl_seconds, out_token, token_size);
+    rc = cel_auth_issue_session(user_id, out_token, token_size);
     if (rc == CEL_AUTH_OK) {
         if (cel_auth_verify(out_token, out_user) != CEL_AUTH_OK) rc = CEL_AUTH_DBERR;
         else cel_metric_inc(CEL_M_LOGIN_OK);
@@ -318,7 +295,7 @@ out:
 }
 
 int cel_auth_register(const char *email, const char *password, const char *role,
-                      int ttl_seconds, char *out_token, size_t token_size,
+                      char *out_token, size_t token_size,
                       cel_user_t *out_user) {
     char hash[256];
     if (cel_password_hash(password, hash, sizeof hash) != 0) return CEL_AUTH_DBERR;
@@ -367,9 +344,11 @@ int cel_auth_register(const char *email, const char *password, const char *role,
         }
     }
 
-    /* 3. the auto-login session (token hash stored; raw token returned). */
+    /* 3. the auto-login session (token hash stored; raw token returned). Issue is
+     * strategy-independent (fixed/sliding both start at now + ttl), so read the
+     * active per-app session policy's ttl rather than a caller arg. */
     {
-        char exp[24]; snprintf(exp, sizeof exp, "%ld", cel_now_epoch() + ttl_seconds);
+        char exp[24]; snprintf(exp, sizeof exp, "%ld", cel_now_epoch() + cel_session_active()->ttl_seconds);
         const char *ins[3] = { thash, uid, exp };
         if (!cel_db_exec(c, "INSERT INTO cel_sessions(token, user_id, expires_at) "
                        "VALUES(?1, ?2, ?3)", ins, 3)) goto out;
@@ -433,37 +412,12 @@ out:
 }
 
 int cel_auth_verify(const char *token, cel_user_t *out_user) {
-    char thash[65];
-    if (cel_token_hash(token, thash, sizeof thash) != 0) return CEL_AUTH_INVALID;
-
-    app_db_t *app = app_db_current();
-    if (!app) return CEL_AUTH_DBERR;
-    sqlite3 *c = app_db_conn_acquire(app);
-    if (!c) return CEL_AUTH_DBERR;
-    int rc = CEL_AUTH_DBERR;
-
-    char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", cel_now_epoch());
-    const char *p[2] = { thash, nowbuf };
-    sqlite3_stmt *st;
-    if (cel_db_prep(c,
-        "SELECT u.id, u.email, u.role, (u.email_verified_at IS NOT NULL) "
-        "FROM cel_sessions s JOIN cel_users u ON u.id = s.user_id "
-        "WHERE s.token=?1 AND s.expires_at > ?2 AND u.is_active=1", p, 2, &st) != SQLITE_OK) {
-        app_db_conn_release(app, c); return CEL_AUTH_DBERR;
-    }
-    int step = sqlite3_step(st);
-    if (step == SQLITE_ROW) {
-        snprintf(out_user->id,    sizeof out_user->id,    "%s", (const char *)sqlite3_column_text(st, 0));
-        snprintf(out_user->email, sizeof out_user->email, "%s", (const char *)sqlite3_column_text(st, 1));
-        snprintf(out_user->role,  sizeof out_user->role,  "%s", (const char *)sqlite3_column_text(st, 2));
-        out_user->email_verified = sqlite3_column_int(st, 3) != 0;
-        rc = CEL_AUTH_OK;
-    } else if (step == SQLITE_DONE) {
-        rc = CEL_AUTH_INVALID;
-    }
-    sqlite3_finalize(st);
-    app_db_conn_release(app, c);
-    return rc;
+    /* Delegate to the active per-app session strategy (fixed = expiry-only;
+     * sliding = renew on use + absolute cap). See session.c. */
+    const cel_session_policy_t *pol = cel_session_active();
+    const cel_session_strategy_t *s = cel_session_strategy_for(pol->strategy);
+    if (!s) s = cel_session_strategy_for(CEL_SESSION_FIXED);   /* unknown → safe default */
+    return s->verify(pol, token, out_user);
 }
 
 int cel_auth_resolve(const char *token, cel_user_t *out_user) {

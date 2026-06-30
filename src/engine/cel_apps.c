@@ -198,6 +198,11 @@ void cel_apps_enter(const cel_app_t *app) {
     app_db_set_current(app ? app->db : NULL);
     cel_catalog_set_active(app ? app->catalog : NULL);
     cel_policy_set_active(app ? app->policy : NULL);   /* NULL → process default */
+    /* Resolve + bind the per-app session policy from the now-active policy (its
+     * _session block). cel_auth_issue_session/verify read this thread-local. */
+    cel_session_policy_t sp;
+    cel_policy_session(&sp);
+    cel_session_set_active(&sp);
     t_cur_app   = app;
     t_cur_hooks = app ? app->hooks : NULL;
 }
@@ -206,6 +211,7 @@ void cel_apps_leave(void) {
     app_db_set_current(NULL);
     cel_catalog_set_active(NULL);
     cel_policy_clear_active();
+    cel_session_clear_active();
     t_cur_app   = NULL;
     t_cur_hooks = NULL;
 }

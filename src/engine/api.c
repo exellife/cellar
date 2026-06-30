@@ -25,7 +25,6 @@
  * (app_db_current(), set at startup). Interim: one global app until request
  * routing resolves Host/path → bundle per request. */
 
-#define SESSION_TTL_SECONDS (24 * 3600)
 #define MIN_PASSWORD_LEN 8
 /* Cap the password length: Argon2id processes the whole input, so a multi-MB
  * password is a CPU-DoS. 128 is well above any real password. */
@@ -1337,7 +1336,7 @@ cel_api_result_t cel_api_login(const cJSON *req) {
     char token[129], challenge[129];
     cel_user_t user;
     int rc = cel_auth_login(email->valuestring, pass->valuestring,
-                            SESSION_TTL_SECONDS, token, sizeof token,
+                            token, sizeof token,
                             challenge, sizeof challenge, &user);
     if (rc == CEL_AUTH_MFA_REQUIRED) {
         /* Factor one passed; no session yet. The client submits the challenge +
@@ -1465,7 +1464,7 @@ cel_api_result_t cel_api_mfa_verify(const cJSON *req) {
     char token[129];
     cel_user_t user;
     int rc = cel_mfa_verify_login(challenge->valuestring, code->valuestring,
-                                  SESSION_TTL_SECONDS, token, sizeof token, &user);
+                                  token, sizeof token, &user);
     if (rc == CEL_MFA_INVALID) return result_error(401, "invalid code or challenge");
     if (rc != CEL_MFA_OK)      return result_error(500, "server error");
 
@@ -1622,7 +1621,7 @@ cel_api_result_t cel_api_oauth(const cJSON *req) {
     char stoken[129], challenge[129];
     cel_user_t user;
     int rc = cel_auth_oauth_login(provider->valuestring, claims.sub, claims.email,
-                                  claims.email_verified, link_trusted, prole, SESSION_TTL_SECONDS,
+                                  claims.email_verified, link_trusted, prole,
                                   stoken, sizeof stoken, challenge, sizeof challenge, &user);
     if (rc == CEL_AUTH_MFA_REQUIRED) {
         /* Federated factor one passed; no session yet. Same flow as password login:
@@ -1838,7 +1837,7 @@ cel_api_result_t cel_api_register(const cJSON *req) {
     char token[129];
     cel_user_t user;
     int rc = cel_auth_register(email->valuestring, pass->valuestring, role,
-                               SESSION_TTL_SECONDS, token, sizeof token, &user);
+                               token, sizeof token, &user);
 
     if (rc == CEL_AUTH_OK) send_email_verification(user.id);  /* only on a real new account */
 

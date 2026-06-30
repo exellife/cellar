@@ -64,7 +64,7 @@ int cel_mfa_create_challenge(const char *user_id, char *out_challenge, size_t si
 
 /* Second login step: validate the challenge + TOTP code, then mint a session.
  * Fills `out_token` (>= 65 bytes) and `out_user` on success. */
-int cel_mfa_verify_login(const char *challenge, const char *code, int ttl_seconds,
+int cel_mfa_verify_login(const char *challenge, const char *code,
                          char *out_token, size_t token_size, cel_user_t *out_user);
 
 /* Admin lockout recovery: remove a user's enrollment by email (e.g. the

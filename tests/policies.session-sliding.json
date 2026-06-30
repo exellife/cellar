@@ -1,0 +1,6 @@
+{
+  "_comment": "Fixture for session_sliding_test: a sliding session with a short idle window (3s) and a short absolute cap (5s) so the e2e can prove renew-on-use, idle-drop, and the hard cap without long sleeps. admin is a superuser so the seeded products table is readable as the authed probe.",
+  "_default": "allow",
+  "_roles": { "admin": { "superuser": true } },
+  "_session": { "strategy": "sliding", "ttl_seconds": 3, "absolute_max_seconds": 5 }
+}

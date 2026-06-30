@@ -50,6 +50,11 @@ Shape:
   "_rpc": {
     "some_function": { "roles": ["staff"] }
   },
+  "_session": {
+    "strategy": "sliding",
+    "ttl_seconds": 900,
+    "absolute_max_seconds": 43200
+  },
 
   "<table>": {
     "realtime": true,
@@ -63,7 +68,7 @@ Shape:
 ```
 
 Top-level keys come in two kinds:
-- **Reserved** (start with `_`): `_default`, `_roles`, `_rpc`.
+- **Reserved** (start with `_`): `_default`, `_roles`, `_rpc`, `_session`.
 - **Table entries**: every other key is a table name; its value configures that table.
 
 > ⚠️ **Applying changes.** `policies.json` is loaded the first time an app is served and
@@ -171,6 +176,33 @@ A user's role is set at registration (`POST /auth/register` with `role`, gated b
 `self_register`) or by an admin provisioning the account. It's returned in the login
 response (`user.role`) so the client can branch its UI on it — but **never trust the
 client's copy for security; the server re-checks every request.**
+
+---
+
+## 4b. Session policy (`_session`)
+
+How long a login session lives, and whether it renews, is **per-app** config. Omit
+`_session` entirely and you get the historical default: a **fixed 24h** session (no
+renewal). The block selects a strategy and its parameters:
+
+```jsonc
+"_session": {
+  "strategy": "fixed",          // "fixed" (default) | "sliding"
+  "ttl_seconds": 86400,         // fixed: absolute lifetime. sliding: the IDLE window.
+  "absolute_max_seconds": 0     // sliding only: hard cap measured from login; 0 = none
+}
+```
+
+| Strategy  | Behavior |
+|-----------|----------|
+| `fixed`   | Absolute lifetime: the session expires `ttl_seconds` after login, regardless of activity. No renewal. (= the historical behavior, now per-app configurable.) |
+| `sliding` | Idle window: each authenticated request that finds **less than half** the window left pushes the deadline out to `now + ttl_seconds` (lazy — at most ~one write per half-window). The session lives as long as it's used, then expires after `ttl_seconds` of inactivity. `absolute_max_seconds`, if set, is a hard ceiling from login that renewal can never exceed. |
+
+Notes:
+- **Defaults:** no block → `fixed`/24h. `strategy:"sliding"` with no `ttl_seconds` → 1h idle. A non-positive `ttl_seconds` (or negative cap) is ignored, keeping the default.
+- **Unknown `strategy`** → logged as an error and falls back to the safe default (`fixed`); the app still serves.
+- **Loaded once at startup** (like the rest of `policies.json`) — a change needs a cellar restart, not just a file copy.
+- **Sliding × the session cache:** if `CEL_SESSION_CACHE_TTL` is set, a cache hit skips the DB (so it neither renews nor re-checks expiry until the cache entry lapses) → idle expiry is enforced only within ~the cache TTL. For tight idle enforcement keep the cache TTL small or off. Full design + the future stateless/JWT + external-store strategies: [`session-management.md`](session-management.md).
 
 ---
 

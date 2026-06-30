@@ -26,8 +26,6 @@ static int failures = 0;
     else         { fprintf(stderr, "ok: %s\n", msg); } \
 } while (0)
 
-#define TTL 3600
-
 /* a valid 6-digit TOTP for `secret` at the current time */
 static void code_now(const char *secret, char *out, size_t n) {
     cel_totp_code_at(secret, (uint64_t)time(NULL), out, n);
@@ -76,7 +74,7 @@ int main(void) {
         cel_user_t u;
         CHECK(cel_mfa_create_challenge(uid, chal, sizeof chal) == CEL_MFA_OK, "create challenge");
         char c2[16]; code_now(secret, c2, sizeof c2);
-        int rc = cel_mfa_verify_login(chal, c2, TTL, tok, sizeof tok, &u);
+        int rc = cel_mfa_verify_login(chal, c2, tok, sizeof tok, &u);
         CHECK(rc == CEL_MFA_OK, "verify_login with TOTP");
         CHECK(strcmp(u.id, uid) == 0, "verify_login resolved the user");
         CHECK(cel_auth_verify(tok, &u) == CEL_AUTH_OK, "issued session token is valid");
@@ -87,7 +85,7 @@ int main(void) {
         char chal[129], tok[129];
         cel_user_t u;
         cel_mfa_create_challenge(uid, chal, sizeof chal);
-        CHECK(cel_mfa_verify_login(chal, "000000", TTL, tok, sizeof tok, &u) == CEL_MFA_INVALID,
+        CHECK(cel_mfa_verify_login(chal, "000000", tok, sizeof tok, &u) == CEL_MFA_INVALID,
               "verify_login wrong code -> invalid");
     }
 
@@ -96,11 +94,11 @@ int main(void) {
         char chal[129], tok[129];
         cel_user_t u;
         cel_mfa_create_challenge(uid, chal, sizeof chal);
-        CHECK(cel_mfa_verify_login(chal, codes[0], TTL, tok, sizeof tok, &u) == CEL_MFA_OK,
+        CHECK(cel_mfa_verify_login(chal, codes[0], tok, sizeof tok, &u) == CEL_MFA_OK,
               "verify_login with recovery code");
         char chal2[129];
         cel_mfa_create_challenge(uid, chal2, sizeof chal2);
-        CHECK(cel_mfa_verify_login(chal2, codes[0], TTL, tok, sizeof tok, &u) == CEL_MFA_INVALID,
+        CHECK(cel_mfa_verify_login(chal2, codes[0], tok, sizeof tok, &u) == CEL_MFA_INVALID,
               "recovery code is single-use");
     }
 
@@ -110,11 +108,11 @@ int main(void) {
         char chal[129], tok[129]; cel_user_t u;
         for (int i = 0; i < 10; i++) {                 /* MAX_MFA_FAILURES */
             cel_mfa_create_challenge(uid, chal, sizeof chal);
-            cel_mfa_verify_login(chal, "000000", TTL, tok, sizeof tok, &u);  /* wrong, fresh challenge each time */
+            cel_mfa_verify_login(chal, "000000", tok, sizeof tok, &u);  /* wrong, fresh challenge each time */
         }
         cel_mfa_create_challenge(uid, chal, sizeof chal);
         char good[16]; code_now(secret, good, sizeof good);
-        CHECK(cel_mfa_verify_login(chal, good, TTL, tok, sizeof tok, &u) == CEL_MFA_INVALID,
+        CHECK(cel_mfa_verify_login(chal, good, tok, sizeof tok, &u) == CEL_MFA_INVALID,
               "MFA locked after repeated failures — a VALID code is rejected (M-1)");
     }
 

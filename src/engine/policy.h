@@ -20,6 +20,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "core/session.h"   /* cel_session_policy_t */
+
 typedef struct {
     bool authenticated;
     char user_id[37];
@@ -111,6 +113,14 @@ bool cel_policy_rpc_allows(const char *fn, const char *role);
  * loaded config, valid for the process lifetime); returns the count. Used at
  * startup to audit which exposed functions are SECURITY DEFINER (H-4). */
 int cel_policy_rpc_names(const char **out, int max);
+
+/* ---- per-app session policy ----------------------------------------------- */
+
+/* Resolve the active app's `_session` block (policies.json) into `out`. Fills the
+ * built-in default (fixed, 24h) when there's no block / no active policy; an
+ * unknown strategy is logged and falls back to the safe default (fixed). Reads the
+ * thread-active policy, so call it after cel_policy_set_active. */
+void cel_policy_session(cel_session_policy_t *out);
 
 /* ---- self-service registration (Phase 8) ---------------------------------- */
 
