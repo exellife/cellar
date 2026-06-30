@@ -56,6 +56,17 @@ instead of working around it silently** — engine problems get fixed in the eng
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
 
+- **No revocable device token for PIN "fast sign-in"** — added device tokens: a long-lived, revocable
+  credential a client stores (e.g. encrypted behind a PIN) and exchanges for fresh sessions without
+  re-entering the password. `POST /auth/device {label?}` (Bearer) → `{id, device_token}` (shown once);
+  `POST /auth/session/from-device {device_token}` → `{token, user}` (public, rate-limited, no MFA step —
+  the enrolled device is the possession factor); `GET /auth/devices` + `POST /auth/devices/revoke {id}`
+  (own, Bearer). Token hashed at rest; **opt-in per app** via `_session.device_ttl_seconds` (0/absent →
+  endpoints 404). **Static/reusable** (rotation can layer on later). Account recovery (password reset /
+  `set_password` / log-out-everywhere) revokes all the user's device tokens — which is also the admin
+  force-revoke. `1cc0e20` (e2e in `device_token_test.py` + unit in `auth_sqlite_test.c`; client contract
+  in `docs/frontend-guide.md`).
+
 - **No way to reset an EXISTING user's password without email (admin set-password)** — added the
   `cellar.set_password(email, new_password) → true, err` Lua primitive, the update-side sibling of
   `cellar.create_user`: sets the password on an existing `password` identity with NO current-password
