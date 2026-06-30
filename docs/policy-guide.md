@@ -367,6 +367,11 @@ they're **deny-by-default and must be whitelisted** under `_rpc`:
   not reachable over the API).
 - For a whitelisted function, a **superuser bypasses** the per-function `roles` list;
   other roles must appear in it.
+- For a **public** rpc, list `"anon"` in its `roles` (e.g. `"search": { "roles": ["anon","user"] }`).
+- Enforced in the engine before the hook runs (`cel_api_rpc`): a denied call returns **401**
+  (caller unauthenticated) or **403** (authenticated but not permitted) — uniform for both
+  un-whitelisted and unauthorized functions, so `/rpc` isn't an existence oracle. A bundle with
+  **no `_rpc` block** has every rpc denied. (Hook-side self-guards are now belt-and-suspenders.)
 
 ---
 

@@ -382,9 +382,10 @@ def run_checks(port, db):
     chk("public detail has channel flags", det.get("allow_call") == 1, str(det)[:80])
     chk("public detail does NOT leak phone", "phone" not in det, str(list(det.keys())))
 
-    # reveal requires login
+    # reveal requires login — now enforced at the engine _rpc gate (401) before the
+    # hook's own self-guard runs (reveal_contact is whitelisted for "user" only).
     s, b = req("POST", "/rpc/reveal_contact", {"listing_id": clid})   # anon
-    chk("reveal anon -> 400 (login-gated)", s == 400, f"status={s}")
+    chk("reveal anon -> 401 (engine _rpc gate)", s == 401, f"status={s}")
 
     # buyer reveals phone -> gets number + event logged
     s, b = req("POST", "/rpc/reveal_contact", {"listing_id": clid}, token=buyer)
@@ -517,7 +518,7 @@ def run_checks(port, db):
     s, b = req("POST", "/rpc/favorite", {"listing_id": "no-such-listing"}, token=buyer)
     chk("favorite missing listing -> 400", s == 400, f"status={s}")
     s, b = req("POST", "/rpc/favorite", {"listing_id": clid})   # anon
-    chk("favorite anon -> 400 (login-gated)", s == 400, f"status={s}")
+    chk("favorite anon -> 401 (engine _rpc gate)", s == 401, f"status={s}")
 
     # ---- A1.8 auth-gate audit: ownership on listing edit/delete ----
     # seller posts a listing; a DIFFERENT user must not be able to edit or delete it

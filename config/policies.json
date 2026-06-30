@@ -9,6 +9,19 @@
     "viewer": { "allow": ["list", "get"] }
   },
 
+  "_rpc": {
+    "ping":           { "roles": ["viewer", "editor"] },
+    "whoami":         { "roles": ["viewer", "editor"] },
+    "echo":           { "roles": ["editor"] },
+    "count_products": { "roles": ["viewer", "editor"] },
+    "add_product":    { "roles": ["editor"] },
+    "create_user":    { "roles": ["admin"] },
+    "set_password":   { "roles": ["admin"] },
+    "boom":           { "roles": ["editor"] },
+    "make_user":      { "roles": ["editor"] },
+    "reset_pw":       { "roles": ["editor"] }
+  },
+
   "items": {
     "realtime": true
   },

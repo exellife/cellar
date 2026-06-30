@@ -1281,6 +1281,14 @@ cel_api_result_t cel_api_rpc(const cel_identity_t *who, const cJSON *req) {
     const cJSON *fn = cJSON_GetObjectItemCaseSensitive(req, "fn");
     if (!cJSON_IsString(fn) || !fn->valuestring[0]) return result_error(400, "fn required");
 
+    /* Authorization (fail-closed): the fn must be whitelisted in policies.json's
+     * `_rpc` for the caller's role (superusers still need it listed). Runs BEFORE
+     * dispatch — an unlisted OR unauthorized fn is denied uniformly, so /rpc isn't
+     * an existence oracle. No `_rpc` block at all → every rpc is denied. */
+    if (!cel_policy_rpc_allows(fn->valuestring, who->role))
+        return result_error(who->authenticated ? 403 : 401,
+                            who->authenticated ? "forbidden" : "authentication required");
+
     cel_lua_t *L = cel_hook_app_state(cel_apps_current_hooks());
     if (!L) return result_error(501, "rpc is not available (no hooks.lua for this app)");
 

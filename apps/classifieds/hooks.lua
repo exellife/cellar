@@ -510,7 +510,7 @@ local function get_listing(args, who)
 end
 
 -- ── A1.7: favorites (save/unsave + my list) ─────────────────────────────────
--- All login-gated, self-guarded (rpc has no engine authz). Toggle by listing id.
+-- All login-gated via the engine _rpc whitelist (self-guards are defense-in-depth). Toggle by listing id.
 local function favorite(args, who)
   if not (who and who.authenticated) then return nil end
   local lid = args and args.listing_id
@@ -779,10 +779,10 @@ end
 -- NOTES (engine authz model):
 --   * /api list+get now DEFER to policy (fixed in cellar) — anon may read a table
 --     that lists "anon"; search/listing rpcs remain for ranked/visibility queries.
---   * /rpc has NO authorization yet (no auth gate, _rpc whitelist not enforced) —
---     a known cellar gap (rpc authz lands in a later engine phase). Every rpc is
---     world-callable, so sensitive ones MUST self-guard: rebuild_facets checks
---     who.role == 'admin' itself.
+--   * /rpc IS authorized by the engine now: the _rpc whitelist in policies.json is
+--     enforced fail-closed (unlisted/unauthorized → 401/403 before this runs; a
+--     superuser still needs the fn listed). The self-guards below (e.g. rebuild_facets
+--     checking who.role == 'admin') are now defense-in-depth, not the primary gate.
 function rpc(name, args, who)
   if name == 'search' then
     return search(args)

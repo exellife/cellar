@@ -128,11 +128,25 @@ def main():
     s, b = req("POST", "/auth/device", {"label": "x"}, token=admin)
     chk("device tokens off by default -> 404", s == 404, f"status={s}")
 
-    # ---- unknown handler + faulting handler ----
+    # ---- rpc authorization (fail-closed _rpc whitelist) ----
+    # admin is a superuser → reaches every LISTED rpc above. Now the role paths for a
+    # non-superuser, and the deny paths:
+    viewer = login(("viewer@cellar.dev", "viewer-pw"))
+    chk("login viewer", bool(viewer))
+    s, b = req("POST", "/rpc/ping", token=viewer)   # ping whitelisted for viewer
+    chk("viewer allowed for whitelisted rpc -> 200", s == 200 and (b or {}).get("result", {}).get("pong") is True,
+        f"status={s}")
+    s, b = req("POST", "/rpc/echo", {"msg": "x"}, token=viewer)   # echo is editor-only
+    chk("viewer denied for role -> 403", s == 403, f"status={s}")
+    s, b = req("POST", "/rpc/ping")   # anon, ping not anon-whitelisted
+    chk("anon rpc -> 401", s == 401, f"status={s}")
+
+    # ---- unknown/unlisted + faulting handler ----
+    # an UNLISTED fn is denied at the authz gate (uniform with unauthorized → no
+    # existence oracle): 403, not the old 400 "unknown rpc".
     s, b = req("POST", "/rpc/nope", token=admin)
-    chk("unknown rpc -> 400 with reason", s == 400 and "unknown rpc" in (b or {}).get("message", ""),
-        str(b))
-    s, b = req("POST", "/rpc/boom", token=admin)
+    chk("unlisted rpc -> 403 (not an existence oracle)", s == 403, f"status={s}")
+    s, b = req("POST", "/rpc/boom", token=admin)   # boom IS listed → reaches the fault
     chk("faulting rpc -> 400 (no crash)", s == 400, f"status={s}")
 
     # server still healthy after the fault
