@@ -3,6 +3,7 @@
 #include "logger.h"
 
 #include <cjson/cJSON.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -347,11 +348,17 @@ void cel_policy_session(cel_session_policy_t *out) {
         else LOG_ERROR("policy: unknown _session.strategy '%s' — using the safe default (fixed)",
                        strat->valuestring);
     }
+    /* Clamp to INT_MAX before narrowing: (int)valuedouble is UB once the double
+     * exceeds INT_MAX (a JSON number can), and the overflow would land negative —
+     * a past expires_at (instantly-expired sessions) or a disabled cap. */
     const cJSON *ttl = cJSON_GetObjectItemCaseSensitive(s, "ttl_seconds");
-    if (cJSON_IsNumber(ttl) && ttl->valuedouble > 0) { out->ttl_seconds = (int)ttl->valuedouble; ttl_set = true; }
-
+    if (cJSON_IsNumber(ttl) && ttl->valuedouble > 0) {
+        out->ttl_seconds = ttl->valuedouble >= (double)INT_MAX ? INT_MAX : (int)ttl->valuedouble;
+        ttl_set = true;
+    }
     const cJSON *cap = cJSON_GetObjectItemCaseSensitive(s, "absolute_max_seconds");
-    if (cJSON_IsNumber(cap) && cap->valuedouble >= 0) out->absolute_max_seconds = (int)cap->valuedouble;
+    if (cJSON_IsNumber(cap) && cap->valuedouble >= 0)
+        out->absolute_max_seconds = cap->valuedouble >= (double)INT_MAX ? INT_MAX : (int)cap->valuedouble;
 
     /* sliding without an explicit ttl: the idle window defaults to 1h, not fixed's 24h. */
     if (out->strategy == CEL_SESSION_SLIDING && !ttl_set) out->ttl_seconds = 3600;

@@ -126,12 +126,13 @@ static int sliding_verify(const cel_session_policy_t *pol, const char *token, ce
     if (pol->absolute_max_seconds > 0 && created + (long)pol->absolute_max_seconds <= now)
         return CEL_AUTH_INVALID;
 
-    /* lazy renewal: push the deadline only once less than HALF the idle window
-     * remains, never beyond the absolute cap. Integer math (no float truncation at
-     * the boundary). Bounds writes to ~once per half-window of steady activity. */
+    /* lazy renewal: push the deadline once HALF OR LESS of the idle window remains,
+     * never beyond the absolute cap. Integer math (no float truncation at the
+     * boundary); `<=` so a session polled exactly every ttl/2 still renews rather
+     * than expiring on the tick. Bounds writes to ~once per half-window. */
     long idle = pol->ttl_seconds;
     long remaining = expires - now;
-    if (idle > 0 && remaining * 2 < idle) {
+    if (idle > 0 && remaining * 2 <= idle) {
         long new_expires = now + idle;
         if (pol->absolute_max_seconds > 0) {
             long cap = created + (long)pol->absolute_max_seconds;

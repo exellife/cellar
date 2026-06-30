@@ -89,9 +89,9 @@ and fills the struct (or the built-in default when absent), exactly like `cel_po
 **Verify (sliding):** the session is valid iff
 `expires_at > now  AND  (absolute_max == 0  OR  created_at + absolute_max > now)`.
 
-**Lazy renewal (avoid a write per request):** only renew once the session is past a fraction
-of its idle window — `if now > expires_at - ttl*RENEW_THRESHOLD` (e.g. THRESHOLD = 0.5, i.e.
-past the halfway point) — then
+**Lazy renewal (avoid a write per request):** only renew once **half or less** of the idle
+window remains — `if remaining*2 <= ttl` (integer math on whole seconds; `<=` so a session
+polled exactly every `ttl/2` renews on the tick rather than expiring) — then
 `UPDATE cel_sessions SET expires_at = MIN(now + ttl, created_at + absolute_max_or_∞)`.
 So a steady stream of requests writes at most ~once per `ttl/2`, not every request.
 

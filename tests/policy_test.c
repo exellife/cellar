@@ -11,6 +11,7 @@
 #include "policy.h"
 #include "core/auth.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -283,6 +284,13 @@ int main(void) {
     cel_policy_session(&sp);
     chk("ttl<=0 ignored -> 24h",  sp.ttl_seconds == 24 * 3600, true);
     chk("cap<0 ignored -> 0",     sp.absolute_max_seconds == 0, true);
+
+    /* huge values clamp to INT_MAX (no UB / negative overflow from the double->int cast) */
+    load_policy("{ \"_session\": { \"strategy\": \"sliding\", \"ttl_seconds\": 3000000000, \"absolute_max_seconds\": 5000000000 } }");
+    cel_policy_session(&sp);
+    chk("huge ttl clamped to INT_MAX", sp.ttl_seconds == INT_MAX, true);
+    chk("huge ttl stays positive",     sp.ttl_seconds > 0, true);
+    chk("huge cap clamped to INT_MAX", sp.absolute_max_seconds == INT_MAX, true);
 
     cel_policy_cleanup();
     printf(failures ? "\nFAILED (%d)\n" : "\nALL PASS\n", failures);

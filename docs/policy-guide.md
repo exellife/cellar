@@ -196,7 +196,7 @@ renewal). The block selects a strategy and its parameters:
 | Strategy  | Behavior |
 |-----------|----------|
 | `fixed`   | Absolute lifetime: the session expires `ttl_seconds` after login, regardless of activity. No renewal. (= the historical behavior, now per-app configurable.) |
-| `sliding` | Idle window: each authenticated request that finds **less than half** the window left pushes the deadline out to `now + ttl_seconds` (lazy — at most ~one write per half-window). The session lives as long as it's used, then expires after `ttl_seconds` of inactivity. `absolute_max_seconds`, if set, is a hard ceiling from login that renewal can never exceed. |
+| `sliding` | Idle window: each authenticated request that finds **half or less** of the window left pushes the deadline out to `now + ttl_seconds` (lazy — at most ~one write per half-window). The session lives as long as it's used, then expires after `ttl_seconds` of inactivity. `absolute_max_seconds`, if set, is a hard ceiling from login that renewal can never exceed. |
 
 Notes:
 - **Defaults:** no block → `fixed`/24h. `strategy:"sliding"` with no `ttl_seconds` → 1h idle. A non-positive `ttl_seconds` (or negative cap) is ignored, keeping the default.
