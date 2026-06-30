@@ -8,6 +8,12 @@
     "member": { "self_register": true, "allow": ["list", "get", "create", "update", "delete"] }
   },
 
+  "_rpc": {
+    "board_stats":     { "roles": ["member"] },
+    "recent_activity": { "roles": ["member"] },
+    "clear_done":      { "roles": ["member"] }
+  },
+
   "tasks": {
     "realtime": true,
     "list":   { "roles": ["member"], "owner_column": "owner_id" },
