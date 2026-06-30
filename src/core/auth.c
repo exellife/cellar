@@ -656,6 +656,73 @@ out:
     return rc;
 }
 
+int cel_auth_user_role(const char *email, char *out_role, size_t out_role_size) {
+    if (!email || !email[0]) return CEL_AUTH_INVALID;
+    if (out_role && out_role_size) out_role[0] = '\0';
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) return CEL_AUTH_DBERR;
+    int rc;
+    const char *p[1] = { email };
+    int f = cel_db_one_text(c,
+        "SELECT u.role FROM cel_identities i JOIN cel_users u ON u.id = i.user_id "
+        "WHERE i.provider='password' AND i.provider_uid=?1", p, 1, out_role, out_role_size);
+    if      (f < 0) rc = CEL_AUTH_DBERR;
+    else if (f == 0) rc = CEL_AUTH_INVALID;   /* no 'password' account for that email */
+    else            rc = CEL_AUTH_OK;
+    app_db_conn_release(app, c);
+    return rc;
+}
+
+int cel_auth_set_password(const char *email, const char *new_password) {
+    if (!email || !email[0] || !new_password) return CEL_AUTH_INVALID;
+    char hash[256];
+    if (cel_password_hash(new_password, hash, sizeof hash) != 0) return CEL_AUTH_DBERR;
+
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
+    int rc = CEL_AUTH_DBERR;
+    bool in_txn = false;
+    char user_id[37] = {0};
+
+    if (!tx(c, "BEGIN")) goto out;
+    in_txn = true;
+
+    /* Set the new secret on the password identity (keyed by email), claiming the
+     * user id. No row → no 'password' account for that email → INVALID. */
+    {
+        const char *up[2] = { hash, email };
+        int f = cel_db_one_text(c,
+            "UPDATE cel_identities SET secret=?1 "
+            "WHERE provider='password' AND provider_uid=?2 RETURNING user_id",
+            up, 2, user_id, sizeof user_id);
+        if (f < 0) { rc = CEL_AUTH_DBERR; goto out; }
+        if (f != 1 || !user_id[0]) { rc = CEL_AUTH_INVALID; goto out; }
+    }
+    /* Revoke sessions + pending MFA + clear lockout (full takeover recovery — a
+     * privileged reset assumes the account may be compromised). */
+    {
+        const char *us[1] = { user_id };
+        cel_db_exec(c, "DELETE FROM cel_sessions WHERE user_id=?1", us, 1);
+        cel_db_exec(c, "DELETE FROM cel_mfa_challenges WHERE user_id=?1", us, 1);
+        lockout_reset(c, user_id);
+    }
+
+    if (!tx(c, "COMMIT")) goto out;
+    in_txn = false;
+    cel_session_cache_clear();   /* can't evict by user id — clear and let it refill */
+    rc = CEL_AUTH_OK;
+out:
+    if (in_txn) tx(c, "ROLLBACK");
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
+    return rc;
+}
+
 #define VERIFY_TTL_SECONDS 86400   /* an email-verification link is good for 24h */
 
 int cel_auth_create_email_verification(const char *user_id,

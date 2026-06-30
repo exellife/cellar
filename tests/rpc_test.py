@@ -100,6 +100,30 @@ def main():
     chk("create_user weak password refused", s == 200 and "too short" in ((b or {}).get("result", {}).get("error") or ""),
         str(b))
 
+    # ---- cellar.set_password primitive: a hook resets an EXISTING account's password ----
+    # reset the account we minted above, then prove new works + old is rejected + sessions revoked
+    s, b = req("POST", "/rpc/set_password",
+               {"email": "hired@cellar.dev", "new_password": "reset-pw-99"}, token=admin)
+    chk("rpc set_password -> ok", s == 200 and (b or {}).get("result", {}).get("ok") is True, str(b))
+    chk("login with the NEW password works", bool(login(("hired@cellar.dev", "reset-pw-99"))), "")
+    chk("login with the OLD password rejected", not login(("hired@cellar.dev", "hired-pw1")), "")
+    # the escalation boundary holds: a hook CANNOT reset a superuser's password (admin takeover)
+    s, b = req("POST", "/rpc/set_password",
+               {"email": "admin@cellar.dev", "new_password": "pwned-admin1"}, token=admin)
+    chk("set_password superuser refused", s == 200 and "superuser" in ((b or {}).get("result", {}).get("error") or "").lower(),
+        str(b))
+    chk("admin password unchanged (still logs in)", bool(login(ADMIN)), "")
+    # unknown email → a clear error, not a crash (and no info leak beyond "no account")
+    s, b = req("POST", "/rpc/set_password",
+               {"email": "ghost@cellar.dev", "new_password": "whatever-12"}, token=admin)
+    chk("set_password unknown email -> error", s == 200 and "no account" in ((b or {}).get("result", {}).get("error") or "").lower(),
+        str(b))
+    # weak passwords rejected (not a weaker path)
+    s, b = req("POST", "/rpc/set_password",
+               {"email": "hired@cellar.dev", "new_password": "short"}, token=admin)
+    chk("set_password weak password refused", s == 200 and "too short" in ((b or {}).get("result", {}).get("error") or ""),
+        str(b))
+
     # ---- unknown handler + faulting handler ----
     s, b = req("POST", "/rpc/nope", token=admin)
     chk("unknown rpc -> 400 with reason", s == 400 and "unknown rpc" in (b or {}).get("message", ""),

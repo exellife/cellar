@@ -116,6 +116,22 @@ int cel_auth_perform_password_reset(const char *token, const char *new_password)
 int cel_auth_change_password(const char *user_id, const char *current_password,
                              const char *new_password);
 
+/* Privileged "set password" (admin reset, no email round-trip): set `new_password`
+ * on the 'password' identity for `email` WITHOUT knowing the current one — unlike
+ * change_password, there is no current-password check, so the caller MUST authorize
+ * it (this backs cellar.set_password, whose bundle rpc enforces who-may-reset-whom).
+ * Keyed by `email` (the password identity's provider_uid). As a full takeover
+ * recovery it revokes the target's sessions + pending MFA + clears lockout. Returns
+ * CEL_AUTH_OK, CEL_AUTH_INVALID (no 'password' account for that email), or
+ * CEL_AUTH_DBERR. The caller validates new-password length first. */
+int cel_auth_set_password(const char *email, const char *new_password);
+
+/* Read the role of the 'password' account for `email` (caller-side authorization
+ * input — e.g. to refuse resetting a superuser). Writes the role into `out_role`.
+ * Returns CEL_AUTH_OK, CEL_AUTH_INVALID (no such password account), or
+ * CEL_AUTH_DBERR. */
+int cel_auth_user_role(const char *email, char *out_role, size_t out_role_size);
+
 /* Create a single-use email-verification token for `user_id`. On success writes
  * the raw token (>= 65 bytes) and the account email (for the caller to send to),
  * returning CEL_AUTH_OK. Returns CEL_AUTH_CONFLICT if the email is already

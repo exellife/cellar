@@ -197,6 +197,40 @@ int cel_hook_create_user(const char *email, const char *password, const char *ro
     return g_create_user(email, password, role, out_id, out_id_size, err, errlen);
 }
 
+/* Password reset for an existing account is wired at boot (cel_hooks_set_password_setter). */
+static cel_hook_set_password_fn g_set_password = NULL;
+void cel_hooks_set_password_setter(cel_hook_set_password_fn fn) { g_set_password = fn; }
+
+/* Set (reset) an existing account's password, exposed to hooks as cellar.set_password.
+ * Like create_user, the bundle's rpc decides WHO may reset WHOM (it can read the
+ * target role via cellar.query); the engine provides the primitive — the one thing
+ * Lua can't do (argon2id-hash + set a secret) — and the wired adapter refuses
+ * resetting a superuser. Returns 0, or -1 + err. */
+int cel_hook_set_password(const char *email, const char *new_password, char *err, int errlen) {
+    if (err && errlen) err[0] = '\0';
+    if (!email || !email[0] || !new_password || !new_password[0]) {
+        if (err && errlen) snprintf(err, errlen, "email and new_password are required");
+        return -1;
+    }
+    /* Same password policy as create_user / POST /auth/password/reset — the
+     * primitive must not be a weaker path. */
+    size_t plen = strlen(new_password);
+    if (plen < 8)   { if (err && errlen) snprintf(err, errlen, "password too short (min 8 characters)"); return -1; }
+    if (plen > 128) { if (err && errlen) snprintf(err, errlen, "password too long (max 128 characters)"); return -1; }
+    /* cel_auth_set_password takes the app's non-recursive write lock; before()/
+     * after()/resolve()/job hooks already hold it, so re-locking would self-deadlock
+     * the worker. Only the rpc path (no write lock held) is safe. */
+    if (app_db_in_write_lock()) {
+        if (err && errlen) snprintf(err, errlen, "set_password is only available from an rpc hook (not before/after/resolve/job)");
+        return -1;
+    }
+    if (!g_set_password) {
+        if (err && errlen) snprintf(err, errlen, "password reset is not available in this context");
+        return -1;
+    }
+    return g_set_password(email, new_password, err, errlen);
+}
+
 /* ---- the prelude: FFI cdef + `cellar` sugar + per-hook trampolines ---------
  * Loaded into every state before its hooks.lua. The trampolines box the raw
  * cel_val_t* (passed from C as a lightuserdata) into table-like proxies, call the
@@ -231,6 +265,7 @@ static const char *PRELUDE =
 "  long long  cel_hook_enqueue(const char*, const char*, long long, long long);\n"
 "  void       cel_hook_rt_emit(const char*, const char*, const char*);\n"
 "  int        cel_hook_create_user(const char*, const char*, const char*, char*, int, char*, int);\n"
+"  int        cel_hook_set_password(const char*, const char*, char*, int);\n"
 "]]\n"
 "local C = ffi.C\n"
 "local NUL, BOOL, NUM, STR, OBJ, ARR = 0,1,2,3,4,5\n"
@@ -300,6 +335,17 @@ static const char *PRELUDE =
 "  local rc = C.cel_hook_create_user(tostring(email), tostring(password), tostring(role), idbuf, 64, errbuf, 256)\n"
 "  if rc ~= 0 then return nil, ffi.string(errbuf) end\n"
 "  return ffi.string(idbuf)\n"
+"end\n"
+"-- Password reset: cellar.set_password(email, new_password) -> true, or nil+err.\n"
+"-- Set an existing account's password with no current-password / email round-trip.\n"
+"-- The bundle's rpc decides who may reset whom (read the target role via\n"
+"-- cellar.query); the engine refuses resetting a superuser. Revokes the target's\n"
+"-- sessions + MFA on success.\n"
+"function cellar.set_password(email, new_password)\n"
+"  local errbuf = ffi.new('char[256]')\n"
+"  local rc = C.cel_hook_set_password(tostring(email), tostring(new_password), errbuf, 256)\n"
+"  if rc ~= 0 then return nil, ffi.string(errbuf) end\n"
+"  return true\n"
 "end\n"
 "\n"
 "-- deep copy a result handle into plain Lua values (the handle is C-owned and\n"

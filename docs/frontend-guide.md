@@ -109,6 +109,31 @@ if name == 'create_clerk' then
 end
 ```
 
+**Resetting an existing user's password without email** (an admin "set a temp
+password" action when `POST /auth/password/forgot` isn't usable because no mailer is
+configured): `cellar.set_password(email, new_password) → true, err` is the
+update-side sibling of `create_user`. It sets the password on an existing `password`
+account with **no current-password check** (so the rpc MUST authorize it) and
+revokes the target's sessions + pending MFA. The engine **refuses resetting a
+superuser** (admin-takeover floor); the bundle enforces who-may-reset-whom among the
+rest — read the target's role with `cellar.query` (resetting a temp password *up* the
+ladder would leak it, so only reset at/below the caller). The user then sets their
+own password via the authenticated `POST /auth/password/change`. Both primitives are
+**rpc-only** (they take the write lock; calling them from `before`/`after`/`resolve`/
+`job` returns an error rather than deadlocking).
+
+```lua
+if name == 'reset_password' then
+  local target = cellar.query('SELECT role FROM cel_users WHERE email = ?1', { args.email })[1]
+  if not target then return nil, 'no such user' end
+  -- only an admin may reset, and never another admin (temp pw would be exposed up-ladder)
+  if who.role ~= 'admin' or target.role == 'admin' then return nil, 'forbidden' end
+  local ok, err = cellar.set_password(args.email, args.new_password)
+  if not ok then return nil, err end
+  return { ok = true }
+end
+```
+
 ### Reading data — `GET /api/<table>`
 
 Returns `{ rows: [...], count }`. Query params:

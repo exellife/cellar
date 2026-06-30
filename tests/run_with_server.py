@@ -105,6 +105,11 @@ def make_app_db():
             "    if not id then return { error = err } end\n"
             "    return { id = id }\n"
             "  end\n"
+            "  if name == 'set_password' then\n"
+            "    local ok, err = cellar.set_password(args.email, args.new_password)\n"
+            "    if not ok then return { error = err } end\n"
+            "    return { ok = true }\n"
+            "  end\n"
             "  if name == 'boom' then error('intentional hook fault') end\n"
             "  return nil, 'unknown rpc: ' .. name\n"
             "end\n")

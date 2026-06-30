@@ -53,6 +53,15 @@ typedef int (*cel_hook_create_user_fn)(const char *email, const char *password, 
                                        char *out_id, int out_id_size, char *err, int errlen);
 void       cel_hooks_set_user_creator(cel_hook_create_user_fn fn);
 
+/* Set (reset) an existing account's password (cellar.set_password) → 0, or -1 + err.
+ * The setter is wired by the engine at boot (same auth/crypto decoupling as the
+ * creator); unwired it returns -1. The bundle's rpc enforces who-may-reset-whom;
+ * the wired adapter refuses resetting a superuser. */
+int        cel_hook_set_password(const char *email, const char *new_password, char *err, int errlen);
+/* Wire the password setter (an adapter in main: superuser floor + cel_auth_set_password). */
+typedef int (*cel_hook_set_password_fn)(const char *email, const char *new_password, char *err, int errlen);
+void       cel_hooks_set_password_setter(cel_hook_set_password_fn fn);
+
 /* Claim + dispatch up to `budget` due jobs from `q` (job_queue_t*) to the Lua
  * `job` hook on this thread's state; completes/retries per result. The caller
  * binds a db connection (cel_hooks_set_db) for the handlers. Returns # processed. */

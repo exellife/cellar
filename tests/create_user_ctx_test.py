@@ -58,6 +58,17 @@ def main():
                {"email": "after@ctx.dev", "password": "a-password-2", "role": "editor"}, token=admin)
     chk("server alive after the guarded call", s == 200 and bool((b or {}).get("result", {}).get("id")), str(b))
 
+    # same context guard for cellar.set_password — SAFE from rpc (no write lock held)
+    s, b = req("POST", "/rpc/reset_pw",
+               {"email": "editor2@cellar.dev", "new_password": "a-password-3"}, token=admin)
+    chk("set_password from rpc -> ok", s == 200 and (b or {}).get("result", {}).get("ok") is True, str(b))
+
+    # GUARDED: before() calls set_password under the write lock → refused, no deadlock
+    s, b = req("POST", "/api/products",
+               {"name": "Trip2", "sku": "TRIGGER-SETPW", "price": 1.0}, token=admin)
+    msg = (b or {}).get("message", "") or json.dumps(b)
+    chk("before() set_password refused (no deadlock)", s == 400 and "rpc hook" in msg, f"status={s} msg={msg}")
+
     print(f"\n{'PASS' if fail == 0 else 'FAIL'}  ({ok} ok, {fail} failed)")
     return 1 if fail else 0
 

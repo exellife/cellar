@@ -811,6 +811,27 @@ static int hook_create_user_adapter(const char *email, const char *password, con
     return 0;
 }
 
+/* Adapter wiring cellar.set_password → the auth layer. The policy floor lives here
+ * (this layer sees both auth + policy): refuse resetting a SUPERUSER's password, so
+ * a bundle rpc can't take over the admin account — mirroring create_user's refusal
+ * to MINT a superuser. (Benign TOCTOU between the role read and the set: cellar has
+ * no change-role API, so the role can't change underneath us.) The bundle still
+ * enforces who-may-reset-whom among non-superusers. */
+static int hook_set_password_adapter(const char *email, const char *new_password, char *err, int errlen) {
+    char role[64] = {0};
+    int rc = cel_auth_user_role(email, role, sizeof role);
+    if (rc == CEL_AUTH_INVALID) { if (err && errlen) snprintf(err, (size_t)errlen, "no account with a password for that email"); return -1; }
+    if (rc != CEL_AUTH_OK)      { if (err && errlen) snprintf(err, (size_t)errlen, "could not look up the user");                return -1; }
+    if (cel_role_is_superuser(role)) {
+        if (err && errlen) snprintf(err, (size_t)errlen, "cannot reset a superuser's password ('%s') from a hook", role);
+        return -1;
+    }
+    rc = cel_auth_set_password(email, new_password);
+    if (rc == CEL_AUTH_INVALID) { if (err && errlen) snprintf(err, (size_t)errlen, "no account with a password for that email"); return -1; }
+    if (rc != CEL_AUTH_OK)      { if (err && errlen) snprintf(err, (size_t)errlen, "could not set the password");                return -1; }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   /* line-buffer logs even when redirected */
 
@@ -865,6 +886,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     cel_hooks_set_user_creator(hook_create_user_adapter);   /* wire cellar.create_user → auth */
+    cel_hooks_set_password_setter(hook_set_password_adapter); /* wire cellar.set_password → auth */
     cel_metrics_init(CEL_VERSION);            /* /metrics registry: start time + version */
     cel_metrics_set_gauges(metrics_gauges);   /* live gauges sampled at scrape time */
     /* Opt-in session cache: CEL_SESSION_CACHE_TTL>0 skips the per-request auth DB
