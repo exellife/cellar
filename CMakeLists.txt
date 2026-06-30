@@ -240,7 +240,7 @@ if(CELLAR_BUILD_TESTS)
     # so the unit target links the same engine slice as cel_apps_test.
     add_executable(cel_hooks_test tests/cel_hooks_test.c
         src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c
-        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c src/core/session.c
+        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c src/core/session.c src/core/notif_channel.c
         src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
         src/engine/cel_control.c src/engine/cel_sync.c src/engine/realtime.c src/core/metrics.c
         src/core/event_sink_sqlite.c src/core/job_queue_sqlite.c src/engine/cel_hook_state.c)
@@ -255,7 +255,7 @@ if(CELLAR_BUILD_TESTS)
     # independence. No server needed (drives a temp bundle dir).
     add_executable(cel_hook_state_test tests/cel_hook_state_test.c
         src/engine/cel_hook_state.c src/engine/cel_hooks.c src/engine/cel_lua.c src/engine/cel_val.c
-        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c src/core/session.c
+        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c src/core/session.c src/core/notif_channel.c
         src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
         src/engine/cel_control.c src/engine/cel_sync.c src/engine/realtime.c src/core/metrics.c
         src/core/event_sink_sqlite.c src/core/job_queue_sqlite.c)
@@ -328,7 +328,7 @@ if(CELLAR_BUILD_TESTS)
     # :port stripping, invalid-host rejection, per-app catalogs, enter/leave
     # thread-local binding. Builds throwaway bundle dirs under /tmp; no Postgres.
     add_executable(cel_apps_test tests/cel_apps_test.c
-        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c src/core/session.c
+        src/engine/cel_apps.c src/core/app_db.c src/core/auth_schema.c src/core/session.c src/core/notif_channel.c
         src/engine/schema_catalog.c src/engine/schema_catalog_sqlite.c src/engine/policy.c
         src/engine/cel_control.c src/engine/cel_sync.c src/engine/realtime.c src/core/metrics.c
         src/core/event_sink_sqlite.c src/core/job_queue_sqlite.c
@@ -403,6 +403,11 @@ if(CELLAR_BUILD_TESTS)
     add_executable(base64url_test tests/base64url_test.c src/core/base64url.c)
     target_include_directories(base64url_test PRIVATE src/core)
     add_test(NAME base64url COMMAND base64url_test)
+
+    # NotifChannel registry (E2.4): register/get/replace/unknown/null-guards + send routing.
+    add_executable(notif_channel_test tests/notif_channel_test.c src/core/notif_channel.c)
+    target_include_directories(notif_channel_test PRIVATE src/core)
+    add_test(NAME notif_channel COMMAND notif_channel_test)
 
     # app-schema migration runner: apply/idempotent/incremental, drift detection,
     # transactional rollback of a failing migration. In-memory DB + /tmp dirs.
@@ -552,6 +557,11 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME rpc_hook
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
                     $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/rpc_test.py)
+        # NotifChannel (E2.4) push endpoints + cellar.notify enqueue: subscribe upsert /
+        # list (no key leak) / unsubscribe / auth, and notify enqueues a fan-out job.
+        add_test(NAME push
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/tests/run_with_server.py
+                    $<TARGET_FILE:cellar> ${CMAKE_SOURCE_DIR}/tests/push_test.py)
         # Offline-first sync substrate (Slice 0, T1-T5): the syncable `items` table —
         # monotonic engine-owned rev, force-owned rev/deleted, soft-delete + tombstone
         # invisibility, non-syncable products unaffected, _sync_seq not REST-exposed.

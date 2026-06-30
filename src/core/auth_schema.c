@@ -58,6 +58,23 @@ static const char *AUTH_SCHEMA =
     ");"
     "CREATE INDEX IF NOT EXISTS idx_cel_device_tokens_user ON cel_device_tokens(user_id);"
 
+    /* Web-Push subscriptions (NotifChannel off-site delivery): one row per browser/
+     * device a user enabled push on. endpoint is the push-service URL (dedup key);
+     * p256dh/auth are the client keys for payload encryption (slice 2). disabled_at
+     * is set when the push service reports the subscription gone (404/410). */
+    "CREATE TABLE IF NOT EXISTS cel_push_subscriptions ("
+    "  id           TEXT PRIMARY KEY,"
+    "  user_id      TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,"
+    "  endpoint     TEXT NOT NULL UNIQUE,"
+    "  p256dh       TEXT NOT NULL,"
+    "  auth         TEXT NOT NULL,"
+    "  ua           TEXT,"
+    "  created_at   INTEGER NOT NULL DEFAULT (unixepoch()),"
+    "  last_used_at INTEGER,"
+    "  disabled_at  INTEGER"
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_cel_push_subscriptions_user ON cel_push_subscriptions(user_id);"
+
     "CREATE TABLE IF NOT EXISTS cel_password_resets ("
     "  token      TEXT PRIMARY KEY,"
     "  user_id    TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,"
@@ -105,7 +122,7 @@ static const char *AUTH_SCHEMA =
 /* Bump this when the cel_* infra schema changes, and add the matching ALTER step
  * in cel_auth_schema_apply below. Tracked per app via SQLite's PRAGMA
  * user_version, so a newer cellar can evolve an existing app's bundle in place. */
-#define CEL_AUTH_SCHEMA_VERSION 3
+#define CEL_AUTH_SCHEMA_VERSION 4
 
 /* v1 -> v2: per-user MFA-verify lockout (M-1). A fresh db gets these via the base
  * AUTH_SCHEMA above; only a db already at v1 needs the ALTERs. */
@@ -129,6 +146,22 @@ static const char *AUTH_SCHEMA_V3 =
     "  revoked_at   INTEGER"
     ");"
     "CREATE INDEX IF NOT EXISTS idx_cel_device_tokens_user ON cel_device_tokens(user_id);";
+
+/* v3 -> v4: web-push subscriptions (NotifChannel). Same pattern as V3 — also in the
+ * base schema for fresh dbs; this adds it to an already-provisioned db. IF NOT EXISTS. */
+static const char *AUTH_SCHEMA_V4 =
+    "CREATE TABLE IF NOT EXISTS cel_push_subscriptions ("
+    "  id           TEXT PRIMARY KEY,"
+    "  user_id      TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,"
+    "  endpoint     TEXT NOT NULL UNIQUE,"
+    "  p256dh       TEXT NOT NULL,"
+    "  auth         TEXT NOT NULL,"
+    "  ua           TEXT,"
+    "  created_at   INTEGER NOT NULL DEFAULT (unixepoch()),"
+    "  last_used_at INTEGER,"
+    "  disabled_at  INTEGER"
+    ");"
+    "CREATE INDEX IF NOT EXISTS idx_cel_push_subscriptions_user ON cel_push_subscriptions(user_id);";
 
 static long user_version(struct sqlite3 *db) {
     sqlite3_stmt *st = NULL;
@@ -161,6 +194,8 @@ int cel_auth_schema_apply(struct sqlite3 *db) {
     /* v < 3 adds cel_device_tokens to an already-provisioned db. IF NOT EXISTS, so
      * harmless on a fresh db that just got it from the base schema. */
     if (v < 3 && exec_or_log(db, AUTH_SCHEMA_V3) != 0) return -1;
+    /* v < 4 adds cel_push_subscriptions (same idempotent IF NOT EXISTS pattern). */
+    if (v < 4 && exec_or_log(db, AUTH_SCHEMA_V4) != 0) return -1;
 
     char stamp[48];
     snprintf(stamp, sizeof stamp, "PRAGMA user_version = %d", CEL_AUTH_SCHEMA_VERSION);

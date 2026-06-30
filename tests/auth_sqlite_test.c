@@ -29,6 +29,12 @@ static void count_devices_cb(void *ctx, const char *id, const char *label,
     (*(int *)ctx)++;
 }
 
+static void count_pushes_cb(void *ctx, const char *id, const char *endpoint, const char *ua,
+                            long created_at, long last_used_at) {
+    (void)id; (void)endpoint; (void)ua; (void)created_at; (void)last_used_at;
+    (*(int *)ctx)++;
+}
+
 static int failures = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { fprintf(stderr, "FAIL: %s\n", msg); failures++; } \
@@ -166,6 +172,31 @@ int main(void) {
     char dtok5[129], did5[37];
     CHECK(cel_auth_device_create(id2, "after-upgrade", 3600, dtok5, sizeof dtok5, did5, sizeof did5) == CEL_AUTH_OK,
           "device table present again after the version upgrade");
+
+    /* Same migration check for cel_push_subscriptions (v3 -> v4). */
+    {
+        sqlite3 *mc = app_db_conn_acquire(app);
+        CHECK(sqlite3_exec(mc, "DROP TABLE cel_push_subscriptions; PRAGMA user_version = 3;",
+                           NULL, NULL, NULL) == SQLITE_OK, "simulate a v3 db without the push table");
+        CHECK(cel_auth_schema_apply(mc) == 0, "re-apply schema upgrades v3 -> current");
+        app_db_conn_release(app, mc);
+    }
+    char psid[37];
+    CHECK(cel_auth_push_subscribe(id2, "https://push.example/ep1", "p256key", "authkey", "ua",
+                                  psid, sizeof psid) == CEL_AUTH_OK,
+          "push table present again after the version upgrade");
+
+    /* Push subscription CRUD: upsert by endpoint, list, unsubscribe. */
+    char psid2[37];
+    CHECK(cel_auth_push_subscribe(id2, "https://push.example/ep1", "p256key2", "authkey2", "ua2",
+                                  psid2, sizeof psid2) == CEL_AUTH_OK && strcmp(psid, psid2) == 0,
+          "re-subscribe same endpoint upserts (stable id)");
+    int pcount = 0; cel_auth_push_list(id2, count_pushes_cb, &pcount);
+    CHECK(pcount == 1, "push_list shows one subscription after upsert");
+    CHECK(cel_auth_push_unsubscribe(id2, "https://push.example/ep1") == CEL_AUTH_OK, "unsubscribe by endpoint");
+    CHECK(cel_auth_push_unsubscribe(id2, "https://push.example/ep1") == CEL_AUTH_INVALID, "unsubscribe again -> none");
+    pcount = 0; cel_auth_push_list(id2, count_pushes_cb, &pcount);
+    CHECK(pcount == 0, "push_list empty after unsubscribe");
 
     app_db_global_shutdown();
     unlink(path);

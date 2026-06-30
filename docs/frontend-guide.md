@@ -109,6 +109,28 @@ at rest, and a full account recovery — password reset, admin `set_password`, o
 normal login, `POST /auth/device` once and stash the token under the PIN; on each
 unlock, `POST /auth/session/from-device` to get a session.
 
+#### Push notifications (web-push)
+
+For off-site delivery (reaching a user who isn't in the app), the engine stores
+web-push subscriptions and fans notifications out to them. **Client side:** register
+a service worker, ask for push permission, get a `PushSubscription`, and POST it:
+
+| Call | Body | Returns |
+|---|---|---|
+| `POST /push/subscribe` | `{endpoint, keys:{p256dh, auth}, ua?}` (Bearer) | `201 {id}` — upsert by `endpoint` |
+| `POST /push/unsubscribe` | `{endpoint}` or `{id}` (Bearer) | `200`; `404` if not yours |
+| `GET /push/subscriptions` | (Bearer) | `200 {subscriptions:[{id,endpoint,ua,created_at,last_used_at}]}` — caller's own, no key material |
+
+The `{endpoint, keys}` come straight from the browser's `PushSubscription.toJSON()`.
+Re-subscribing the same endpoint refreshes the keys (idempotent). A full account
+recovery (password reset / `set_password` / log-out-everywhere) drops the user's
+device tokens; subscriptions are pruned when the push service reports them gone.
+
+> **Status:** subscription storage + endpoints are **live now** — you can build the
+> subscribe flow. **Actual push delivery is not wired yet** (the VAPID sender is the
+> next backend slice), so a subscription won't receive messages until then. In-app
+> notifications (the realtime feed) already work today.
+
 Also available when the app enables them: `POST /auth/oauth` (OIDC sign-in),
 `POST /auth/password/forgot` + `/auth/password/reset`, `POST /auth/verify-email`,
 and the `POST /auth/mfa/*` (TOTP) flow. `POST /auth/users` (Bearer, **superuser**)

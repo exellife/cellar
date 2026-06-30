@@ -467,6 +467,35 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         return st;
     }
 
+    /* POST /push/subscribe — register a web-push subscription (Bearer) */
+    if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/push/subscribe")) {
+        cel_identity_t who;
+        identity_from_request(req, &who);
+        cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
+        if (!body) return send_error(res, 400, "invalid JSON");
+        int st = send_api(res, cel_api_push_subscribe(&who, body));
+        cJSON_Delete(body);
+        return st;
+    }
+
+    /* POST /push/unsubscribe — remove one of the caller's subscriptions (Bearer) */
+    if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/push/unsubscribe")) {
+        cel_identity_t who;
+        identity_from_request(req, &who);
+        cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
+        if (!body) return send_error(res, 400, "invalid JSON");
+        int st = send_api(res, cel_api_push_unsubscribe(&who, body));
+        cJSON_Delete(body);
+        return st;
+    }
+
+    /* GET /push/subscriptions — list the caller's own subscriptions (Bearer) */
+    if (portico_req_method_is(req, "GET") && portico_req_path_is(req, "/push/subscriptions")) {
+        cel_identity_t who;
+        identity_from_request(req, &who);
+        return send_api(res, cel_api_push_list(&who));
+    }
+
     /* POST /rpc/<fn> — call a whitelisted Postgres function (body = args object) */
     if (portico_req_method_is(req, "POST") && req->path_len > 5 && memcmp(req->path, "/rpc/", 5) == 0) {
         cel_identity_t who;

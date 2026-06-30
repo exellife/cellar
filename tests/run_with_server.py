@@ -110,6 +110,9 @@ def make_app_db():
             "    if not ok then return { error = err } end\n"
             "    return { ok = true }\n"
             "  end\n"
+            "  if name == 'notify' then\n"
+            "    return { ok = cellar.notify(args.user_id, { title = args.title, body = args.body }) }\n"
+            "  end\n"
             "  if name == 'boom' then error('intentional hook fault') end\n"
             "  return nil, 'unknown rpc: ' .. name\n"
             "end\n")

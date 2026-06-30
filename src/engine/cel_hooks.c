@@ -3,10 +3,16 @@
 #include "cel_apps.h"
 #include "realtime.h"
 #include "policy.h"
+#include "core/notif_channel.h"
 #include "logger.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+/* Reserved JobQueue type: cellar.notify enqueues this; cel_hooks_run_jobs handles
+ * it in engine C (NotifChannel fan-out) instead of the bundle's Lua `job` hook. */
+#define CEL_NOTIF_JOB_TYPE "cel:notif"
 
 #include <sqlite3.h>
 #include <cjson/cJSON.h>
@@ -128,6 +134,69 @@ long long cel_hook_enqueue(const char *type, const char *payload,
     q->enqueue(q->ctx, type, (payload && payload[0]) ? payload : NULL,
                run_at, 0, repeat_every, &id);
     return id;
+}
+
+/* NotifChannel: build the {user_id, msg:{title,body,url,data}} payload and enqueue
+ * the reserved cel:notif job; cel_hooks_run_jobs fans it out in C. Returns id or -1. */
+long long cel_hook_notify(const char *user_id, const char *title, const char *body,
+                          const char *url, const char *data_json) {
+    job_queue_t *q = cel_apps_current_jobs();
+    if (!q || !user_id || !user_id[0]) return -1;
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "user_id", user_id);
+    cJSON *m = cJSON_AddObjectToObject(root, "msg");
+    if (title && title[0]) cJSON_AddStringToObject(m, "title", title);
+    if (body  && body[0])  cJSON_AddStringToObject(m, "body",  body);
+    if (url   && url[0])   cJSON_AddStringToObject(m, "url",   url);
+    if (data_json && data_json[0]) cJSON_AddStringToObject(m, "data", data_json);
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!payload) return -1;
+    long long id = -1;
+    q->enqueue(q->ctx, CEL_NOTIF_JOB_TYPE, payload, 0, 0, 0, &id);
+    free(payload);
+    return id;
+}
+
+/* Fan-out for a cel:notif job: resolve the user's channels off the bound connection
+ * (t_db) and deliver via the registered NotifChannel adapters. Per-channel failures
+ * are logged + skipped. Email is resolved here; webpush iterates the user's active
+ * subscriptions — that adapter is registered in slice 2, so the loop is inert (skipped)
+ * until then. */
+static void cel_notif_fanout(const char *payload) {
+    if (!t_db || !payload || !payload[0]) return;
+    cJSON *root = cJSON_Parse(payload);
+    if (!root) return;
+    const char *user_id = cJSON_GetStringValue(cJSON_GetObjectItem(root, "user_id"));
+    cJSON *m = cJSON_GetObjectItem(root, "msg");
+    if (!user_id || !user_id[0] || !cJSON_IsObject(m)) { cJSON_Delete(root); return; }
+    cel_notif_msg_t msg = {
+        .title     = cJSON_GetStringValue(cJSON_GetObjectItem(m, "title")),
+        .body      = cJSON_GetStringValue(cJSON_GetObjectItem(m, "body")),
+        .url       = cJSON_GetStringValue(cJSON_GetObjectItem(m, "url")),
+        .data_json = cJSON_GetStringValue(cJSON_GetObjectItem(m, "data")),
+    };
+    char err[256];
+
+    const cel_notif_channel_t *email = cel_notif_get("email");
+    if (email) {
+        sqlite3_stmt *st;
+        if (sqlite3_prepare_v2(t_db, "SELECT email FROM cel_users WHERE id=?1 AND is_active=1",
+                               -1, &st, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(st, 1, user_id, -1, SQLITE_TRANSIENT);
+            if (sqlite3_step(st) == SQLITE_ROW) {
+                const char *to = (const char *)sqlite3_column_text(st, 0);
+                if (to && to[0]) {
+                    err[0] = '\0';
+                    if (email->send(to, &msg, err, sizeof err) < 0)
+                        LOG_WARN("[notif] email send failed: %s", err);
+                }
+            }
+            sqlite3_finalize(st);
+        }
+    }
+    /* webpush: slice 2 registers the adapter + sends per subscription (+ prunes on GONE). */
+    cJSON_Delete(root);
 }
 
 /* Realtime: publish a change for a server-created row (e.g. a notification) so
@@ -264,6 +333,7 @@ static const char *PRELUDE =
 "  void       cel_hook_emit (const char*, const char*, const char*, const char*);\n"
 "  long long  cel_hook_enqueue(const char*, const char*, long long, long long);\n"
 "  void       cel_hook_rt_emit(const char*, const char*, const char*);\n"
+"  long long  cel_hook_notify(const char*, const char*, const char*, const char*, const char*);\n"
 "  int        cel_hook_create_user(const char*, const char*, const char*, char*, int, char*, int);\n"
 "  int        cel_hook_set_password(const char*, const char*, char*, int);\n"
 "]]\n"
@@ -326,6 +396,16 @@ static const char *PRELUDE =
 "-- Realtime: push a server-created row (e.g. a notification) to live subscribers.\n"
 "function cellar.rt_emit(tbl, op, row_json)\n"
 "  C.cel_hook_rt_emit(tostring(tbl), tostring(op), tostring(row_json))\n"
+"end\n"
+"-- Off-site notification: cellar.notify(user_id, {title=,body=,url=,data=}) -> bool.\n"
+"-- Enqueues a fan-out job; the engine delivers to the user's channels (email/push).\n"
+"-- `data` is an optional JSON string. This is the OFF-SITE path — pair it with your\n"
+"-- own in-app feed insert + rt_emit. Returns true if enqueued.\n"
+"function cellar.notify(user_id, msg)\n"
+"  msg = msg or {}\n"
+"  local id = C.cel_hook_notify(tostring(user_id), tostring(msg.title or ''),\n"
+"    tostring(msg.body or ''), tostring(msg.url or ''), tostring(msg.data or ''))\n"
+"  return tonumber(id) >= 0\n"
 "end\n"
 "-- Account creation: cellar.create_user(email, password, role) -> id, or nil+err.\n"
 "-- The bundle's rpc decides who may call this and which role; the engine refuses\n"
@@ -568,6 +648,15 @@ int cel_hooks_run_jobs(cel_lua_t *Lh, job_queue_t *q, long long now,
         job_t job;
         int rc = q->claim(q->ctx, now, visibility, &job);
         if (rc != JOBQ_OK) break;             /* JOBQ_NONE (drained) or error */
+        /* Reserved engine job: NotifChannel fan-out, handled in C (not the Lua hook).
+         * Best-effort: per-channel failures are logged inside; the job completes. */
+        if (job.type && strcmp(job.type, CEL_NOTIF_JOB_TYPE) == 0) {
+            cel_notif_fanout(job.payload);
+            q->complete(q->ctx, job.id, now);
+            job_free(&job);
+            processed++;
+            continue;
+        }
         lua_getglobal(L, "__cel_job");
         lua_pushstring(L, job.type ? job.type : "");
         lua_pushstring(L, job.payload ? job.payload : "");

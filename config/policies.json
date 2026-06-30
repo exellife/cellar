@@ -19,7 +19,8 @@
     "set_password":   { "roles": ["admin"] },
     "boom":           { "roles": ["editor"] },
     "make_user":      { "roles": ["editor"] },
-    "reset_pw":       { "roles": ["editor"] }
+    "reset_pw":       { "roles": ["editor"] },
+    "notify":         { "roles": ["editor"] }
   },
 
   "items": {

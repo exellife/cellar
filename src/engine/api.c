@@ -1684,6 +1684,73 @@ cel_api_result_t cel_api_device_revoke(const cel_identity_t *who, const cJSON *r
     return r;
 }
 
+/* ---- web-push subscriptions (NotifChannel) -------------------------------- */
+
+cel_api_result_t cel_api_push_subscribe(const cel_identity_t *who, const cJSON *req) {
+    if (!who->authenticated) return result_error(401, "authentication required");
+    const cJSON *endpoint = cJSON_GetObjectItemCaseSensitive(req, "endpoint");
+    const cJSON *keys     = cJSON_GetObjectItemCaseSensitive(req, "keys");
+    const cJSON *p256dh   = cJSON_IsObject(keys) ? cJSON_GetObjectItemCaseSensitive(keys, "p256dh") : NULL;
+    const cJSON *auth     = cJSON_IsObject(keys) ? cJSON_GetObjectItemCaseSensitive(keys, "auth")   : NULL;
+    const cJSON *ua       = cJSON_GetObjectItemCaseSensitive(req, "ua");
+    if (!cJSON_IsString(endpoint) || !endpoint->valuestring[0]
+        || !cJSON_IsString(p256dh) || !p256dh->valuestring[0]
+        || !cJSON_IsString(auth)   || !auth->valuestring[0])
+        return result_error(400, "endpoint and keys{p256dh,auth} required");
+
+    char id[37];
+    int rc = cel_auth_push_subscribe(who->user_id, endpoint->valuestring,
+                                     p256dh->valuestring, auth->valuestring,
+                                     cJSON_IsString(ua) ? ua->valuestring : NULL, id, sizeof id);
+    if (rc != CEL_AUTH_OK) return result_error(500, "server error");
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "status", "ok");
+    cJSON_AddStringToObject(o, "id", id);
+    cel_api_result_t r = { o, 201 };
+    return r;
+}
+
+cel_api_result_t cel_api_push_unsubscribe(const cel_identity_t *who, const cJSON *req) {
+    if (!who->authenticated) return result_error(401, "authentication required");
+    const cJSON *ep = cJSON_GetObjectItemCaseSensitive(req, "endpoint");
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(req, "id");
+    const char *key = cJSON_IsString(ep) ? ep->valuestring
+                    : (cJSON_IsString(id) ? id->valuestring : NULL);
+    if (!key || !key[0]) return result_error(400, "endpoint or id required");
+    int rc = cel_auth_push_unsubscribe(who->user_id, key);
+    if (rc == CEL_AUTH_INVALID) return result_error(404, "no such subscription");
+    if (rc != CEL_AUTH_OK)      return result_error(500, "server error");
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "status", "unsubscribed");
+    cel_api_result_t r = { o, 200 };
+    return r;
+}
+
+static void push_row_cb(void *ctx, const char *id, const char *endpoint, const char *ua,
+                        long created_at, long last_used_at) {
+    cJSON *arr = (cJSON *)ctx;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "id", id);
+    cJSON_AddStringToObject(o, "endpoint", endpoint);
+    cJSON_AddStringToObject(o, "ua", ua);
+    cJSON_AddNumberToObject(o, "created_at", (double)created_at);
+    if (last_used_at > 0) cJSON_AddNumberToObject(o, "last_used_at", (double)last_used_at);
+    else                  cJSON_AddNullToObject(o, "last_used_at");
+    cJSON_AddItemToArray(arr, o);
+}
+
+cel_api_result_t cel_api_push_list(const cel_identity_t *who) {
+    if (!who->authenticated) return result_error(401, "authentication required");
+    cJSON *arr = cJSON_CreateArray();
+    if (cel_auth_push_list(who->user_id, push_row_cb, arr) != CEL_AUTH_OK) {
+        cJSON_Delete(arr); return result_error(500, "server error");
+    }
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddItemToObject(o, "subscriptions", arr);
+    cel_api_result_t r = { o, 200 };
+    return r;
+}
+
 cel_api_result_t cel_api_oauth(const cJSON *req) {
     const cJSON *provider = cJSON_GetObjectItemCaseSensitive(req, "provider");
     const cJSON *token    = cJSON_GetObjectItemCaseSensitive(req, "id_token");

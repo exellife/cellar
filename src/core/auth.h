@@ -162,6 +162,26 @@ typedef void (*cel_device_cb)(void *ctx, const char *id, const char *label,
                               long created_at, long last_used_at, long expires_at);
 int cel_auth_device_list(const char *user_id, cel_device_cb cb, void *ctx);
 
+/* ---- web-push subscriptions (NotifChannel off-site delivery) --------------- *
+ * One row per browser/device a user enabled push on. The engine owns these
+ * (like sessions/device-tokens); the NotifChannel fan-out resolves them. */
+
+/* Register a push subscription for `user_id`, upserting by `endpoint` (re-subscribe
+ * refreshes keys + re-enables). Writes the public id (>=37). OK / INVALID / DBERR. */
+int cel_auth_push_subscribe(const char *user_id, const char *endpoint,
+                            const char *p256dh, const char *auth, const char *ua,
+                            char *out_id, size_t out_id_size);
+
+/* Remove one of `user_id`'s subscriptions, matched by endpoint OR public id.
+ * CEL_AUTH_OK / CEL_AUTH_INVALID (none matched) / CEL_AUTH_DBERR. */
+int cel_auth_push_unsubscribe(const char *user_id, const char *endpoint_or_id);
+
+/* List a user's active (not-disabled) subscriptions; `cb` fires once per row
+ * (no key material). CEL_AUTH_OK / CEL_AUTH_DBERR. */
+typedef void (*cel_push_cb)(void *ctx, const char *id, const char *endpoint,
+                            const char *ua, long created_at, long last_used_at);
+int cel_auth_push_list(const char *user_id, cel_push_cb cb, void *ctx);
+
 /* Create a single-use email-verification token for `user_id`. On success writes
  * the raw token (>= 65 bytes) and the account email (for the caller to send to),
  * returning CEL_AUTH_OK. Returns CEL_AUTH_CONFLICT if the email is already

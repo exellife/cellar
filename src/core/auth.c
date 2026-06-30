@@ -793,6 +793,83 @@ int cel_auth_device_list(const char *user_id, cel_device_cb cb, void *ctx) {
     return rc;
 }
 
+/* ---- web-push subscriptions (NotifChannel) -------------------------------- */
+
+int cel_auth_push_subscribe(const char *user_id, const char *endpoint,
+                            const char *p256dh, const char *auth, const char *ua,
+                            char *out_id, size_t out_id_size) {
+    if (!user_id || !user_id[0] || !endpoint || !endpoint[0] || !p256dh || !p256dh[0] || !auth || !auth[0])
+        return CEL_AUTH_INVALID;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    int rc = CEL_AUTH_DBERR;
+    if (c) {
+        char id[37]; cel_uuid_v4(id, sizeof id);
+        char out[37] = {0};
+        /* Upsert by endpoint: a re-subscribe refreshes keys + re-enables; RETURNING
+         * id yields the stable existing id on the update path. */
+        const char *p[6] = { id, user_id, endpoint, p256dh, auth, (ua && ua[0]) ? ua : "" };
+        int f = cel_db_one_text(c,
+            "INSERT INTO cel_push_subscriptions(id, user_id, endpoint, p256dh, auth, ua) "
+            "VALUES(?1, ?2, ?3, ?4, ?5, ?6) "
+            "ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, p256dh=excluded.p256dh, "
+            "auth=excluded.auth, ua=excluded.ua, disabled_at=NULL "
+            "RETURNING id", p, 6, out, sizeof out);
+        if (f == 1 && out[0]) { snprintf(out_id, out_id_size, "%s", out); rc = CEL_AUTH_OK; }
+        else if (f < 0) rc = CEL_AUTH_DBERR;
+        else rc = CEL_AUTH_DBERR;
+        app_db_conn_release(app, c);
+    }
+    app_db_write_unlock(app);
+    return rc;
+}
+
+int cel_auth_push_unsubscribe(const char *user_id, const char *endpoint_or_id) {
+    if (!user_id || !user_id[0] || !endpoint_or_id || !endpoint_or_id[0]) return CEL_AUTH_INVALID;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    int rc = CEL_AUTH_DBERR;
+    if (c) {
+        const char *p[2] = { user_id, endpoint_or_id };
+        if (cel_db_exec(c, "DELETE FROM cel_push_subscriptions "
+                       "WHERE user_id=?1 AND (endpoint=?2 OR id=?2)", p, 2))
+            rc = sqlite3_changes(c) >= 1 ? CEL_AUTH_OK : CEL_AUTH_INVALID;
+        app_db_conn_release(app, c);
+    }
+    app_db_write_unlock(app);
+    return rc;
+}
+
+int cel_auth_push_list(const char *user_id, cel_push_cb cb, void *ctx) {
+    if (!user_id || !user_id[0] || !cb) return CEL_AUTH_INVALID;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) return CEL_AUTH_DBERR;
+    int rc = CEL_AUTH_DBERR;
+    const char *p[1] = { user_id };
+    sqlite3_stmt *st;
+    if (cel_db_prep(c,
+        "SELECT id, endpoint, ua, created_at, last_used_at FROM cel_push_subscriptions "
+        "WHERE user_id=?1 AND disabled_at IS NULL ORDER BY created_at", p, 1, &st) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const char *id  = (const char *)sqlite3_column_text(st, 0);
+            const char *ep  = (const char *)sqlite3_column_text(st, 1);
+            const char *ua  = (const char *)sqlite3_column_text(st, 2);
+            cb(ctx, id ? id : "", ep ? ep : "", ua ? ua : "",
+               (long)sqlite3_column_int64(st, 3), (long)sqlite3_column_int64(st, 4));
+        }
+        sqlite3_finalize(st);
+        rc = CEL_AUTH_OK;
+    }
+    app_db_conn_release(app, c);
+    return rc;
+}
+
 #define VERIFY_TTL_SECONDS 86400   /* an email-verification link is good for 24h */
 
 int cel_auth_create_email_verification(const char *user_id,

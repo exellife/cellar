@@ -42,6 +42,10 @@ void       cel_hook_emit (const char *type, const char *actor, const char *subje
 long long  cel_hook_enqueue(const char *type, const char *payload, long long run_at, long long repeat_every);
 /* Realtime publish for a server-created row (e.g. a notification) → live subscribers. */
 void       cel_hook_rt_emit(const char *table, const char *op, const char *row_json);
+/* NotifChannel off-site fan-out (cellar.notify): enqueue a cel:notif job for `user_id`
+ * with the message; cel_hooks_run_jobs delivers it via the registered channels. id/-1. */
+long long  cel_hook_notify(const char *user_id, const char *title, const char *body,
+                           const char *url, const char *data_json);
 /* Create a login account (cellar.create_user) → 0 + new id in out_id, or -1 + err.
  * The actual creator is wired by the engine at boot to keep this layer free of the
  * auth/crypto deps; unwired (e.g. in unit tests) it returns -1 ("not available").

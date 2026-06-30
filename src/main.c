@@ -21,6 +21,7 @@
 #include "core/mfa.h"
 #include "core/oauth.h"
 #include "core/mailer.h"
+#include "core/notif_channel.h"
 #include "core/cors.h"
 #include "core/migrate.h"
 
@@ -832,6 +833,21 @@ static int hook_set_password_adapter(const char *email, const char *new_password
     return 0;
 }
 
+/* NotifChannel email adapter — routes to the SMTP transport (mailer.c) behind the
+ * notification port. recipient = email address; subject = title, body = body. A no-op
+ * (success) when mail is unconfigured, so the fan-out isn't broken by missing SMTP. */
+static int notif_email_send(const char *recipient, const cel_notif_msg_t *msg, char *err, int errlen) {
+    if (!cel_mail_enabled()) return 0;   /* ops hasn't configured SMTP — skip, not fail */
+    const char *subject = (msg && msg->title) ? msg->title : "Notification";
+    const char *body    = (msg && msg->body)  ? msg->body  : "";
+    if (cel_mail_send(recipient, subject, body) != 0) {
+        if (err && errlen) snprintf(err, (size_t)errlen, "mail send failed");
+        return -1;
+    }
+    return 0;
+}
+static const cel_notif_channel_t NOTIF_EMAIL = { "email", notif_email_send };
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   /* line-buffer logs even when redirected */
 
@@ -944,6 +960,9 @@ int main(int argc, char **argv) {
     /* Outbound email (SMTP via libcurl): inert unless CEL_SMTP_URL + CEL_MAIL_FROM
      * are set. Enables password reset / verification once those land. */
     cel_mailer_init();
+    /* NotifChannel: register the email adapter (the SMTP transport above, behind the
+     * notification port). The web-push adapter joins it in slice 2. */
+    cel_notif_register(&NOTIF_EMAIL);
     /* CORS: CEL_CORS_ORIGINS=<comma list>|* lets browser SPAs on other origins call
      * the API. Off (no CORS headers) when unset. */
     cel_cors_init();

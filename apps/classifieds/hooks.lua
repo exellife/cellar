@@ -65,6 +65,14 @@ local function notify(user_id, ntype, title, body, subject)
   cellar.rt_emit('notification', 'INSERT',
     '{"id":"' .. id .. '","user_id":"' .. user_id .. '","type":"' .. tostring(ntype) ..
     '","subject_id":"' .. (subject or '') .. '"}')
+  -- Off-site delivery (email / web-push) via NotifChannel — reaches the user when
+  -- they're NOT in the app; the feed + rt_emit above cover the online case. data
+  -- carries type+subject so the client can deep-link, mirroring the realtime row.
+  -- TODO (when push lands / prefs exist): suppress if seen in-app within N minutes.
+  cellar.notify(user_id, {
+    title = title, body = body,
+    data = '{"type":"' .. tostring(ntype) .. '","subject_id":"' .. tostring(subject or '') .. '"}',
+  })
 end
 
 -- A1.1: validate the photos array (ordered media ids from POST /media). `photos`

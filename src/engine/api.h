@@ -90,6 +90,14 @@ cel_api_result_t cel_api_device_exchange(const cJSON *req);
 cel_api_result_t cel_api_device_list(const cel_identity_t *who);
 cel_api_result_t cel_api_device_revoke(const cel_identity_t *who, const cJSON *req);
 
+/* Web-push subscriptions (NotifChannel off-site delivery; all Bearer):
+ *   push/subscribe   : { endpoint, keys:{p256dh, auth}, ua? } -> 201 { id } (upsert)
+ *   push/unsubscribe : { endpoint | id } -> 200 / 404
+ *   push/subscriptions -> 200 { subscriptions: [...] } (caller's own) */
+cel_api_result_t cel_api_push_subscribe(const cel_identity_t *who, const cJSON *req);
+cel_api_result_t cel_api_push_unsubscribe(const cel_identity_t *who, const cJSON *req);
+cel_api_result_t cel_api_push_list(const cel_identity_t *who);
+
 /* Email verification (emailed single-use token; sent on register). verify redeems
  * the token; resend re-sends to the authenticated caller (idempotent).
  *   verify-email        : { token }  -> 200 / 400
