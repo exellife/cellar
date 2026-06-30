@@ -56,6 +56,16 @@ instead of working around it silently** — engine problems get fixed in the eng
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
 
+- **No way to reset an EXISTING user's password without email (admin set-password)** — added the
+  `cellar.set_password(email, new_password) → true, err` Lua primitive, the update-side sibling of
+  `cellar.create_user`: sets the password on an existing `password` identity with NO current-password
+  check (keyed by email) and revokes the target's sessions + pending MFA + clears lockout. The user then
+  sets their own via the authenticated `POST /auth/password/change`. **No separate `user_role` primitive
+  needed** — a hook can already read the target's role via `cellar.query('SELECT role FROM cel_users …')`,
+  so the bundle self-serves who-may-reset-whom. Safety floor: the engine refuses resetting a **superuser**
+  (admin-takeover guard, mirroring create_user's refuse-to-mint-superuser); rpc-only (write-lock-reentry
+  guard, no deadlock). `13631b5` (e2e in `rpc_test.py` + `create_user_ctx_test.py`; example in
+  `docs/frontend-guide.md`). Suite 76/76, ASan-clean.
 - **No authenticated in-session "change password" endpoint** — added
   `POST /auth/password/change {current_password, new_password}` (Bearer): verifies the
   current password (constant-time) then sets the new one; no email round-trip, the session
