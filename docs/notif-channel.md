@@ -81,8 +81,16 @@ It does **not** send inline (network/SMTP must not block a hook). It **enqueues 
 with a **reserved type `cel:notif`** and a JSON payload `{user_id, msg}`. The job runner
 (`cel_hooks_run_jobs`) gains a small branch: a `cel:notif`-typed job is handled **in engine C**
 (resolve the user's channels → `cel_notif_get(ch)->send(...)`), instead of dispatching to the
-bundle's Lua `job` hook. So fan-out is async, retried with backoff, and lives entirely in the
-engine — bundles never implement it.
+bundle's Lua `job` hook. So fan-out is async and lives entirely in the engine — bundles never
+implement it. Two properties matter here:
+
+- **Never under the app write lock.** The worker holds `app_db_write_lock` across the job batch
+  (so Lua handlers' writes serialize). Off-site delivery does **network I/O** and only **reads**
+  the db (resolve recipients), so the `cel:notif` branch **drops the write lock around the send**
+  and re-takes it — a slow/timing-out SMTP/push call can't stall request-thread writes.
+- **Retried with backoff.** A transient channel failure (`send` < 0) marks the job failed → the
+  JobQueue retries with backoff (→ dead-letter after max attempts), exactly like the Lua job
+  path. A no-op (e.g. mail unconfigured) or "nothing to send" completes the job.
 
 **Channel resolution** (engine): for `user_id` → the email channel (address from `cel_users`)
 + every active `cel_push_subscriptions` row. A `webpush` send that gets 404/410 sets

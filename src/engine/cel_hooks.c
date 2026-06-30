@@ -163,13 +163,17 @@ long long cel_hook_notify(const char *user_id, const char *title, const char *bo
  * are logged + skipped. Email is resolved here; webpush iterates the user's active
  * subscriptions — that adapter is registered in slice 2, so the loop is inert (skipped)
  * until then. */
-static void cel_notif_fanout(const char *payload) {
-    if (!t_db || !payload || !payload[0]) return;
+/* Returns 0 on success / nothing-to-do, or -1 if a channel send was attempted and
+ * failed transiently (the caller retries the job with backoff). Only READS the db
+ * (resolve recipients) — the caller drops the app write lock around it, so the
+ * blocking channel send must not write. */
+static int cel_notif_fanout(const char *payload) {
+    if (!t_db || !payload || !payload[0]) return 0;
     cJSON *root = cJSON_Parse(payload);
-    if (!root) return;
+    if (!root) return 0;
     const char *user_id = cJSON_GetStringValue(cJSON_GetObjectItem(root, "user_id"));
     cJSON *m = cJSON_GetObjectItem(root, "msg");
-    if (!user_id || !user_id[0] || !cJSON_IsObject(m)) { cJSON_Delete(root); return; }
+    if (!user_id || !user_id[0] || !cJSON_IsObject(m)) { cJSON_Delete(root); return 0; }
     cel_notif_msg_t msg = {
         .title     = cJSON_GetStringValue(cJSON_GetObjectItem(m, "title")),
         .body      = cJSON_GetStringValue(cJSON_GetObjectItem(m, "body")),
@@ -177,6 +181,7 @@ static void cel_notif_fanout(const char *payload) {
         .data_json = cJSON_GetStringValue(cJSON_GetObjectItem(m, "data")),
     };
     char err[256];
+    int rc = 0;   /* -1 → a transient channel failure happened; retry the job */
 
     const cel_notif_channel_t *email = cel_notif_get("email");
     if (email) {
@@ -188,8 +193,10 @@ static void cel_notif_fanout(const char *payload) {
                 const char *to = (const char *)sqlite3_column_text(st, 0);
                 if (to && to[0]) {
                     err[0] = '\0';
-                    if (email->send(to, &msg, err, sizeof err) < 0)
+                    if (email->send(to, &msg, err, sizeof err) < 0) {
                         LOG_WARN("[notif] email send failed: %s", err);
+                        rc = -1;   /* transient (SMTP) — let the job retry */
+                    }
                 }
             }
             sqlite3_finalize(st);
@@ -197,6 +204,7 @@ static void cel_notif_fanout(const char *payload) {
     }
     /* webpush: slice 2 registers the adapter + sends per subscription (+ prunes on GONE). */
     cJSON_Delete(root);
+    return rc;
 }
 
 /* Realtime: publish a change for a server-created row (e.g. a notification) so
@@ -649,10 +657,17 @@ int cel_hooks_run_jobs(cel_lua_t *Lh, job_queue_t *q, long long now,
         int rc = q->claim(q->ctx, now, visibility, &job);
         if (rc != JOBQ_OK) break;             /* JOBQ_NONE (drained) or error */
         /* Reserved engine job: NotifChannel fan-out, handled in C (not the Lua hook).
-         * Best-effort: per-channel failures are logged inside; the job completes. */
+         * Off-site delivery does network I/O (SMTP / push HTTP) and only READS the db
+         * to resolve recipients — drop the app write lock around it so a slow/timing-out
+         * send can't stall request-thread writes, then re-take it for the rest of the
+         * batch. A transient channel failure retries with backoff (like the Lua path). */
         if (job.type && strcmp(job.type, CEL_NOTIF_JOB_TYPE) == 0) {
-            cel_notif_fanout(job.payload);
-            q->complete(q->ctx, job.id, now);
+            app_db_t *napp = app_db_current();
+            if (napp) app_db_write_unlock(napp);
+            int nrc = cel_notif_fanout(job.payload);
+            if (napp) app_db_write_lock(napp);
+            if (nrc < 0) q->fail(q->ctx, job.id, "notify delivery failed", jobq_backoff_at(now, job.attempt));
+            else         q->complete(q->ctx, job.id, now);
             job_free(&job);
             processed++;
             continue;

@@ -809,7 +809,12 @@ int cel_auth_push_subscribe(const char *user_id, const char *endpoint,
         char id[37]; cel_uuid_v4(id, sizeof id);
         char out[37] = {0};
         /* Upsert by endpoint: a re-subscribe refreshes keys + re-enables; RETURNING
-         * id yields the stable existing id on the update path. */
+         * id yields the stable existing id on the update path. By design the latest
+         * subscriber OWNS the endpoint (user_id=excluded.user_id) — a push endpoint
+         * uniquely identifies one browser push channel, so on a shared device the
+         * current user should receive there, not a prior one. (Hijacking another
+         * user's endpoint requires already knowing their high-entropy, non-enumerable
+         * endpoint, i.e. access to their browser — not a remote vector.) */
         const char *p[6] = { id, user_id, endpoint, p256dh, auth, (ua && ua[0]) ? ua : "" };
         int f = cel_db_one_text(c,
             "INSERT INTO cel_push_subscriptions(id, user_id, endpoint, p256dh, auth, ua) "
