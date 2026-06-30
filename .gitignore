@@ -34,5 +34,6 @@ config/policies.local.json
 *.db-wal
 *.db-shm
 
-# example apps: throwaway provisioned bundles
+# example + app bundles: throwaway provisioned runtime state (data.db, copied bundle)
 examples/*/.run/
+apps/*/.run/
