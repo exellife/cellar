@@ -305,3 +305,14 @@ CREATE TABLE saved_search (
   last_run_at TEXT NOT NULL DEFAULT ''     -- cursor: only match listings created after this
 );
 CREATE INDEX idx_saved_search_user ON saved_search (user_id);
+
+-- App-owned display profile for a cel_users row (the engine's cel_users has only
+-- email/role — no display name). id = cel_users.id. Set via the set_profile rpc;
+-- read by search (seller_name) + the listing seller block. display_name is NULL
+-- until the user sets one (the client shows a placeholder), so no email is exposed.
+CREATE TABLE user_profile (
+  id           TEXT PRIMARY KEY REFERENCES cel_users(id) ON DELETE CASCADE,   -- = cel_users.id
+  display_name TEXT,
+  created_at   TEXT NOT NULL DEFAULT '',
+  updated_at   TEXT NOT NULL DEFAULT ''
+);

@@ -107,6 +107,17 @@ def main():
     seller_ids = [u[0] for u in users]
     print(f'+ {len(users)} sellers')
 
+    # display names (user_profile) so cards + the seller block aren't nameless in dev
+    FIRST = ['Азамат','Айгүл','Бекзат','Гүлназ','Данияр','Жамиля','Нурлан','Салтанат',
+             'Тимур','Чолпон','Эрлан','Аида','Марат','Динара','Улан','Назгүль']
+    LAST = ['Асанов','Кыдырова','Осмонов','Бекова','Турсунов','Ниязова','Жээнбеков','Сатылганова']
+    tsp = iso(int(time.time()))
+    prof = [(uid, f'{rnd.choice(FIRST)} {rnd.choice(LAST)}', tsp, tsp) for uid in seller_ids]
+    if a.owner:
+        prof.append((a.owner, f'{rnd.choice(FIRST)} {rnd.choice(LAST)}', tsp, tsp))
+    cur.executemany('INSERT OR IGNORE INTO user_profile(id, display_name, created_at, updated_at) '
+                    'VALUES(?,?,?,?)', prof)
+
     # FTS fast path: drop triggers, bulk load, rebuild, recreate
     trig = cur.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'listings_fts%'").fetchall()
     for name in ('listings_fts_ai', 'listings_fts_ad', 'listings_fts_au'):

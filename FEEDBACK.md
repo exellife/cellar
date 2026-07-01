@@ -50,47 +50,30 @@ instead of working around it silently** — engine problems get fixed in the eng
   `mutation_id` → second response has no `winner`.
 - **filed:** 2026-06-22 by cellar-agent (seed example — known backlog item)
 
-### [OPEN] classifieds `search` rows — add display enrichments for the result cards
-- **kind:** gap
-- **severity:** medium
-- **what I was doing:** building the classifieds web client's search/browse cards (the row list + grid) against a mock, ready to wire to the live `search` rpc.
-- **expected:** each result row carries enough to render the card the design shows (condition badge, seller line, negotiable/save-count, a short specs preview).
-- **actual:** the row is lean — `id, title, price, currency, category_id, city_id, photos, created_at` (+ `status` on favorites/my-listings). Without more, cards can only show title / price / city / time. (The UI degrades gracefully — these are additive.)
-- **needed (all optional on the row):** `condition`, `price_negotiable`, `seller_id` + `seller_name`, `district_id`, `saved_count` (= the `favorite_count` you already compute for the detail rpc), `highlights` (a short category-composed specs array, e.g. `["2019","78 000 км","Автомат"]` for cars, `["1 комн","42 м²","5/9 эт"]` for apartments).
-- **filed:** 2026-07-01 by frontend-agent (classifieds web client)
-
-### [OPEN] classifieds `listing` — add a public seller block to the detail response
-- **kind:** gap
-- **severity:** medium
-- **what I was doing:** the listing detail page's seller card (avatar/name/verified/"на сайте с …/N объявл.").
-- **expected:** the `listing` rpc returns public seller identity alongside the listing.
-- **actual:** it returns `{ listing, favorite_count, favorited }` — no seller info, so the seller card can't render name/verified/member-since/count.
-- **needed (optional):** `seller: { id, name, member_since, listing_count, verified }`. The phone stays OUT of this payload — it's reveal-only via `reveal_contact`.
-- **filed:** 2026-07-01 by frontend-agent (classifieds web client)
-
-### [OPEN] classifieds media — a center-cropped square `thumb` variant
-- **kind:** ergonomics
-- **severity:** low
-- **what I was doing:** card thumbnails render at 1:1 (phone photos are mixed portrait/landscape; a uniform square grid is the target).
-- **expected:** a square `thumb` variant so cards stay crisp/consistent without client-side cropping tricks.
-- **actual:** the `thumb` variant's aspect isn't square; the client forces 1:1 with `object-cover`, which crops unpredictably and can waste bytes.
-- **needed:** a square `thumb` variant (e.g. 400×400, center-cropped) served at `/media/<id>/thumb`.
-- **filed:** 2026-07-01 by frontend-agent (classifieds web client)
-
-### [OPEN] classifieds `my-listings` — optional per-listing engagement stats
-- **kind:** gap
-- **severity:** low
-- **what I was doing:** the seller's "Мои объявления" management page.
-- **expected:** each owned listing can show simple performance (views, contacts) like most marketplaces.
-- **actual:** the owner-scoped `listings` read returns the row without any stats.
-- **needed (optional):** `views_count` / `contacts_count` (or a `stats` sub-object) on the owner-scoped listing read.
-- **filed:** 2026-07-01 by frontend-agent (classifieds web client)
-
 ---
 
 ## Resolved
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
+
+- **classifieds `search` rows — display enrichments** — the `search` rpc rows now also carry
+  `condition`, `price_negotiable`, `district_id`, `seller_id`, `seller_name`, `saved_count`, and
+  `highlights` (a short category-composed specs array from `listing_facet`, e.g. `["1995","212 372 км",
+  "Автомат"]`; unit-bearing numbers get a thousands separator, unitless like year stay plain). All
+  additive. `seller_name` comes from the new `user_profile` table (below), null until the seller sets one.
+- **classifieds `listing` — public seller block** — `listing` now returns
+  `seller:{ id, name, member_since (unix epoch), listing_count (active), verified }` alongside
+  `{listing, favorite_count, favorited}`. Phone stays OUT (reveal-only). `name` from `user_profile`.
+  NEW: `user_profile(id=cel_users.id, display_name)` app table + a `set_profile {name}` rpc (auth, own)
+  so users set a public display name (the engine's `cel_users` has none). `display_name` is null until set.
+- **classifieds media — square `thumb`** — `thumb` is now a **400×400 center-crop** (was a 320 fit-box),
+  so cards are uniform 1:1 without client cropping. Added `image_encode_jpeg_square` (center-crop cover,
+  never upscales) in the engine image lib; `media.c` `thumb` variant uses it. `full` unchanged. Covered by
+  `image_proc` + `media` tests. NOTE: dev-seeded thumbs predate this — re-seed or re-upload for square dev thumbs.
+- **classifieds `my-listings` — engagement stats** — a new `my_listings` rpc (auth, owner-scoped) returns
+  the caller's listings each with `views_count` (from the `listing_viewed` EventSink events) and
+  `contacts_count` (from `contact_event`). `/api/listings` (generic CRUD) can't compute these, so this is
+  the rpc to use for the seller's management page.
 
 - **classifieds chat — realtime message delivery over WS** — WORKING AS INTENDED, no engine change.
   `message` is `realtime:true` + `owner_via` (conversation_member), so the engine already pushes a

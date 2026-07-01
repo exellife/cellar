@@ -63,6 +63,8 @@
     "saved_searches": { "roles": ["user"] },
     "delete_saved_search": { "roles": ["user"] },
     "my_limits": { "roles": ["user"] },
+    "set_profile": { "roles": ["user"] },
+    "my_listings": { "roles": ["user"] },
     "notifications": { "roles": ["user"] },
     "unread_count": { "roles": ["user"] },
     "mark_read": { "roles": ["user"] },

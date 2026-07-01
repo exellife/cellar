@@ -414,6 +414,53 @@ end
 -- POST /rpc/search — the real classifieds query: FTS candidate ids ∩ facet
 -- lookups ∩ base filters (status/category/city), ranked + paged, plus sidebar
 -- facet counts. `q` optional (empty q ⇒ browse). See the contract above.
+-- Card "highlights": a short, category-composed specs preview built from the typed
+-- listing_facet rows (no JSON parse needed). Per category, an ordered subset of keys;
+-- numeric values get a thousands separator + unit, enum/text values pass through.
+local HL_KEYS = {
+  ['cat-cars']       = { 'year', 'mileage', 'transmission' },
+  ['cat-moto']       = { 'year', 'engine_cc' },
+  ['cat-apartments'] = { 'rooms', 'area', 'floor' },
+  ['cat-houses']     = { 'rooms', 'area', 'land' },
+  ['cat-phones']     = { 'brand', 'storage' },
+  ['cat-computers']  = { 'kind', 'ram' },
+}
+local HL_UNIT = { mileage='км', area='м²', engine_cc='см³', land='сот', storage='ГБ', ram='ГБ', rooms='комн', floor='эт' }
+local function grp3(n)   -- 78000 -> "78 000"
+  local s = tostring(math.floor(n)); local out, c = '', 0
+  for i = #s, 1, -1 do out = s:sub(i, i) .. out; c = c + 1; if c % 3 == 0 and i > 1 then out = ' ' .. out end end
+  return out
+end
+-- fetch typed facets for a page of listing ids -> { listing_id = { key = {num=,text=} } }
+local function facets_for(ids)
+  if #ids == 0 then return {} end
+  local ph = {}; for i = 1, #ids do ph[i] = '?' end
+  local rows = cellar.query('SELECT listing_id, key, num_value, text_value FROM listing_facet '
+                            .. 'WHERE listing_id IN (' .. table.concat(ph, ',') .. ')', ids)
+  local by = {}
+  for _, r in ipairs(rows) do
+    local m = by[r.listing_id]; if not m then m = {}; by[r.listing_id] = m end
+    m[r.key] = { num = r.num_value, text = r.text_value }
+  end
+  return by
+end
+local function highlights_for(cat_id, fmap)
+  local keys = HL_KEYS[cat_id]; if not keys or not fmap then return nil end
+  local out = {}
+  for _, k in ipairs(keys) do
+    local fv = fmap[k]
+    if fv and fv.num ~= nil then
+      -- unit-bearing numbers get a thousands separator (78 000 км); unitless ones
+      -- (e.g. year) render plain so 2019 doesn't become "2 019".
+      local u = HL_UNIT[k]
+      out[#out+1] = u and (grp3(fv.num) .. ' ' .. u) or tostring(math.floor(fv.num))
+    elseif fv and fv.text ~= nil and fv.text ~= '' then
+      out[#out+1] = tostring(fv.text)
+    end
+  end
+  return (#out > 0) and out or nil
+end
+
 local function search(args)
   args = args or {}
   local match = fts_query(args.q)
@@ -458,8 +505,17 @@ local function search(args)
   for i = 1, #binds do pbinds[i] = binds[i] end
   pbinds[#pbinds+1] = limit; pbinds[#pbinds+1] = offset
   local rows = cellar.query(
-    'SELECT l.id, l.title, l.price, l.currency, l.category_id, l.city_id, l.photos, l.created_at ' ..
-    'FROM ' .. from .. ' WHERE ' .. where .. ' ORDER BY ' .. order .. ' LIMIT ? OFFSET ?', pbinds)
+    'SELECT l.id, l.title, l.price, l.currency, l.category_id, l.city_id, l.district_id, ' ..
+    'l.condition, l.price_negotiable, l.seller_id, l.photos, l.created_at, ' ..
+    'up.display_name AS seller_name, ' ..
+    '(SELECT count(*) FROM favorite fav WHERE fav.listing_id = l.id) AS saved_count ' ..
+    'FROM ' .. from .. ' LEFT JOIN user_profile up ON up.id = l.seller_id ' ..
+    'WHERE ' .. where .. ' ORDER BY ' .. order .. ' LIMIT ? OFFSET ?', pbinds)
+
+  -- card highlights: one facet query for the page, composed per category
+  local ids = {}; for _, r in ipairs(rows) do ids[#ids+1] = r.id end
+  local fmap = facets_for(ids)
+  for _, r in ipairs(rows) do r.highlights = highlights_for(r.category_id, fmap[r.id]) end
 
   -- sidebar facet counts (per category's filterable attrs, over the base set)
   local facets = nil
@@ -511,6 +567,18 @@ local function get_listing(args, who)
     local f = cellar.query('SELECT 1 AS ok FROM favorite WHERE user_id = ? AND listing_id = ?',
                            { who.user_id, id })
     out.favorited = #f > 0
+  end
+  -- public seller card (phone stays OUT — reveal-only via reveal_contact). name is
+  -- NULL until the seller sets a profile; member_since is a unix epoch (client formats).
+  local su = cellar.query(
+    'SELECT u.created_at AS member_since, (u.email_verified_at IS NOT NULL) AS verified, ' ..
+    'up.display_name AS name FROM cel_users u LEFT JOIN user_profile up ON up.id = u.id ' ..
+    'WHERE u.id = ?', { l.seller_id })[1]
+  if su then
+    local lc = cellar.query("SELECT count(*) AS n FROM listings WHERE seller_id = ? AND status = 'active'",
+                            { l.seller_id })[1]
+    out.seller = { id = l.seller_id, name = su.name, member_since = su.member_since,
+                   verified = (su.verified == 1), listing_count = lc.n }
   end
   -- behavioral telemetry (anon included) for the feed/recs — can't be backfilled
   cellar.emit('listing_viewed', { subject = id, actor = (who and who.user_id) or '' })
@@ -862,6 +930,28 @@ function rpc(name, args, who)
   end
   if name == 'my_limits' then
     return my_limits(args, who)
+  end
+  if name == 'set_profile' then           -- set the caller's public display name
+    if not (who and who.authenticated) then return nil, 'auth required' end
+    local nm = args and args.name
+    if type(nm) ~= 'string' or nm == '' then return { error = 'name required' } end
+    nm = utf8_trunc(nm, 80)
+    local ts = now_iso()
+    cellar.exec('INSERT INTO user_profile(id, display_name, created_at, updated_at) VALUES (?,?,?,?) ' ..
+      'ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, updated_at = excluded.updated_at',
+      { who.user_id, nm, ts, ts })
+    return { ok = true, name = nm }
+  end
+  if name == 'my_listings' then           -- the caller's own listings + engagement stats
+    if not (who and who.authenticated) then return nil, 'auth required' end
+    local rows = cellar.query(
+      'SELECT l.id, l.title, l.price, l.currency, l.category_id, l.city_id, l.status, l.photos, ' ..
+      'l.created_at, l.expires_at, ' ..
+      '(SELECT count(*) FROM event e WHERE e.type = ? AND e.subject_id = l.id) AS views_count, ' ..
+      '(SELECT count(*) FROM contact_event ce WHERE ce.listing_id = l.id) AS contacts_count ' ..
+      'FROM listings l WHERE l.seller_id = ? ORDER BY l.created_at DESC',
+      { 'listing_viewed', who.user_id })
+    return { results = rows }
   end
   if name == 'rebuild_facets' then
     if who.role ~= 'admin' then return nil end
