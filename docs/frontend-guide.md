@@ -304,9 +304,57 @@ Full how-to: [`app-bundle.md` §4](app-bundle.md) (+ the ClerkHalls
 
 cellar can push live `CHANGE` events over a WebSocket when a row a client is
 allowed to see is created/updated/deleted. It's an additive feature — for many
-apps, plain REST (fetch/poll) is enough. The protocol is a small binary opcode
-frame (login → subscribe → receive changes); reach for it only when you need live
-updates. Pure-REST clients ignore it entirely.
+apps, plain REST (fetch/poll) is enough. Reach for it only when you need live
+updates; pure-REST clients ignore it entirely.
+
+**Connect.** Open a WebSocket to the **same origin** as the API (`ws(s)://<host>/`).
+It's **Host-routed like the HTTP API**, so in dev proxy it too — add the WS to your
+proxy with `ws: true` so the `Host` header still says the app host (e.g. `localhost`):
+
+```ts
+// vite.config.ts — alongside the /api, /auth, /rpc, /media entries
+proxy: { "/ws": { target: "ws://127.0.0.1:8080", ws: true, changeOrigin: true,
+                  headers: { Host: "localhost" }, rewrite: p => p.replace(/^\/ws/, "/") } }
+// then in the client: new WebSocket(`ws://${location.host}/ws`)
+```
+
+**Wire protocol.** Each message is a **binary** WS frame whose payload is an 8-byte
+big-endian header + a JSON body:
+
+```
+byte 0    opcode   (u8)   0x10 LOGIN · 0x20 SUBSCRIBE · 0x22 CHANGE
+byte 1    flags    (u8)   0
+bytes 2-3 mid      (u16)  client message id (echoed in the reply)
+bytes 4-7 len      (u32)  JSON body length
+bytes 8…  body     JSON (len bytes)
+```
+
+**Flow:** `LOGIN → SUBSCRIBE (per table/scope) → receive CHANGE frames.`
+
+| op | send | reply |
+|---|---|---|
+| `LOGIN` `0x10` | `{email, password}` | `{token, …}` (a normal session token) |
+| `SUBSCRIBE` `0x20` | `{token, table, key?: {column, value}}` | `{status:"ok"}` or a denial |
+| `CHANGE` `0x22` | — (server push) | `{table, op, row}` when a visible row changes |
+
+**Authorization is enforced on `SUBSCRIBE`** — you only receive changes for rows the
+table's policy would let you read (owner-scope / `owner_via` membership). A subscribe
+outside your scope is refused (`status` ≠ `"ok"`), so realtime never leaks.
+
+### Classifieds subscriptions
+
+- **Chat messages (replaces polling):** subscribe to a conversation's messages —
+  `SUBSCRIBE {token, table:"message", key:{column:"conversation_id", value:<conversation_id>}}`.
+  You then get a `CHANGE {table:"message", row:{…the new message…}}` each time either
+  participant sends. **Only the two participants may subscribe** (`conversation_member`
+  membership); a non-member is denied. Open one subscription per open thread.
+- **Notification bell:** `SUBSCRIBE {token, table:"notification"}` (no `key` — it's
+  owner-scoped to the logged-in user). You get a `CHANGE {table:"notification", row}`
+  for each new notification (new message, saved-search match, listing expiry…).
+
+Both are proven by the engine's `classifieds_chat_ws` e2e (live delivery to a
+participant + a non-member denied + a live notification). Fall back to a one-shot
+refetch on reconnect to backfill anything missed while disconnected.
 
 ---
 

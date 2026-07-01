@@ -50,11 +50,56 @@ instead of working around it silently** — engine problems get fixed in the eng
   `mutation_id` → second response has no `winner`.
 - **filed:** 2026-06-22 by cellar-agent (seed example — known backlog item)
 
+### [OPEN] classifieds `search` rows — add display enrichments for the result cards
+- **kind:** gap
+- **severity:** medium
+- **what I was doing:** building the classifieds web client's search/browse cards (the row list + grid) against a mock, ready to wire to the live `search` rpc.
+- **expected:** each result row carries enough to render the card the design shows (condition badge, seller line, negotiable/save-count, a short specs preview).
+- **actual:** the row is lean — `id, title, price, currency, category_id, city_id, photos, created_at` (+ `status` on favorites/my-listings). Without more, cards can only show title / price / city / time. (The UI degrades gracefully — these are additive.)
+- **needed (all optional on the row):** `condition`, `price_negotiable`, `seller_id` + `seller_name`, `district_id`, `saved_count` (= the `favorite_count` you already compute for the detail rpc), `highlights` (a short category-composed specs array, e.g. `["2019","78 000 км","Автомат"]` for cars, `["1 комн","42 м²","5/9 эт"]` for apartments).
+- **filed:** 2026-07-01 by frontend-agent (classifieds web client)
+
+### [OPEN] classifieds `listing` — add a public seller block to the detail response
+- **kind:** gap
+- **severity:** medium
+- **what I was doing:** the listing detail page's seller card (avatar/name/verified/"на сайте с …/N объявл.").
+- **expected:** the `listing` rpc returns public seller identity alongside the listing.
+- **actual:** it returns `{ listing, favorite_count, favorited }` — no seller info, so the seller card can't render name/verified/member-since/count.
+- **needed (optional):** `seller: { id, name, member_since, listing_count, verified }`. The phone stays OUT of this payload — it's reveal-only via `reveal_contact`.
+- **filed:** 2026-07-01 by frontend-agent (classifieds web client)
+
+### [OPEN] classifieds media — a center-cropped square `thumb` variant
+- **kind:** ergonomics
+- **severity:** low
+- **what I was doing:** card thumbnails render at 1:1 (phone photos are mixed portrait/landscape; a uniform square grid is the target).
+- **expected:** a square `thumb` variant so cards stay crisp/consistent without client-side cropping tricks.
+- **actual:** the `thumb` variant's aspect isn't square; the client forces 1:1 with `object-cover`, which crops unpredictably and can waste bytes.
+- **needed:** a square `thumb` variant (e.g. 400×400, center-cropped) served at `/media/<id>/thumb`.
+- **filed:** 2026-07-01 by frontend-agent (classifieds web client)
+
+### [OPEN] classifieds `my-listings` — optional per-listing engagement stats
+- **kind:** gap
+- **severity:** low
+- **what I was doing:** the seller's "Мои объявления" management page.
+- **expected:** each owned listing can show simple performance (views, contacts) like most marketplaces.
+- **actual:** the owner-scoped `listings` read returns the row without any stats.
+- **needed (optional):** `views_count` / `contacts_count` (or a `stats` sub-object) on the owner-scoped listing read.
+- **filed:** 2026-07-01 by frontend-agent (classifieds web client)
+
 ---
 
 ## Resolved
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
+
+- **classifieds chat — realtime message delivery over WS** — WORKING AS INTENDED, no engine change.
+  `message` is `realtime:true` + `owner_via` (conversation_member), so the engine already pushes a
+  live `CHANGE` for each new message to the two participants and denies non-members' subscribes —
+  proven by the `classifieds_chat_ws` e2e. The gap was docs: the WS subscribe shape wasn't written
+  down, so the client polled. Documented the binary frame protocol + the concrete chat/notification
+  subscriptions in `docs/frontend-guide.md §5` (subscribe `{table:"message", key:{column:"conversation_id",
+  value:<id>}}` → `CHANGE`; notifications = `{table:"notification"}`, owner-scoped). Also noted the
+  dev-proxy needs `ws:true` (WS is Host-routed like the API). Drop the polling; no backend work.
 
 - **No revocable device token for PIN "fast sign-in"** — added device tokens: a long-lived, revocable
   credential a client stores (e.g. encrypted behind a PIN) and exchanges for fresh sessions without
