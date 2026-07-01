@@ -10,6 +10,9 @@
 # build dirs, .run/, .git, examples/. Data/media are seeded/managed out-of-band.
 #
 # Usage:  dist/deploy-srvlab.sh [--no-restart] [--engine-only] [--bundles-only]
+#                               [--spa] [--spa-only]
+#   --spa       also sync built frontend dist → bundle public/ (opt-in; needs a fresh build)
+#   --spa-only  ONLY push the SPA (no engine/bundle/restart) — for a frontend-only redeploy
 # Requires: ssh access to $SRV + passwordless sudo there (systemctl restart).
 set -euo pipefail
 
@@ -25,11 +28,21 @@ MANAGED_BUNDLES=(
   "apps/classifieds=portico-second.duckdns.org"
 )
 
-DO_ENGINE=1; DO_BUNDLES=1; DO_RESTART=1
+# Managed SPAs — built frontend artifacts that live OUTSIDE this repo:
+# "<dist-dir>=<deployed-host>". Synced into the bundle's public/ (--delete, so
+# public/ == dist). Opt-in via --spa / --spa-only because it depends on the
+# frontend workspace having a FRESH build; a stale/absent dist is skipped with a warning.
+MANAGED_SPAS=(
+  "$HOME/workspace/frontend-apps/apps/classifieds/dist=portico-second.duckdns.org"
+)
+
+DO_ENGINE=1; DO_BUNDLES=1; DO_RESTART=1; DO_SPA=0
 for a in "$@"; do case "$a" in
   --no-restart)   DO_RESTART=0 ;;
-  --engine-only)  DO_BUNDLES=0 ;;
-  --bundles-only) DO_ENGINE=0 ;;
+  --engine-only)  DO_BUNDLES=0; DO_SPA=0 ;;
+  --bundles-only) DO_ENGINE=0; DO_SPA=0 ;;
+  --spa)          DO_SPA=1 ;;
+  --spa-only)     DO_ENGINE=0; DO_BUNDLES=0; DO_SPA=1; DO_RESTART=0 ;;
   *) echo "unknown flag: $a" >&2; exit 2 ;;
 esac; done
 
@@ -62,6 +75,20 @@ if [ "$DO_BUNDLES" = 1 ]; then
     rsync -az --info=stats1 \
       "$src/hooks.lua" "$src/policies.json" \
       "$SRV:$APPS/$host/"
+  done
+fi
+
+if [ "$DO_SPA" = 1 ]; then
+  for map in "${MANAGED_SPAS[@]}"; do
+    dist="${map%%=*}"; host="${map##*=}"
+    if [ ! -f "$dist/index.html" ]; then
+      echo "  ⚠ skip SPA for $host: no build at $dist (run the frontend build first)" >&2
+      continue
+    fi
+    say "deploy SPA: $dist → $APPS/$host/public/"
+    # static files served per-request from disk; no restart needed. --delete keeps
+    # public/ an exact mirror of dist (drops stale hashed assets + the provision starter).
+    rsync -az --delete --info=stats1 "$dist/" "$SRV:$APPS/$host/public/"
   done
 fi
 
