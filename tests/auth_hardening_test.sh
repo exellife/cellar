@@ -41,4 +41,17 @@ chk "long password -> 400"   "$(code -X POST -H 'Content-Type: application/json'
         -d "{\"email\":\"x@y.z\",\"password\":\"$LONGPW\",\"role\":\"admin\"}" \
         "http://127.0.0.1:$PORT/auth/register")" "400"
 
+# passwd CLI: out-of-band reset — old password stops working, new one logs in
+CEL_DATA_DB="$DB" CEL_LOG_LEVEL=error "$BIN" passwd admin@cellar.dev n3w-passw0rd >/dev/null 2>&1
+chk "old password -> 401"    "$(code -X POST -H 'Content-Type: application/json' \
+        -d '{"email":"admin@cellar.dev","password":"s3cret-admin"}' \
+        "http://127.0.0.1:$PORT/auth/login")" "401"
+chk "new password -> 200"    "$(code -X POST -H 'Content-Type: application/json' \
+        -d '{"email":"admin@cellar.dev","password":"n3w-passw0rd"}' \
+        "http://127.0.0.1:$PORT/auth/login")" "200"
+# a passwd for an email with no password account is a clean failure (exit 1), not a crash
+if CEL_DATA_DB="$DB" CEL_LOG_LEVEL=error "$BIN" passwd ghost@nowhere.z whatever123 >/dev/null 2>&1
+then rc=0; else rc=$?; fi
+chk "passwd unknown email -> exit 1" "$rc" "1"
+
 [ "$fail" = 0 ] && echo "AUTH HARDENING PASS" || { echo "AUTH HARDENING FAIL"; exit 1; }

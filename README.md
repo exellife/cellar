@@ -93,6 +93,7 @@ cellar import <host> <in.tar.gz>                 # reconstitute an app (rehost b
 cellar apps                                      # list registered apps + status   (needs CEL_CONTROL_DB)
 cellar suspend|resume <host>                     # take an app offline/online (live) (needs CEL_CONTROL_DB)
 cellar revoke-sessions <email> | mfa-reset <email> | unlock <email> | send-test-mail <to>
+cellar passwd <email> <new-password>             # out-of-band password reset (no email round-trip)
 ```
 
 `export`/`import`/`suspend`/`resume` operate against a running server safely.

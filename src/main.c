@@ -353,6 +353,21 @@ static int run_unlock(int argc, char **argv) {
     return cli_done(n >= 0);
 }
 
+/* `cellar passwd <email> <new-password>` — out-of-band password reset from the box:
+ * set a new password on an existing password identity (no current-password check,
+ * keyed by email), revoking the user's sessions + pending MFA + trusted devices and
+ * clearing any lockout. The trusted CLI path (like provision); mirrors the in-band
+ * cellar.set_password primitive. INVALID if the email has no password account. */
+static int run_passwd(int argc, char **argv) {
+    if (argc < 4) { fprintf(stderr, "usage: cellar passwd <email> <new-password>\n"); return 2; }
+    if (cli_open_app() != 0) return 1;
+    int rc = cel_auth_set_password(argv[2], argv[3]);
+    if (rc == CEL_AUTH_OK)           LOG_INFO("password set for '%s'", argv[2]);
+    else if (rc == CEL_AUTH_INVALID) LOG_WARN("no password account for '%s'", argv[2]);
+    else                             LOG_ERROR("passwd failed for '%s'", argv[2]);
+    return cli_done(rc == CEL_AUTH_OK);
+}
+
 /* `cellar send-test-mail <to>` — verify the SMTP configuration by sending a test
  * message. No DB needed; reads CEL_SMTP_* / CEL_MAIL_* from the environment. */
 static int run_send_test_mail(int argc, char **argv) {
@@ -857,6 +872,8 @@ int main(int argc, char **argv) {
         return run_mfa_reset(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "unlock") == 0)
         return run_unlock(argc, argv);
+    if (argc >= 2 && strcmp(argv[1], "passwd") == 0)
+        return run_passwd(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "send-test-mail") == 0)
         return run_send_test_mail(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "provision") == 0)

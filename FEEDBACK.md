@@ -56,6 +56,18 @@ instead of working around it silently** — engine problems get fixed in the eng
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
 
+- **dev test logins (non-admin) + `cellar passwd` CLI** — the classifieds `run.sh` now provisions two
+  stable `role=user` accounts out of the box (idempotent, dev only), so the frontend has non-admin creds:
+  - `admin@classifieds.local` / `classifieds01` — role `admin`
+  - `seller@classifieds.local` / `test1234` — role `user` (the seeded `--owner`: **owns 45 listings**, so
+    `my_listings` returns real rows)
+  - `buyer@classifieds.local` / `test1234` — role `user` (for favorites / reveal / chat flows)
+
+  These survive a fresh `.run/` re-provision. To reset any password out-of-band (no email round-trip),
+  the engine gained a CLI verb: **`cellar passwd <email> <new-password>`** (mirrors the `cellar.set_password`
+  primitive — sets the hash, revokes the user's sessions + pending MFA + trusted devices, clears lockout).
+  `CEL_DATA_DB=<bundle>/data.db cellar passwd <email> <pw>`. e2e in `auth_hardening_test.sh`.
+
 - **classifieds `search` — category is now subtree-inclusive** — `search {category}` matches the given
   node **and all its descendants**, so browsing a parent (e.g. `cat-transport`) returns the whole
   subtree (`cat-cars` + `cat-moto`), while a leaf still returns just itself. Resolved in the bundle

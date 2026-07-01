@@ -56,10 +56,23 @@ for jt in '{"type":"expire_listings","repeat_every":86400}' '{"type":"match_save
     -H 'Content-Type: application/json' -d "$jt" "http://127.0.0.1:$PORT/rpc/enqueue_job"
 done
 
+# Dev/test logins (idempotent): a non-admin seller + buyer so the frontend has
+# stable role=user credentials out of the box. Created via the superuser-only
+# POST /auth/users; a 409 (already exists) on re-run is harmless and ignored.
+# NOTE: dev only — remove/rotate before any real deployment.
+for uc in seller buyer; do
+  [ -n "$ADMIN_TOK" ] && curl -s -o /dev/null -X POST -H "Host: $APP" -H "Authorization: Bearer $ADMIN_TOK" \
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$uc@classifieds.local\",\"password\":\"test1234\",\"role\":\"user\"}" \
+    "http://127.0.0.1:$PORT/auth/users"
+done
+
 cat <<EOF
 
   classifieds is live →  http://localhost:$PORT/
   admin              →  $ADMIN_EMAIL / $ADMIN_PW
+  seller (user)      →  seller@classifieds.local / test1234
+  buyer  (user)      →  buyer@classifieds.local / test1234
 
   Catalog seeded: KG geo tree + a starter taxonomy (transport/realestate/…).
   Try it:
