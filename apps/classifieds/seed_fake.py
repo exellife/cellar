@@ -65,9 +65,16 @@ def main():
     ap.add_argument('--users', type=int, default=0)
     ap.add_argument('--region', default='kg')
     ap.add_argument('--seed', type=int, default=1234)
+    ap.add_argument('--media', default='',
+                    help='comma-separated media ids (must already exist via POST /media); '
+                         '1-4 random are attached to each listing as photos')
+    ap.add_argument('--owner', default='', help='assign a share of listings to this existing user id')
+    ap.add_argument('--owner-share', type=float, default=0.1, dest='owner_share',
+                    help='fraction of listings owned by --owner (default 0.1)')
     a = ap.parse_args()
     import sqlite3
     rnd = random.Random(a.seed)
+    media_pool = [x for x in a.media.split(',') if x]
 
     con = sqlite3.connect(a.db)
     con.execute('PRAGMA foreign_keys=OFF')
@@ -127,12 +134,15 @@ def main():
             ts = now - rnd.randint(0, 90 * 86400)
             city = rnd.choice(cities) if cities else None
             dist = rnd.choice(distr[city]) if city in distr and rnd.random() < 0.6 else None
+            seller = a.owner if (a.owner and rnd.random() < a.owner_share) else rnd.choice(seller_ids)
+            photos = json.dumps(rnd.sample(media_pool, min(len(media_pool), rnd.randint(1, 4)))) \
+                     if media_pool else '[]'
             rows.append((
-                str(uuid.uuid4()), a.region, rnd.choice(seller_ids), cid,
+                str(uuid.uuid4()), a.region, seller, cid,
                 title_for(cid, cat_name.get(cid, 'Объявление'), attrs, rnd),
                 rnd.choice(ADJ).capitalize() + '.', rnd.randint(plo, phi), 1 if rnd.random() < 0.3 else 0,
                 'KGS', 'ru', city, dist, rnd.choice(('new', 'used', None)), 'active',
-                1, 1, 1 if rnd.random() < 0.3 else 0, '[]', json.dumps(attrs, ensure_ascii=False),
+                1, 1, 1 if rnd.random() < 0.3 else 0, photos, json.dumps(attrs, ensure_ascii=False),
                 iso(ts), iso(ts), iso(ts + 30 * 86400),
             ))
         cur.executemany(ins, rows)
