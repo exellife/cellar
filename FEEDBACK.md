@@ -56,6 +56,16 @@ instead of working around it silently** — engine problems get fixed in the eng
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
 
+- **classifieds `search` — category is now subtree-inclusive** — `search {category}` matches the given
+  node **and all its descendants**, so browsing a parent (e.g. `cat-transport`) returns the whole
+  subtree (`cat-cars` + `cat-moto`), while a leaf still returns just itself. Resolved in the bundle
+  (`apps/classifieds/hooks.lua`) — the engine owns the tree, so a one-shot recursive CTE expands
+  id-or-slug → `{self + descendants}` and the query filters `category_id IN (…)`. The client no longer
+  needs to fetch the tree and OR ids. Sidebar **facets stay leaf-only** (a parent is heterogeneous → no
+  filterable attrs → no facet block), exactly as noted; per-row `highlights` still resolve from each
+  listing's own leaf category. Unknown category still → 0. e2e: `test_phase0.py` (parent ⊇ leaf,
+  parent-has-no-direct-listings, unknown→0). Verified live on the seeded bundle: `cat-transport` 0 → 90.
+
 - **classifieds `search` rows — display enrichments** — the `search` rpc rows now also carry
   `condition`, `price_negotiable`, `district_id`, `seller_id`, `seller_name`, `saved_count`, and
   `highlights` (a short category-composed specs array from `listing_facet`, e.g. `["1995","212 372 км",

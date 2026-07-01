@@ -461,6 +461,24 @@ local function highlights_for(cat_id, fmap)
   return (#out > 0) and out or nil
 end
 
+-- Expand a category id-or-slug to itself + all descendants (marketplace subtree
+-- browse: clicking a parent like "Транспорт" must return the whole subtree — its
+-- leaves hold the listings, the parent holds none). Returns a list of ids, empty
+-- if the category is unknown. The tree is small and idx_category_parent covers
+-- the recursion. Accepts a slug too (id OR slug), like category_form.
+local function category_subtree(arg)
+  local rows = cellar.query([[
+    WITH RECURSIVE sub(id) AS (
+      SELECT id FROM category WHERE id = ? OR slug = ?
+      UNION ALL
+      SELECT c.id FROM category c JOIN sub s ON c.parent_id = s.id
+    )
+    SELECT id FROM sub]], { arg, arg })
+  local ids = {}
+  for _, r in ipairs(rows) do ids[#ids+1] = r.id end
+  return ids
+end
+
 local function search(args)
   args = args or {}
   local match = fts_query(args.q)
@@ -480,7 +498,18 @@ local function search(args)
   else
     from = 'listings l'
   end
-  if args.category and args.category ~= '' then conds[#conds+1] = 'l.category_id = ?'; binds[#binds+1] = args.category end
+  if args.category and args.category ~= '' then
+    -- subtree-inclusive: a parent matches all its descendants, a leaf just itself.
+    local sub = category_subtree(args.category)
+    if #sub > 0 then
+      local ph = {}
+      for _, id in ipairs(sub) do ph[#ph+1] = '?'; binds[#binds+1] = id end
+      conds[#conds+1] = 'l.category_id IN (' .. table.concat(ph, ',') .. ')'
+    else
+      -- unknown category → match nothing (preserves the prior 0-result behavior)
+      conds[#conds+1] = 'l.category_id = ?'; binds[#binds+1] = args.category
+    end
+  end
   if args.city and args.city ~= '' then conds[#conds+1] = 'l.city_id = ?'; binds[#binds+1] = args.city end
 
   -- snapshot the base (facet counts use it WITHOUT the user's facet selections,

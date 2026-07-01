@@ -254,6 +254,21 @@ def run_checks(port, db):
     s, r = search("тойота", category="cat-apartments")
     chk("category narrows (apartments: none)", r.get("total") == 0, str(r.get("total")))
 
+    # subtree-inclusive category browse (FEEDBACK 2026-07-01): a PARENT node returns
+    # its descendants' listings even though it holds none directly. cat-transport is
+    # the parent of cat-cars (see the category_form breadcrumb above); the toyotas
+    # live in cat-cars, so browsing the parent must still find them.
+    s, rp = search("тойота", category="cat-transport")
+    s2, rc = search("тойота", category="cat-cars")
+    chk("parent category returns the subtree (cat-transport ⊇ cat-cars)",
+        rp.get("total", 0) >= 1 and rp.get("total", 0) >= rc.get("total", 0),
+        f"parent={rp.get('total')} leaf={rc.get('total')}")
+    chk("parent node holds no direct listings yet still yields results",
+        rp.get("total", 0) >= 1 and all(x["category_id"] != "cat-transport" for x in rp.get("results", [])),
+        str([x["category_id"] for x in rp.get("results", [])]))
+    s, rn = search("тойота", category="cat-nonexistent")
+    chk("unknown category still returns 0 (not the whole subtree)", rn.get("total") == 0, str(rn.get("total")))
+
     # no match + injection safety (special chars must not error)
     s, r = search("zzzznomatchqqq")
     chk("no match -> empty", s == 200 and r.get("total") == 0, f"status={s} {r.get('total')}")
