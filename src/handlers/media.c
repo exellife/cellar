@@ -20,12 +20,13 @@ static size_t g_media_max = 0;
 void cel_media_set_max(size_t bytes) { g_media_max = bytes; }
 static size_t media_cap(void) { return g_media_max ? g_media_max : MEDIA_MAX_DEFAULT; }
 
-/* The canonical variant set. `full` is the display image (downscaled to fit a
- * box); `thumb` is the grid/card thumbnail. Both re-encoded to JPEG. */
-typedef struct { const char *name; int max_dim; int quality; } variant_t;
+/* The canonical variant set. `full` is the display image (downscaled to fit a box);
+ * `thumb` is the grid/card thumbnail — a SQUARE center-crop (uniform 1:1 cards from
+ * mixed-aspect phone photos, no client-side cropping). Both re-encoded to JPEG. */
+typedef struct { const char *name; int max_dim; int quality; int square; } variant_t;
 static const variant_t VARIANTS[] = {
-    { "full",  1600, 85 },
-    { "thumb",  320, 80 },
+    { "full",  1600, 85, 0 },
+    { "thumb",  400, 80, 1 },
 };
 static const size_t NVARIANTS = sizeof VARIANTS / sizeof VARIANTS[0];
 
@@ -118,7 +119,10 @@ int cel_media_upload(const portico_request_t *req, portico_response_t *res,
     size_t stored = 0;                       /* variants successfully written */
     for (size_t i = 0; i < NVARIANTS; i++) {
         void *out = NULL; size_t outn = 0;
-        if (image_encode_jpeg(rgb, dw, dh, VARIANTS[i].max_dim, VARIANTS[i].quality, &out, &outn) != IMG_OK) {
+        int enc = VARIANTS[i].square
+            ? image_encode_jpeg_square(rgb, dw, dh, VARIANTS[i].max_dim, VARIANTS[i].quality, &out, &outn)
+            : image_encode_jpeg(rgb, dw, dh, VARIANTS[i].max_dim, VARIANTS[i].quality, &out, &outn);
+        if (enc != IMG_OK) {
             err_code = 400; err_msg = "image processing failed"; break;
         }
         char key[160];

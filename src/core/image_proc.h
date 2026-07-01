@@ -94,4 +94,11 @@ void image_free_rgb(unsigned char *rgb);
 int image_encode_jpeg(const unsigned char *rgb, int w, int h,
                       int max_dim, int jpeg_quality, void **out, size_t *out_len);
 
+/* Center-crop an RGB buffer to a square (the largest centered square that fits),
+ * scale it to `size`x`size` (downscale only — never upscales past the crop), and
+ * encode to JPEG. For uniform square card thumbnails from mixed-aspect sources.
+ * Allocates `*out` (free with free()), sets `*out_len`. */
+int image_encode_jpeg_square(const unsigned char *rgb, int w, int h,
+                             int size, int jpeg_quality, void **out, size_t *out_len);
+
 #endif /* CEL_IMAGE_PROC_H */

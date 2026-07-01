@@ -156,6 +156,19 @@ int main(void) {
                       info.width == W && info.height == H);
     free(out); out = NULL;
 
+    /* square center-crop (card thumbs): a non-square source -> NxN square JPEG */
+    unsigned char *r2 = make_raster(200, 100);
+    chk("square encode ok", image_encode_jpeg_square(r2, 200, 100, 64, 80, &out, &outn) == IMG_OK);
+    chk("square is 64x64 JPEG", outn > 0 && image_validate(out, outn, NULL, &info) == IMG_OK
+                                && info.format == IMG_FMT_JPEG && info.width == 64 && info.height == 64);
+    free(out); out = NULL;
+    /* never upscales past the crop: size > source side => side x side (100x100) */
+    chk("square no upscale", image_encode_jpeg_square(r2, 200, 100, 512, 80, &out, &outn) == IMG_OK
+                             && image_validate(out, outn, NULL, &info) == IMG_OK
+                             && info.width == 100 && info.height == 100);
+    free(out); out = NULL;
+    free(r2);
+
     /* malformed input is rejected, not crashed */
     chk("reencode garbage => err", image_reencode("garbage bytes here!!", 20, NULL, &thumb, &out, &outn) != IMG_OK);
     chk("reencode garbage out NULL", out == NULL);

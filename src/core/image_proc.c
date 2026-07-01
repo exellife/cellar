@@ -152,6 +152,37 @@ int image_encode_jpeg(const unsigned char *rgb, int w, int h,
     return IMG_OK;
 }
 
+int image_encode_jpeg_square(const unsigned char *rgb, int w, int h,
+                             int size, int jpeg_quality, void **out, size_t *out_len) {
+    if (!out || !out_len) return IMG_EINVAL;
+    *out = NULL; *out_len = 0;
+    if (!rgb || w <= 0 || h <= 0 || size <= 0) return IMG_EINVAL;
+
+    int q = jpeg_quality ? jpeg_quality : DEF_JPEG_Q;
+    if (q < 1) q = 1;
+    if (q > 100) q = 100;
+
+    /* largest centered square that fits; never upscale past it */
+    int side = w < h ? w : h;
+    int dim = size < side ? size : side;
+    int x0 = (w - side) / 2, y0 = (h - side) / 2;
+    const unsigned char *origin = rgb + ((size_t)y0 * w + x0) * 3;
+
+    /* resize the centered square sub-region (input stride = the full row) to dim x dim */
+    unsigned char *sq = stbir_resize_uint8_srgb(origin, side, side, w * 3, NULL,
+                                                dim, dim, 0, STBIR_RGB);
+    if (!sq) return IMG_ENOMEM;
+
+    growbuf b = {0};
+    int wrote = stbi_write_jpg_to_func(gb_write, &b, dim, dim, 3, sq, q);
+    free(sq);
+
+    if (!wrote || b.err) { free(b.p); return b.err ? IMG_ENOMEM : IMG_EENCODE; }
+    *out = b.p;
+    *out_len = b.len;
+    return IMG_OK;
+}
+
 int image_reencode(const void *data, size_t len,
                    const img_limits_t *limits, const img_encode_opts_t *opts,
                    void **out, size_t *out_len) {
