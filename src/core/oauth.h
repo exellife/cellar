@@ -32,11 +32,16 @@ void cel_oauth_cleanup(void);
 bool cel_oauth_enabled(void);
 
 /* Verify an ID token for `provider`: RS256 signature (>= 2048-bit key) against the
- * provider's JWKS, plus iss / aud / azp / exp / iat. If `expected_nonce` is non-NULL
- * and non-empty, the token's nonce claim must match it (front-channel replay
- * defense; pass NULL to skip). Fills `out` and returns 0 on success; -1 on any
- * failure, with a short reason in `errbuf` (log it, don't return it — see L-2). */
-int cel_oauth_verify(const char *provider, const char *id_token, const char *expected_nonce,
+ * provider's JWKS, plus iss / aud / azp / exp / iat. `expected_audience` is the
+ * client id the token's `aud` must match: pass a per-app client id (from the
+ * bundle's `_oauth`) to override, or NULL to use the provider's process-wide
+ * CEL_OAUTH_<NAME>_CLIENT_ID. If neither is set, verification fails closed. If
+ * `expected_nonce` is non-NULL and non-empty, the token's nonce claim must match
+ * it (front-channel replay defense; pass NULL to skip). Fills `out` and returns 0
+ * on success; -1 on any failure, with a short reason in `errbuf` (log it, don't
+ * return it — see L-2). */
+int cel_oauth_verify(const char *provider, const char *id_token,
+                     const char *expected_audience, const char *expected_nonce,
                      cel_oauth_claims_t *out, char *errbuf, size_t errlen);
 
 /* True iff `provider` may auto-link a federated identity to an existing local

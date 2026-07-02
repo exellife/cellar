@@ -114,6 +114,14 @@ bool cel_policy_rpc_allows(const char *fn, const char *role);
  * startup to audit which exposed functions are SECURITY DEFINER (H-4). */
 int cel_policy_rpc_names(const char **out, int max);
 
+/* Per-app OAuth client id (audience) for `provider`, from the thread-active
+ * bundle's `_oauth` (e.g. { "google": { "client_id": "..." } }). Returns NULL
+ * when the bundle sets none, so the caller falls back to the process-wide
+ * CEL_OAUTH_<NAME>_CLIENT_ID. The returned pointer belongs to the active policy —
+ * use it within the request (call after cel_policy_set_active). Only the public
+ * client id is read here; SMTP/OAuth secrets never live in the bundle. */
+const char *cel_policy_oauth_client_id(const char *provider);
+
 /* ---- per-app session policy ----------------------------------------------- */
 
 /* Resolve the active app's `_session` block (policies.json) into `out`. Fills the

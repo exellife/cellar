@@ -292,6 +292,24 @@ int main(void) {
     chk("huge ttl stays positive",     sp.ttl_seconds > 0, true);
     chk("huge cap clamped to INT_MAX", sp.absolute_max_seconds == INT_MAX, true);
 
+    /* ---- per-app OAuth client id (bundle _oauth) ---- */
+    printf("per-app _oauth client id\n");
+    load_policy("{ \"_oauth\": { \"google\": { \"client_id\": \"app-123.apps.googleusercontent.com\" } } }");
+    chk_str("google client id from bundle", cel_policy_oauth_client_id("google"),
+            "app-123.apps.googleusercontent.com");
+    chk_str("unset provider -> NULL (fall back to env)", cel_policy_oauth_client_id("apple"), NULL);
+
+    load_policy("{ \"_default\": \"deny\" }");   /* no _oauth at all */
+    chk_str("no _oauth -> NULL (fall back to env)", cel_policy_oauth_client_id("google"), NULL);
+
+    /* malformed shapes must not crash and must yield NULL (fail back to env) */
+    load_policy("{ \"_oauth\": { \"google\": { \"client_id\": 42 } } }");
+    chk_str("non-string client_id -> NULL", cel_policy_oauth_client_id("google"), NULL);
+    load_policy("{ \"_oauth\": { \"google\": \"nope\" } }");
+    chk_str("provider not an object -> NULL", cel_policy_oauth_client_id("google"), NULL);
+    load_policy("{ \"_oauth\": { \"google\": { \"client_id\": \"\" } } }");
+    chk_str("empty client_id -> NULL", cel_policy_oauth_client_id("google"), NULL);
+
     cel_policy_cleanup();
     printf(failures ? "\nFAILED (%d)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;

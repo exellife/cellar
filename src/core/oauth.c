@@ -85,12 +85,16 @@ void cel_oauth_init(void) {
         if (aud) snprintf(p.audience, sizeof p.audience, "%s", aud);
         if (dom) snprintf(p.trusted_domains, sizeof p.trusted_domains, "%s", dom);
 
-        if (!p.issuer[0] || !p.jwks_uri[0] || !p.audience[0]) {
-            LOG_WARN("oauth: provider '%s' incomplete (need issuer, jwks, client id) — skipped", p.name);
+        /* audience (client id) may be supplied per-app via the bundle's `_oauth`,
+         * so a provider is usable with just issuer + jwks; the global client id is
+         * an optional default. Fail closed at verify time if neither is present. */
+        if (!p.issuer[0] || !p.jwks_uri[0]) {
+            LOG_WARN("oauth: provider '%s' incomplete (need issuer + jwks) — skipped", p.name);
             continue;
         }
         g_providers[g_nproviders++] = p;
-        LOG_INFO("oauth: provider '%s' configured (iss=%s)", p.name, p.issuer);
+        LOG_INFO("oauth: provider '%s' configured (iss=%s%s)", p.name, p.issuer,
+                 p.audience[0] ? "" : ", client id per-app");
     }
     free(dup);
 }
@@ -376,12 +380,20 @@ static bool claim_true(const cJSON *v) {
     return false;
 }
 
-int cel_oauth_verify(const char *provider, const char *id_token, const char *expected_nonce,
+int cel_oauth_verify(const char *provider, const char *id_token,
+                     const char *expected_audience, const char *expected_nonce,
                      cel_oauth_claims_t *out, char *errbuf, size_t errlen) {
     errbuf[0] = '\0';
     const provider_t *p = provider ? find_provider(provider) : NULL;
     if (!p) { snprintf(errbuf, errlen, "unknown provider"); return -1; }
     if (!id_token || !*id_token) { snprintf(errbuf, errlen, "missing token"); return -1; }
+
+    /* Effective audience: a per-app client id (bundle _oauth) overrides the
+     * provider's process-wide CEL_OAUTH_<NAME>_CLIENT_ID; fall back to the global
+     * when the app sets none. A provider may be enabled with no global audience
+     * (audience supplied per-app), so fail closed if neither is present. */
+    const char *aud_want = (expected_audience && *expected_audience) ? expected_audience : p->audience;
+    if (!aud_want || !*aud_want) { snprintf(errbuf, errlen, "no audience configured"); return -1; }
 
     int rc = -1;
     cJSON *hdr = NULL, *pl = NULL;
@@ -422,7 +434,7 @@ int cel_oauth_verify(const char *provider, const char *id_token, const char *exp
     const cJSON *exp = cJSON_GetObjectItemCaseSensitive(pl, "exp");
     const cJSON *sub = cJSON_GetObjectItemCaseSensitive(pl, "sub");
     if (!cJSON_IsString(iss) || strcmp(iss->valuestring, p->issuer) != 0) VFAIL("issuer mismatch");
-    if (!aud_matches(pl, p->audience)) VFAIL("audience mismatch");
+    if (!aud_matches(pl, aud_want)) VFAIL("audience mismatch");
 
     /* azp (OIDC Core 3.1.3.7, M-6): when the token carries multiple audiences an
      * azp (authorized party) claim MUST be present and equal our client_id, and
@@ -433,7 +445,7 @@ int cel_oauth_verify(const char *provider, const char *id_token, const char *exp
     const cJSON *azp = cJSON_GetObjectItemCaseSensitive(pl, "azp");
     if (cJSON_IsArray(aud) && cJSON_GetArraySize(aud) > 1 && !cJSON_IsString(azp))
         VFAIL("azp required for multi-audience token");
-    if (cJSON_IsString(azp) && strcmp(azp->valuestring, p->audience) != 0) VFAIL("azp mismatch");
+    if (cJSON_IsString(azp) && strcmp(azp->valuestring, aud_want) != 0) VFAIL("azp mismatch");
 
     if (!cJSON_IsNumber(exp) || (time_t)exp->valuedouble + EXP_LEEWAY < time(NULL)) VFAIL("token expired");
     /* iat sanity (M-6): present, numeric, and not future-dated beyond clock skew. */

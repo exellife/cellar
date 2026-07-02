@@ -212,6 +212,16 @@ int cel_policy_rpc_names(const char **out, int max) {
     return n;
 }
 
+const char *cel_policy_oauth_client_id(const char *provider) {
+    if (!active() || !provider) return NULL;
+    const cJSON *oauth = cJSON_GetObjectItemCaseSensitive(active(), "_oauth");
+    if (!cJSON_IsObject(oauth)) return NULL;
+    const cJSON *prov = cJSON_GetObjectItemCaseSensitive(oauth, provider);
+    if (!cJSON_IsObject(prov)) return NULL;
+    const cJSON *cid = cJSON_GetObjectItemCaseSensitive(prov, "client_id");
+    return (cJSON_IsString(cid) && cid->valuestring[0]) ? cid->valuestring : NULL;
+}
+
 bool cel_role_can_self_register(const char *role) {
     if (!role || !*role) return false;
     if (is_superuser_role(role)) return false;   /* boundary: never via signup */

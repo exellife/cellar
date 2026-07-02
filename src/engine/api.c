@@ -1761,9 +1761,12 @@ cel_api_result_t cel_api_oauth(const cJSON *req) {
      * trusting any claim. A client doing the nonce dance passes the nonce it minted. */
     const cJSON *nonce = cJSON_GetObjectItemCaseSensitive(req, "nonce");
     const char *exp_nonce = cJSON_IsString(nonce) ? nonce->valuestring : NULL;
+    /* Per-app OAuth client id (bundle `_oauth`) overrides the process-wide default;
+     * NULL → cel_oauth_verify falls back to CEL_OAUTH_<provider>_CLIENT_ID. */
+    const char *app_aud = cel_policy_oauth_client_id(provider->valuestring);
     cel_oauth_claims_t claims;
     char verr[128] = {0};
-    if (cel_oauth_verify(provider->valuestring, token->valuestring, exp_nonce, &claims, verr, sizeof verr) != 0) {
+    if (cel_oauth_verify(provider->valuestring, token->valuestring, app_aud, exp_nonce, &claims, verr, sizeof verr) != 0) {
         /* L-2: don't return the verification-stage reason ("issuer mismatch",
          * "audience mismatch", "signature invalid", ...) to the client — it's a
          * stage oracle and leaks the enforced iss/aud. Log it server-side. */

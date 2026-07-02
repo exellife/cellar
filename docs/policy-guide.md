@@ -68,7 +68,7 @@ Shape:
 ```
 
 Top-level keys come in two kinds:
-- **Reserved** (start with `_`): `_default`, `_roles`, `_rpc`, `_session`.
+- **Reserved** (start with `_`): `_default`, `_roles`, `_rpc`, `_session`, `_oauth`.
 - **Table entries**: every other key is a table name; its value configures that table.
 
 > ⚠️ **Applying changes.** `policies.json` is loaded the first time an app is served and
@@ -205,6 +205,33 @@ Notes:
 - **Loaded once at startup** (like the rest of `policies.json`) — a change needs a cellar restart, not just a file copy.
 - **Sliding × the session cache:** if `CEL_SESSION_CACHE_TTL` is set, a cache hit skips the DB (so it neither renews nor re-checks expiry until the cache entry lapses) → idle expiry is enforced only within ~the cache TTL. For tight idle enforcement keep the cache TTL small or off. Full design + the future stateless/JWT + external-store strategies: [`session-management.md`](session-management.md).
 - **`device_ttl_seconds` (device tokens / PIN fast-login):** opt-in — `> 0` enables a per-app long-lived, revocable **device token** a client stores (e.g. encrypted behind a PIN) and exchanges for fresh sessions without re-entering the password; `0`/absent disables it (the `/auth/device*` endpoints return 404). The token is hashed at rest and revoked on account recovery (password reset / `set_password` / log-out-everywhere). Client contract: [`frontend-guide.md`](frontend-guide.md).
+
+---
+
+## 4c. Per-app OAuth client (`_oauth`)
+
+Which Google (or other OIDC) **client id** an app accepts is **per-app** config. The engine
+enables providers process-wide (`CEL_OAUTH_PROVIDERS` + optional `CEL_OAUTH_<NAME>_CLIENT_ID`),
+but a bundle can declare its **own** client id so its sign-in shows *its own* consent screen
+(e.g. *"Jarchy wants to access…"*) instead of the shared one:
+
+```jsonc
+"_oauth": {
+  "google": { "client_id": "myapp-123.apps.googleusercontent.com" }
+}
+```
+
+How it resolves (per provider):
+- **Bundle `_oauth.<provider>.client_id` set** → the ID token's `aud` must match **that** client id.
+- **Not set** → falls back to the process-wide `CEL_OAUTH_<NAME>_CLIENT_ID` (the umbrella default).
+- **Neither set** (provider enabled with only issuer + JWKS) → verification **fails closed**.
+
+So it's opt-in: umbrella-by-default, and a flagship app overrides only when it wants its own face.
+The client id is **public** (the ID-token flow verifies against Google's JWKS — nothing secret is
+exposed), which is exactly why it's safe to put in the committable bundle. **Never put an OAuth or
+SMTP *secret* in `policies.json`** — secrets stay in the environment. The app's frontend must use
+the same client id, and that origin must be in the client's Authorized JavaScript origins. Loaded
+with the rest of `policies.json` (per-request), so it's resolved per Host.
 
 ---
 
