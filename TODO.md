@@ -195,8 +195,20 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
          audience is per-app). `cel_api_oauth` passes the bundle's client id, **falling back to
          `CEL_OAUTH_GOOGLE_CLIENT_ID`** when the bundle omits it. Allow a provider to be enabled with
          issuer+JWKS but no global audience (audience supplied per-app).
-      2. **Mail per-bundle** — per-bundle `From`/`From-name` (and optionally SMTP creds/sending identity),
+      2. **Mail per-bundle** — per-bundle `From`/`From-name` (and, rarely, a different SMTP account),
          same env fallback. Ties the process-wide `CEL_MAIL_FROM` to a default, not a hard limit.
+      **★ Hard rule — NO SECRETS IN THE BUNDLE.** Resolve **per-field** (OAuth vs mail independent; within
+      mail, `From` vs SMTP-server independent), and split by secret-vs-public:
+        - **Bundle-safe (declarative, public → live in `policies.json`):** OAuth `client_id` (our flow
+          verifies the ID token against Google's JWKS — client_id is public, leaks nothing) and mail
+          `From`/`From-name`/sending-domain. These are the per-app overrides.
+        - **Secret (NEVER in the bundle):** the **SMTP password**. It stays in env / a secret channel.
+          `policies.json` is the app's committable/shareable source — putting a secret there breaks the
+          whole point of shareable bundles.
+        - **Consequence:** the common case ("Jarchy sends from `no-reply@jarchy.com`") is just a **From
+          override in the bundle + the shared SMTP creds (env)**, provided that From-domain is **verified
+          in the one shared SES account**. No per-app secret needed. A per-app SMTP *account* (its own
+          creds) is the rare case → env-keyed override, not the bundle.
       3. **Per-app styled emails** — the mailer is plain-text only (`cel_mail_send` hardcodes
          `text/plain`). Add HTML/`multipart` support + a per-bundle Lua **`render_email(type, ctx) →
          {subject, html}`** hook (types: verify-email, password-reset, notification) with an engine
