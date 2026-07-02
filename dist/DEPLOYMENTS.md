@@ -44,15 +44,25 @@ Cloud box, **always-on** (candidate to replace residential srvlab for reliabilit
   ctest natively on ARM64. **Not yet running as a service / not serving traffic.**
 - Source at `~/workspace/cellar` (+ sibling `~/workspace/portico`), synced via rsync from the workstation.
 
-### 4. Hetzner — `89.167.89.235`  (x86-64, Helsinki `hel1`, paid ~€/mo)
-Cloud box, **always-on**. Hostname `ubuntu-8gb-hel1-2`.
+### 4. Hetzner — `89.167.89.235`  ★ PRIMARY / PROD  (x86-64, Helsinki `hel1`, paid ~€/mo)
+Cloud box, **always-on**. Hostname `ubuntu-8gb-hel1-2`. **Designated production host** (jarchy +
+personal page + web pages). Oracle A1 is dev/demo.
 - Specs: **4 vCPU / 8 GB**, Ubuntu 26.04 LTS (x86-64), 75 GB disk. IPv4 + IPv6 (`2a01:4f9:c014:37cd::1`).
 - CPU: AMD EPYC-Rome (KVM, shared vCPU line), AES-NI/SHA-NI/AVX2. No swap.
 - Access: ssh alias **`hetzner`** → user **`root`** (Hetzner default; no `ubuntu` user), key `~/.ssh/id_ed25519`.
-- **Status (2026-07-02): build + test validated** — cellar compiles and passes 80/80 ctest here on the
-  **newest toolchain (gcc 15.2, cmake 4.2, Ubuntu 26.04)**. Surfaced one fix: `migrate_test.c` needed
-  `#include <stdlib.h>` for `mkdtemp` (gcc 14+/C23 makes implicit decls a hard error) — fixed in `2cdfc71`.
-  Not yet running as a service. Role/topology TBD (candidate primary host, or second box in the split).
+- Build validated: 80/80 ctest on the newest toolchain (gcc 15.2, cmake 4.2). One fix it surfaced:
+  `migrate_test.c` needed `#include <stdlib.h>` for `mkdtemp` (gcc 14+/C23) — `2cdfc71`.
+- **cellar RUNNING as a service (2026-07-02):**
+  - `cellar.service` → `/usr/local/bin/cellar`, runs as non-root user **`cellar`**, binds **:443**
+    directly via `AmbientCapabilities=CAP_NET_BIND_SERVICE` (no relay — public IP).
+  - `CEL_APPS_DIR=/var/lib/cellar/apps` (no control db → filesystem host routing).
+  - Drop-ins (`cellar.service.d/`): `cors.conf` (`*`), `oauth.conf` (Google), `smtp.conf` (SES — chmod 600).
+  - Binary installed to `/usr/local/bin/cellar` (copied from the build); deploy = rebuild + re-copy + restart.
+  - TLS: **self-signed placeholder** at `/etc/cellar/tls/{cert,key}.pem` for now.
+- **Remaining to go live on svngn.com:** (a) real `*.svngn.com` cert via Cloudflare DNS-01 (needs a
+  scoped CF API token) → replace the placeholder + SIGHUP reload; (b) point `svngn.com` + `*.svngn.com`
+  A records at this IP in Cloudflare; (c) migrate the jarchy bundle (data.db + media) from srvlab; deploy
+  the personal page. Verified live now via `https://89.167.89.235/health` (200, self-signed).
 
 ---
 
