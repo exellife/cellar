@@ -47,9 +47,12 @@ Cloud box, **always-on** (candidate to replace residential srvlab for reliabilit
 ### 4. Hetzner — `89.167.89.235`  (x86-64, Helsinki `hel1`, paid ~€/mo)
 Cloud box, **always-on**. Hostname `ubuntu-8gb-hel1-2`.
 - Specs: **4 vCPU / 8 GB**, Ubuntu 26.04 LTS (x86-64), 75 GB disk. IPv4 + IPv6 (`2a01:4f9:c014:37cd::1`).
+- CPU: AMD EPYC-Rome (KVM, shared vCPU line), AES-NI/SHA-NI/AVX2. No swap.
 - Access: ssh alias **`hetzner`** → user **`root`** (Hetzner default; no `ubuntu` user), key `~/.ssh/id_ed25519`.
-- **Status (2026-07-02): reachable, bare** — cellar not yet built or deployed here. Role/topology TBD
-  (candidate primary host, or second box in the multi-server split).
+- **Status (2026-07-02): build + test validated** — cellar compiles and passes 80/80 ctest here on the
+  **newest toolchain (gcc 15.2, cmake 4.2, Ubuntu 26.04)**. Surfaced one fix: `migrate_test.c` needed
+  `#include <stdlib.h>` for `mkdtemp` (gcc 14+/C23 makes implicit decls a hard error) — fixed in `2cdfc71`.
+  Not yet running as a service. Role/topology TBD (candidate primary host, or second box in the split).
 
 ---
 
