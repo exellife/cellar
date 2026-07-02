@@ -57,6 +57,9 @@ personal page + web pages). Oracle A1 is dev/demo.
     directly via `AmbientCapabilities=CAP_NET_BIND_SERVICE` (no relay — public IP).
   - `CEL_APPS_DIR=/var/lib/cellar/apps` (no control db → filesystem host routing).
   - Drop-ins (`cellar.service.d/`): `cors.conf` (`*`), `oauth.conf` (Google), `smtp.conf` (SES — chmod 600).
+  - **SES on port 2465** (not 465): Hetzner blocks outbound SMTP (25/465/587) by anti-spam policy even
+    with no firewall outbound rules. AWS SES's alternate port **2465** (implicit TLS) bypasses it —
+    verified with a real send. (srvlab uses 465; the 2465 workaround is Hetzner-specific.)
   - Binary installed to `/usr/local/bin/cellar` (copied from the build); deploy = rebuild + re-copy + restart.
 - **TLS: real Let's Encrypt `*.svngn.com` + `svngn.com` cert** (DNS-01 via Cloudflare). `certbot` +
   `python3-certbot-dns-cloudflare`, token in `/root/.secrets/cloudflare.ini` (chmod 600).
