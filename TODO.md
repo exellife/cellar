@@ -180,11 +180,14 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
 
 ## Backlog — deferred features (post-Phase-2, before/alongside Phase 3)
 
-- [~] **★ IN PROGRESS — Per-app identity: OAuth client + email config in the bundle.**
-      **Slice 1 DONE (`b533e09`):** per-app OAuth `client_id` via bundle `_oauth` (env fallback). **Slice 2
-      DONE (`e9e8529`):** per-app email `From`/`from_name` via bundle `_mail` (env fallback; SMTP creds stay
-      env). Both: policy_test coverage, docs in policy-guide §4c/§4d, 80/80 + ASan-clean. **Slice 3 PENDING:**
-      per-app styled emails (HTML mailer + `render_email` Lua hook) — item 3 below.
+- [x] **DONE — Per-app identity: OAuth client + email config in the bundle.**
+      **Slice 1 (`b533e09`):** per-app OAuth `client_id` via bundle `_oauth` (env fallback). **Slice 2
+      (`e9e8529`):** per-app email `From`/`from_name` via bundle `_mail` (env fallback; SMTP creds stay env).
+      **Slice 3:** per-app **styled emails** — HTML mailer (`cel_mail_send_html`, `multipart/alternative`)
+      + a per-bundle `render_email(kind, ctx) → {subject?, html?, text?}` Lua hook (kinds: verify_email,
+      password_reset, notification), wired into all three send sites; opt-in with built-in-template
+      fallback; no secrets in the bundle. Coverage: policy_test (`_oauth`/`_mail`), cel_hooks_test
+      (render_email), docs policy-guide §4c/§4d + app-bundle. 80/80 + ASan-clean throughout.
       Today OAuth (`CEL_OAUTH_*`) and mail (`CEL_SMTP_*`, `CEL_MAIL_FROM`) are read **process-wide from
       env**, so every app on one cellar process shares one Google client (consent screen says the same
       name for all) and one `From`. This is the one inconsistency in the "everything about an app lives

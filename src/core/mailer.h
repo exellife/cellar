@@ -36,4 +36,13 @@ int cel_mail_send(const char *to, const char *subject, const char *body);
 int cel_mail_send_from(const char *to, const char *subject, const char *body,
                        const char *from_addr, const char *from_name);
 
+/* Full send: optional HTML alongside the plain text. When `html_body` is non-empty
+ * the message is `multipart/alternative` (text part = `text_body`, html part =
+ * `html_body`) so non-HTML clients still get the text; when NULL/empty it's plain
+ * text/plain. `text_body` is always required. From override + fallback as above.
+ * The bodies are NOT CR/LF-guarded (they are the MIME payload, after the headers). */
+int cel_mail_send_html(const char *to, const char *subject,
+                       const char *text_body, const char *html_body,
+                       const char *from_addr, const char *from_name);
+
 #endif /* CEL_MAILER_H */

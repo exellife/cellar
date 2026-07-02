@@ -98,6 +98,14 @@ void cel_hooks_after(cel_lua_t *L, const char *op, const char *table,
 cel_val_t *cel_hooks_rpc(cel_lua_t *L, const char *name, const cel_val_t *args,
                          const cel_val_t *who, char *errbuf, size_t errlen);
 
+/* render_email(kind, ctx): let the bundle produce a branded email body. `kind` is
+ * "verify_email" | "password_reset" | "notification"; `ctx` is a value object with
+ * the relevant fields (url, token, email, title, body, …). Returns an OWNED result
+ * (caller frees with cel_val_free) — a table {subject?, html?, text?} — or NULL when
+ * the app defines no render_email, returns a non-table, or faults. In every NULL
+ * case the caller falls back to the engine's built-in plain template. */
+cel_val_t *cel_hooks_render_email(cel_lua_t *L, const char *kind, const cel_val_t *ctx);
+
 /* on_realtime(change, subscriber): a delivery filter for realtime change events.
  * Returns 1 to deliver this change to this subscriber, 0 to drop it. Absent hook →
  * deliver; a fault → drop (fail closed). A pure filter — no db is bound. */

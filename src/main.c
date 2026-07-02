@@ -856,8 +856,9 @@ static int notif_email_send(const char *recipient, const cel_notif_msg_t *msg, c
     const char *subject = (msg && msg->title) ? msg->title : "Notification";
     const char *body    = (msg && msg->body)  ? msg->body  : "";
     /* per-app From (bundle _mail) — the notif job runs with the app's policy bound
-     * (via the Host-routed /jobs/run); NULL falls back to the process-wide From. */
-    if (cel_mail_send_from(recipient, subject, body,
+     * (via the Host-routed /jobs/run); NULL falls back to the process-wide From.
+     * msg->html (from render_email) → multipart; NULL → plain text. */
+    if (cel_mail_send_html(recipient, subject, body, msg ? msg->html : NULL,
                            cel_policy_mail_from(), cel_policy_mail_from_name()) != 0) {
         if (err && errlen) snprintf(err, (size_t)errlen, "mail send failed");
         return -1;

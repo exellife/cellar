@@ -258,6 +258,35 @@ its own sender identity (verification, password-reset, notification emails):
 - Loaded per-request like the rest of `policies.json`, so it's resolved per Host (including for
   notification emails, which fan out inside the Host-routed `/jobs/run`).
 
+### Branded HTML emails — the `render_email` hook (in `hooks.lua`)
+
+`_mail` changes *who* the email is from; to change *what it looks like* (styled HTML instead of the
+built-in plain text), define a `render_email` hook. It's opt-in — absent, or on any error, the engine
+falls back to its built-in plain template, so nothing breaks.
+
+```lua
+-- render_email(kind, ctx) -> { subject?, html?, text? }  (return nil to use the default)
+function render_email(kind, ctx)
+  if kind == "password_reset" then
+    return {
+      subject = "Reset your Jarchy password",
+      html    = "<h1>Jarchy</h1><p>Reset it here: <a href='"..ctx.url.."'>reset</a></p>",
+      text    = "Reset your password: "..ctx.url,   -- plain-text alternative
+    }
+  end
+  -- return nil for other kinds -> engine's built-in template
+end
+```
+
+- **`kind`** is `"verify_email"` | `"password_reset"` | `"notification"`.
+- **`ctx`** carries the relevant fields — e.g. `url`, `token`, `email`, `expires_in` for the auth
+  kinds; `title`, `body`, `url`, `data` for `"notification"`. You can `cellar.query(...)` inside it
+  (e.g. to fetch the user's display name).
+- **Return** a table with any of `subject` / `html` / `text`. When `html` is present the message is
+  sent `multipart/alternative` (HTML + the `text` part, or the built-in plain body if you omit `text`)
+  so non-HTML clients still work. Returning `nil` / a non-table → the built-in template.
+- Same **no-secrets** rule: this is presentation only; SMTP creds stay in the environment.
+
 ---
 
 ## 5. Table entries — and the fail-closed gotcha

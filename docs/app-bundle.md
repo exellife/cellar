@@ -17,7 +17,7 @@ Companion docs: [`cellar-design.md`](cellar-design.md) (engine + hook contract �
 $CEL_APPS_DIR/                 # parent dir of all bundles (env)
 └── <host>/                    # one bundle, named after the routed Host
     ├── data.db                # SQLite: identity (cel_*) + app tables + sync state
-    ├── hooks.lua              # behavior: before/after/authorize/resolve/rpc/job
+    ├── hooks.lua              # behavior: before/after/authorize/resolve/rpc/job/render_email
     ├── policies.json          # authz overrides (optional → built-in role defaults)
     ├── public/                # static front-end root, served at "/" (optional)
     ├── schema.sql             # app schema — a BUILD/DEPLOY input, NOT read at runtime

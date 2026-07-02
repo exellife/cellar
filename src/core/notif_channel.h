@@ -15,6 +15,7 @@ typedef struct {
     const char *body;
     const char *url;
     const char *data_json;
+    const char *html;         /* optional HTML body (from render_email); email channel only */
 } cel_notif_msg_t;
 
 /* A delivery channel. `recipient` is channel-specific (an email address for

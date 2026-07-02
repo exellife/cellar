@@ -1480,6 +1480,39 @@ cel_api_result_t cel_api_mfa_verify(const cJSON *req) {
     return session_result(token, &user);
 }
 
+/* Send an auth email. If the bundle defines render_email(kind, ctx) it produces a
+ * branded {subject?, html?, text?} and we send multipart (html + text fallback);
+ * otherwise we send the built-in `plain_body`. Per-app From via `_mail`. `ctx`
+ * (url/token/email/…) is passed to the hook and freed here. Best-effort. */
+static void send_auth_email(const char *to, const char *kind,
+                            const char *default_subject, const char *plain_body,
+                            cJSON *ctx) {
+    const char *from  = cel_policy_mail_from();
+    const char *fname = cel_policy_mail_from_name();
+    cel_val_t *r = NULL;
+    cel_lua_t *L = cel_hook_app_state(cel_apps_current_hooks());
+    if (L) {
+        /* bind a conn so render_email may cellar.query (e.g. the user's name) */
+        app_db_t *app = app_db_current();
+        sqlite3 *conn = app ? app_db_conn_acquire(app) : NULL;
+        cel_hooks_set_db(conn);
+        r = cel_hooks_render_email(L, kind, (const cel_val_t *)ctx);
+        cel_hooks_set_db(NULL);
+        if (conn) app_db_conn_release(app, conn);
+    }
+    if (r) {
+        const char *subj = cel_val_str(cel_val_get(r, "subject"));
+        const char *html = cel_val_str(cel_val_get(r, "html"));
+        const char *text = cel_val_str(cel_val_get(r, "text"));
+        cel_mail_send_html(to, (subj && *subj) ? subj : default_subject,
+                           (text && *text) ? text : plain_body, html, from, fname);
+        cel_val_free(r);
+    } else {
+        cel_mail_send_from(to, default_subject, plain_body, from, fname);
+    }
+    cJSON_Delete(ctx);
+}
+
 /* Build + send the email-verification message for `user_id` (best-effort; no-op
  * if the mailer is off or the email is already verified). Shared by register and
  * the resend endpoint. */
@@ -1489,17 +1522,23 @@ static void send_email_verification(const char *user_id) {
     if (cel_auth_create_email_verification(user_id, token, sizeof token, to, sizeof to) != CEL_AUTH_OK)
         return;
     const char *app = getenv("CEL_APP_URL");
-    char body[1024];
-    if (app && *app)
+    char url[512] = {0}, body[1024];
+    if (app && *app) {
+        snprintf(url, sizeof url, "%s/verify-email?token=%s", app, token);
         snprintf(body, sizeof body,
-            "Welcome! Please confirm your email address:\r\n%s/verify-email?token=%s\r\n\r\n"
-            "This link expires in 24 hours.\r\n", app, token);
-    else
+            "Welcome! Please confirm your email address:\r\n%s\r\n\r\n"
+            "This link expires in 24 hours.\r\n", url);
+    } else {
         snprintf(body, sizeof body,
             "Welcome! Confirm your email address with this token (expires in 24 hours):\r\n%s\r\n",
             token);
-    cel_mail_send_from(to, "Verify your email", body,
-                       cel_policy_mail_from(), cel_policy_mail_from_name());
+    }
+    cJSON *ctx = cJSON_CreateObject();
+    cJSON_AddStringToObject(ctx, "email", to);
+    cJSON_AddStringToObject(ctx, "token", token);
+    if (url[0]) cJSON_AddStringToObject(ctx, "url", url);
+    cJSON_AddNumberToObject(ctx, "expires_in", 24 * 3600);
+    send_auth_email(to, "verify_email", "Verify your email", body, ctx);
 }
 
 cel_api_result_t cel_api_verify_email(const cJSON *req) {
@@ -1534,20 +1573,26 @@ cel_api_result_t cel_api_password_forgot(const cJSON *req) {
     if (cel_auth_create_password_reset(email->valuestring, token, sizeof token) == CEL_AUTH_OK
         && cel_mail_enabled()) {
         const char *app = getenv("CEL_APP_URL");
-        char body[1024];
-        if (app && *app)
+        char url[512] = {0}, body[1024];
+        if (app && *app) {
+            snprintf(url, sizeof url, "%s/reset-password?token=%s", app, token);
             snprintf(body, sizeof body,
                 "Someone requested a password reset for your account.\r\n\r\n"
-                "Choose a new password:\r\n%s/reset-password?token=%s\r\n\r\n"
+                "Choose a new password:\r\n%s\r\n\r\n"
                 "If you didn't request this, ignore this email. The link expires in 1 hour.\r\n",
-                app, token);
-        else
+                url);
+        } else {
             snprintf(body, sizeof body,
                 "Someone requested a password reset for your account.\r\n\r\n"
                 "Your reset token (expires in 1 hour):\r\n%s\r\n\r\n"
                 "If you didn't request this, ignore this email.\r\n", token);
-        cel_mail_send_from(email->valuestring, "Reset your password", body,
-                           cel_policy_mail_from(), cel_policy_mail_from_name());
+        }
+        cJSON *ctx = cJSON_CreateObject();
+        cJSON_AddStringToObject(ctx, "email", email->valuestring);
+        cJSON_AddStringToObject(ctx, "token", token);
+        if (url[0]) cJSON_AddStringToObject(ctx, "url", url);
+        cJSON_AddNumberToObject(ctx, "expires_in", 3600);
+        send_auth_email(email->valuestring, "password_reset", "Reset your password", body, ctx);
     }
 
     /* Always 200 with the same body — never reveal whether the email is registered. */

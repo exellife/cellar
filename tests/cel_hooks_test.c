@@ -68,6 +68,16 @@ static const char *HOOKS =
     "  if change.op == 'DELETE' then return false end          -- never push deletes\n"
     "  if subscriber.role == 'muted' then return false end     -- role-gated\n"
     "  return true\n"
+    "end\n"
+    "function render_email(kind, ctx)\n"
+    "  if kind == 'password_reset' then\n"
+    "    return { subject = 'Reset (branded)',\n"
+    "             html = '<h1>Reset</h1><a href=\"' .. tostring(ctx.url) .. '\">go</a>',\n"
+    "             text = 'Reset link: ' .. tostring(ctx.url) }\n"
+    "  end\n"
+    "  if kind == 'optout' then return nil end\n"                 /* -> C falls back to built-in */
+    "  if kind == 'notatable' then return 42 end\n"               /* non-table -> C falls back */
+    "  return { subject = 'Hi ' .. tostring(ctx.email) }\n"       /* subject only, no html */
     "end\n";
 
 int main(void) {
@@ -195,6 +205,35 @@ int main(void) {
     check("on_realtime absent -> deliver",
           cel_hooks_on_realtime(bare, (cel_val_t *)chg_ins, (cel_val_t *)sub_norm) == 1, "");
     cJSON_Delete(chg_ins); cJSON_Delete(chg_del); cJSON_Delete(sub_norm); cJSON_Delete(sub_muted);
+
+    /* ---- render_email hook (per-app branded emails) ---- */
+    cJSON *em_ctx = cJSON_Parse("{\"url\":\"https://x/reset?t=abc\",\"email\":\"u@x\"}");
+    cel_val_t *e1 = cel_hooks_render_email(L, "password_reset", (cel_val_t *)em_ctx);
+    check("render_email returns table", e1 != NULL, "");
+    check("render_email subject override",
+          e1 && cel_val_str(cel_val_get(e1, "subject")) &&
+          strcmp(cel_val_str(cel_val_get(e1, "subject")), "Reset (branded)") == 0, "");
+    check("render_email html carries ctx.url",
+          e1 && cel_val_str(cel_val_get(e1, "html")) &&
+          strstr(cel_val_str(cel_val_get(e1, "html")), "reset?t=abc") != NULL, "");
+    check("render_email text present", e1 && cel_val_str(cel_val_get(e1, "text")) != NULL, "");
+    cel_val_free(e1);
+
+    cel_val_t *e2 = cel_hooks_render_email(L, "optout", (cel_val_t *)em_ctx);
+    check("render_email nil return -> NULL (fall back)", e2 == NULL, "");
+    cel_val_free(e2);
+    cel_val_t *e3 = cel_hooks_render_email(L, "notatable", (cel_val_t *)em_ctx);
+    check("render_email non-table -> NULL (fall back)", e3 == NULL, "");
+    cel_val_free(e3);
+    cel_val_t *e4 = cel_hooks_render_email(L, "verify_email", (cel_val_t *)em_ctx);
+    check("render_email subject-only (no html)",
+          e4 && cel_val_str(cel_val_get(e4, "subject")) &&
+          cel_val_str(cel_val_get(e4, "html")) == NULL, "");
+    cel_val_free(e4);
+    cel_val_t *e5 = cel_hooks_render_email(bare, "password_reset", (cel_val_t *)em_ctx);
+    check("render_email absent hook -> NULL (fall back)", e5 == NULL, "");
+    cel_val_free(e5);
+    cJSON_Delete(em_ctx);
 
     cJSON_Delete(admin); cJSON_Delete(viewer); cJSON_Delete(row);
     cJSON_Delete(in); cJSON_Delete(empty); cJSON_Delete(other); cJSON_Delete(add_args);

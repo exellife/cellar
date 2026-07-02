@@ -63,12 +63,18 @@ static void rfc822_date(char *out, size_t n) {
 }
 
 int cel_mail_send(const char *to, const char *subject, const char *body) {
-    return cel_mail_send_from(to, subject, body, NULL, NULL);
+    return cel_mail_send_html(to, subject, body, NULL, NULL, NULL);
 }
 
 int cel_mail_send_from(const char *to, const char *subject, const char *body,
                        const char *from_addr, const char *from_name) {
-    if (!cel_mail_enabled() || !to || !subject || !body) return -1;
+    return cel_mail_send_html(to, subject, body, NULL, from_addr, from_name);
+}
+
+int cel_mail_send_html(const char *to, const char *subject,
+                       const char *text_body, const char *html_body,
+                       const char *from_addr, const char *from_name) {
+    if (!cel_mail_enabled() || !to || !subject || !text_body) return -1;
     /* Per-app From (bundle _mail) overrides the process-wide From/name; SMTP creds
      * (g_url/g_user/g_pass) stay process-wide — secrets never come from a bundle. */
     const char *from  = (from_addr && *from_addr) ? from_addr : g_from;
@@ -77,29 +83,59 @@ int cel_mail_send_from(const char *to, const char *subject, const char *body,
         LOG_WARN("mailer: refusing recipient/subject/from with CR/LF");
         return -1;
     }
+    bool html = html_body && *html_body;   /* HTML present → multipart/alternative */
 
     char date[64];
     rfc822_date(date, sizeof date);
     char mid[33] = "cellar";
     cel_random_token_hex(mid, sizeof mid, 16);          /* best-effort Message-ID */
+    char bnd[33] = "cel";
+    cel_random_token_hex(bnd, sizeof bnd, 16);          /* random multipart boundary */
     const char *at = strchr(from, '@');
 
-    size_t cap = strlen(body) + strlen(subject) + strlen(to) + strlen(from) + strlen(fname) + 512;
+    size_t cap = strlen(text_body) + (html ? strlen(html_body) : 0)
+               + strlen(subject) + strlen(to) + strlen(from) + strlen(fname) + 768;
     char *msg = malloc(cap);
     if (!msg) return -1;
-    int len = snprintf(msg, cap,
-        "Date: %s\r\n"
-        "From: %s%s<%s>\r\n"
-        "To: <%s>\r\n"
-        "Subject: %s\r\n"
-        "Message-ID: <%s@%s>\r\n"
-        "MIME-Version: 1.0\r\n"
-        "Content-Type: text/plain; charset=UTF-8\r\n"
-        "\r\n"
-        "%s\r\n",
-        date,
-        fname[0] ? fname : "", fname[0] ? " " : "", from,
-        to, subject, mid, at ? at + 1 : "localhost", body);
+    int len;
+    if (html) {
+        /* Body parts carry newlines legitimately (after the header separator), so
+         * they are NOT CR/LF-guarded; only the headers above are. Random boundary. */
+        len = snprintf(msg, cap,
+            "Date: %s\r\n"
+            "From: %s%s<%s>\r\n"
+            "To: <%s>\r\n"
+            "Subject: %s\r\n"
+            "Message-ID: <%s@%s>\r\n"
+            "MIME-Version: 1.0\r\n"
+            "Content-Type: multipart/alternative; boundary=\"%s\"\r\n"
+            "\r\n"
+            "--%s\r\n"
+            "Content-Type: text/plain; charset=UTF-8\r\n"
+            "\r\n"
+            "%s\r\n"
+            "--%s\r\n"
+            "Content-Type: text/html; charset=UTF-8\r\n"
+            "\r\n"
+            "%s\r\n"
+            "--%s--\r\n",
+            date, fname[0] ? fname : "", fname[0] ? " " : "", from,
+            to, subject, mid, at ? at + 1 : "localhost", bnd,
+            bnd, text_body, bnd, html_body, bnd);
+    } else {
+        len = snprintf(msg, cap,
+            "Date: %s\r\n"
+            "From: %s%s<%s>\r\n"
+            "To: <%s>\r\n"
+            "Subject: %s\r\n"
+            "Message-ID: <%s@%s>\r\n"
+            "MIME-Version: 1.0\r\n"
+            "Content-Type: text/plain; charset=UTF-8\r\n"
+            "\r\n"
+            "%s\r\n",
+            date, fname[0] ? fname : "", fname[0] ? " " : "", from,
+            to, subject, mid, at ? at + 1 : "localhost", text_body);
+    }
     if (len < 0 || (size_t)len >= cap) { free(msg); return -1; }
 
     CURL *c = curl_easy_init();

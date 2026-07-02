@@ -167,7 +167,7 @@ long long cel_hook_notify(const char *user_id, const char *title, const char *bo
  * failed transiently (the caller retries the job with backoff). Only READS the db
  * (resolve recipients) — the caller drops the app write lock around it, so the
  * blocking channel send must not write. */
-static int cel_notif_fanout(const char *payload) {
+static int cel_notif_fanout(cel_lua_t *Lh, const char *payload) {
     if (!t_db || !payload || !payload[0]) return 0;
     cJSON *root = cJSON_Parse(payload);
     if (!root) return 0;
@@ -180,6 +180,18 @@ static int cel_notif_fanout(const char *payload) {
         .url       = cJSON_GetStringValue(cJSON_GetObjectItem(m, "url")),
         .data_json = cJSON_GetStringValue(cJSON_GetObjectItem(m, "data")),
     };
+    /* Optional per-app render_email("notification", ctx=msg): may override the
+     * subject/text and add an HTML body (email channel uses it; push ignores html).
+     * t_db is bound here, so the hook may cellar.query. `rendered` outlives the send. */
+    cel_val_t *rendered = Lh ? cel_hooks_render_email(Lh, "notification", (const cel_val_t *)m) : NULL;
+    if (rendered) {
+        const char *s = cel_val_str(cel_val_get(rendered, "subject"));
+        const char *t = cel_val_str(cel_val_get(rendered, "text"));
+        const char *h = cel_val_str(cel_val_get(rendered, "html"));
+        if (s && *s) msg.title = s;
+        if (t && *t) msg.body  = t;
+        if (h && *h) msg.html  = h;
+    }
     char err[256];
     int rc = 0;   /* -1 → a transient channel failure happened; retry the job */
 
@@ -203,6 +215,7 @@ static int cel_notif_fanout(const char *payload) {
         }
     }
     /* webpush: slice 2 registers the adapter + sends per subscription (+ prunes on GONE). */
+    cel_val_free(rendered);
     cJSON_Delete(root);
     return rc;
 }
@@ -532,6 +545,12 @@ static const char *PRELUDE =
    /* a merged-row (table) return is NOT yet supported — error loudly rather than
     * silently applying the raw incoming row (which would discard the merge). */
 "  error(\"resolve() must return 'incoming' or 'current' (merged-row return not yet supported)\")\n"
+"end\n"
+"function __cel_render_email(kind, ctx_ptr)\n"   /* per-app branded email bodies (opt-in) */
+"  if type(render_email) ~= 'function' then return nil end\n"
+"  local res = render_email(kind, box(ctx_ptr, false))\n"
+"  if type(res) ~= 'table' then return nil end\n"   /* nil/non-table -> C falls back to the built-in template */
+"  return res\n"
 "end\n";
 
 int cel_hooks_install(cel_lua_t *L, char *errbuf, size_t errlen) {
@@ -664,7 +683,7 @@ int cel_hooks_run_jobs(cel_lua_t *Lh, job_queue_t *q, long long now,
         if (job.type && strcmp(job.type, CEL_NOTIF_JOB_TYPE) == 0) {
             app_db_t *napp = app_db_current();
             if (napp) app_db_write_unlock(napp);
-            int nrc = cel_notif_fanout(job.payload);
+            int nrc = cel_notif_fanout(Lh, job.payload);
             if (napp) app_db_write_lock(napp);
             if (nrc < 0) q->fail(q->ctx, job.id, "notify delivery failed", jobq_backoff_at(now, job.attempt));
             else         q->complete(q->ctx, job.id, now);
@@ -716,6 +735,23 @@ cel_val_t *cel_hooks_rpc(cel_lua_t *Lh, const char *name, const cel_val_t *args,
     }
     cJSON *result = lua_to_cval(L, -2, 0);
     lua_pop(L, 2);
+    return (cel_val_t *)result;
+}
+
+cel_val_t *cel_hooks_render_email(cel_lua_t *Lh, const char *kind, const cel_val_t *ctx) {
+    lua_State *L = (lua_State *)cel_lua_state(Lh);
+    if (!L) return NULL;
+    lua_getglobal(L, "__cel_render_email");
+    lua_pushstring(L, kind ? kind : "");
+    lua_pushlightuserdata(L, (void *)ctx);
+    if (lua_pcall(L, 2, 1, 0) != 0) {                    /* hook faulted → fall back */
+        LOG_ERROR("[hook] render_email fault: %s", lua_tostring(L, -1));
+        lua_pop(L, 1);
+        return NULL;
+    }
+    if (lua_isnil(L, -1)) { lua_pop(L, 1); return NULL; } /* no/opt-out hook → fall back */
+    cJSON *result = lua_to_cval(L, -1, 0);
+    lua_pop(L, 1);
     return (cel_val_t *)result;
 }
 
