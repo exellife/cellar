@@ -5,6 +5,7 @@
 
 #include <sqlite3.h>
 #include <stdio.h>
+#include <stdlib.h>   /* mkdtemp — implicit decl is a hard error on gcc 14+/C23 */
 #include <string.h>
 #include <unistd.h>
 
