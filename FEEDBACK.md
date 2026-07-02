@@ -56,6 +56,19 @@ instead of working around it silently** — engine problems get fixed in the eng
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
 
+- **classifieds notifications — "mark read" already exists (contract mismatch)** — WORKING AS INTENDED,
+  no engine/bundle change. The badge can be cleared; the client was calling the wrong endpoints
+  (`mark_notifications_read` isn't whitelisted → 403; `PATCH /api/notification` is admin-only by design →
+  403). Everything the bell needs already exists — full contract (all owner-scoped, role `user`):
+  - `POST /rpc/notifications {unread_only?}` → `{ notifications:[{id,type,title,body,subject_id,read_at,created_at}] }`
+  - `POST /rpc/unread_count` → `{ unread:N }`
+  - **`POST /rpc/mark_read {id?}`** → `{ unread:N }` — omit `id` = mark ALL of mine read; pass `id` = that one. ← the badge-clear.
+  - realtime: `SUBSCRIBE {table:"notification"}` → live `CHANGE` on new ones (owner-scoped).
+  - **types + `subject_id` (for deep-link routing):** `message` → `subject_id` = conversation_id;
+    `saved_search` → subject_id = matching listing id; `listing_expired` → subject_id = listing id.
+  Documented in `docs/frontend-guide.md`. (frontend: swap `mark_notifications_read` → `mark_read`, and
+  read via the `notifications` rpc rather than `/api/notification`.)
+
 - **dev test logins (non-admin) + `cellar passwd` CLI** — the classifieds `run.sh` now provisions two
   stable `role=user` accounts out of the box (idempotent, dev only), so the frontend has non-admin creds:
   - `admin@classifieds.local` / `classifieds01` — role `admin`

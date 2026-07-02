@@ -352,6 +352,15 @@ outside your scope is refused (`status` ≠ `"ok"`), so realtime never leaks.
   owner-scoped to the logged-in user). You get a `CHANGE {table:"notification", row}`
   for each new notification (new message, saved-search match, listing expiry…).
 
+  The bell's read/manage side is **RPCs**, not `/api/notification` (that table is
+  admin-only for direct access; use these — all owner-scoped, role `user`):
+  - `POST /rpc/notifications {unread_only?}` → `{ notifications:[{id,type,title,body,subject_id,read_at,created_at}] }`
+  - `POST /rpc/unread_count` → `{ unread:N }`
+  - `POST /rpc/mark_read {id?}` → `{ unread:N }` — **omit `id` = mark ALL read** (clears the badge); pass `id` = that one.
+
+  **Notification `type` → `subject_id` (deep-link routing):** `message` → `subject_id` is the
+  conversation id; `saved_search` → the matching listing id; `listing_expired` → the listing id.
+
 Both are proven by the engine's `classifieds_chat_ws` e2e (live delivery to a
 participant + a non-member denied + a live notification). Fall back to a one-shot
 refetch on reconnect to backfill anything missed while disconnected.
