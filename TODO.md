@@ -180,7 +180,11 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
 
 ## Backlog — deferred features (post-Phase-2, before/alongside Phase 3)
 
-- [ ] **★ NEXT UPDATE — Per-app identity: OAuth client + email config in the bundle.**
+- [~] **★ IN PROGRESS — Per-app identity: OAuth client + email config in the bundle.**
+      **Slice 1 DONE (`b533e09`):** per-app OAuth `client_id` via bundle `_oauth` (env fallback). **Slice 2
+      DONE (`e9e8529`):** per-app email `From`/`from_name` via bundle `_mail` (env fallback; SMTP creds stay
+      env). Both: policy_test coverage, docs in policy-guide §4c/§4d, 80/80 + ASan-clean. **Slice 3 PENDING:**
+      per-app styled emails (HTML mailer + `render_email` Lua hook) — item 3 below.
       Today OAuth (`CEL_OAUTH_*`) and mail (`CEL_SMTP_*`, `CEL_MAIL_FROM`) are read **process-wide from
       env**, so every app on one cellar process shares one Google client (consent screen says the same
       name for all) and one `From`. This is the one inconsistency in the "everything about an app lives
