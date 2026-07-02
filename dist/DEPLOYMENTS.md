@@ -89,6 +89,39 @@ ctest --test-dir build-cmake    # expect 80/80
 
 ---
 
+## TLS & multi-domain / multi-server routing
+
+cellar routes by the **Host** header → a bundle dir under `CEL_APPS_DIR`. The host can be **any**
+FQDN — a subdomain (`jarchy.svngn.com`) *or* an entirely separate domain (`jarchy.com`). Different
+domains are just different bundle dirs; no special handling.
+
+**Splitting subdomains across servers (one domain, many boxes).** A wildcard DNS record points to one
+IP, but a **specific record overrides the wildcard**. So in Cloudflare for `svngn.com`:
+- `*.svngn.com` + apex → **prod** (Hetzner) — catch-all
+- `dev.svngn.com`, `demo.svngn.com` → **Oracle A1** (specific records win over the wildcard)
+
+Both boxes have public IPs, so each serves directly — **no relay needed** (the SNI tunnel/relay exists
+only for the residential srvlab box).
+
+**Certs (today).** cellar loads a SINGLE cert via `CEL_TLS_CERT`/`CEL_TLS_KEY`. Two supported patterns:
+- **Per-box wildcard via DNS-01 (recommended for multi-server):** each box runs its own
+  `certbot`/`acme.sh`/`lego` with the **Cloudflare API** (scoped DNS-edit token for the zone) to obtain
+  its own `*.svngn.com` cert. Each **auto-renews itself**; no shared private key, no copying. Wire the
+  renewal `--deploy-hook` to reload cellar — **portico hot-reloads TLS on `SIGHUP`**, so renewals are
+  zero-downtime. LE issues the same wildcard to multiple certs fine.
+- **Single multi-SAN cert:** one cert listing all domains/subdomains (e.g. `svngn.com, *.svngn.com,
+  jarchy.com, *.jarchy.com`), copied to each box. Simpler but shares a private key + manual re-copy on
+  renewal. (This is how srvlab's cert spans two hostnames.)
+
+**Binding :443.** A direct-public box runs cellar on `CEL_PORT=443`; the systemd unit grants
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` so it can bind 443 as a non-root `cellar` user.
+
+**Backlog — auto-TLS:** portico already has **SNI multi-cert + ACME** built in; exposing them through
+cellar would auto-issue/renew per-domain certs (making "add a domain" = DNS + a bundle, no certbot).
+Not yet wired. See the ACME/SNI backlog note.
+
+---
+
 ## Maintenance at a glance
 
 - **Domain renewal** — annual (~$10/yr, Cloudflare auto-renew) — the one thing that breaks everything if it lapses.
