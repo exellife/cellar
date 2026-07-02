@@ -371,18 +371,34 @@ static int run_passwd(int argc, char **argv) {
 /* `cellar send-test-mail <to>` — verify the SMTP configuration by sending a test
  * message. No DB needed; reads CEL_SMTP_* / CEL_MAIL_* from the environment. */
 static int run_send_test_mail(int argc, char **argv) {
-    if (argc < 3) { fprintf(stderr, "usage: cellar send-test-mail <to-address>\n"); return 2; }
+    if (argc < 3) { fprintf(stderr, "usage: cellar send-test-mail <to-address> [--html]\n"); return 2; }
+    int html = (argc >= 4 && strcmp(argv[3], "--html") == 0);   /* exercise the multipart HTML path */
     const char *lvl = getenv("CEL_LOG_LEVEL");
     logger_init(lvl ? logger_string_to_level(lvl) : LOG_LEVEL_INFO, NULL, 1);
     curl_global_init(CURL_GLOBAL_DEFAULT);
     cel_mailer_init();
     int rc = 1;
+    const char *text = "This is a test message from cellar. "
+                       "If you received it, your SMTP configuration works.\n";
+    static const char *HTML =
+        "<!doctype html><html><body style=\"margin:0;background:#0b0d12;"
+        "font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#e6e9ef;padding:32px\">"
+        "<div style=\"max-width:480px;margin:0 auto;background:#12151c;border:1px solid #232838;"
+        "border-radius:14px;padding:32px;text-align:center\">"
+        "<h1 style=\"margin:0 0 8px;font-size:26px;letter-spacing:-.02em\">cellar "
+        "<span style=\"color:#5b8cff\">&#10003;</span></h1>"
+        "<p style=\"opacity:.6;margin:0 0 24px\">styled HTML email test</p>"
+        "<p style=\"opacity:.85;line-height:1.55;margin:0 0 24px;text-align:left\">If this renders as a dark "
+        "card with a blue accent and a button below, the <code>multipart/alternative</code> path (and the "
+        "per-app <code>render_email</code> hook that feeds it) is working end-to-end.</p>"
+        "<a href=\"https://svngn.com\" style=\"display:inline-block;background:#5b8cff;color:#fff;"
+        "text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:600\">Open svngn.com</a>"
+        "</div></body></html>";
     if (!cel_mail_enabled()) {
         LOG_ERROR("send-test-mail: SMTP not configured (set CEL_SMTP_URL and CEL_MAIL_FROM)");
-    } else if (cel_mail_send(argv[2], "cellar test email",
-                             "This is a test message from cellar. "
-                             "If you received it, your SMTP configuration works.\n") == 0) {
-        LOG_INFO("send-test-mail: sent to %s", argv[2]);
+    } else if ((html ? cel_mail_send_html(argv[2], "cellar - styled HTML test", text, HTML, NULL, NULL)
+                     : cel_mail_send(argv[2], "cellar test email", text)) == 0) {
+        LOG_INFO("send-test-mail: sent %s to %s", html ? "(html)" : "(plain)", argv[2]);
         rc = 0;
     } else {
         LOG_ERROR("send-test-mail: failed to send to %s", argv[2]);
