@@ -37,3 +37,9 @@ config/policies.local.json
 # example + app bundles: throwaway provisioned runtime state (data.db, copied bundle)
 examples/*/.run/
 apps/*/.run/
+
+# local secret scratch — NEVER commit (Cloudflare API token, OAuth client secret, etc.)
+DNS_token
+conf
+*.secret
+*.env
