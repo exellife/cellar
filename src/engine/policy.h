@@ -122,6 +122,13 @@ int cel_policy_rpc_names(const char **out, int max);
  * client id is read here; SMTP/OAuth secrets never live in the bundle. */
 const char *cel_policy_oauth_client_id(const char *provider);
 
+/* Per-app email From address / display name, from the thread-active bundle's
+ * `_mail` (e.g. { "from": "no-reply@app.com", "from_name": "App" }). Each returns
+ * NULL when unset, so callers fall back to the process-wide CEL_MAIL_FROM /
+ * _FROM_NAME. Only the public identity is read here; SMTP creds stay in env. */
+const char *cel_policy_mail_from(void);
+const char *cel_policy_mail_from_name(void);
+
 /* ---- per-app session policy ----------------------------------------------- */
 
 /* Resolve the active app's `_session` block (policies.json) into `out`. Fills the

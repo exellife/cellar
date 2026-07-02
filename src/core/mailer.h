@@ -24,9 +24,16 @@ void cel_mailer_init(void);
 /* True when a usable SMTP config is present (URL + From). */
 bool cel_mail_enabled(void);
 
-/* Send a plain-text/UTF-8 email to a single recipient. Returns 0 on success, -1
- * on failure or when disabled. `to`/`subject` are rejected if they contain CR/LF
- * (header-injection guard). */
+/* Send a plain-text/UTF-8 email to a single recipient using the process-wide From
+ * (CEL_MAIL_FROM / _FROM_NAME). Returns 0 on success, -1 on failure or when
+ * disabled. `to`/`subject` are rejected if they contain CR/LF (header-injection). */
 int cel_mail_send(const char *to, const char *subject, const char *body);
+
+/* Same, but with a per-app From override: `from_addr`/`from_name` (from the bundle's
+ * `_mail`) replace the process-wide From for both the header and the SMTP envelope;
+ * NULL/empty falls back to the global. SMTP credentials + server stay process-wide
+ * (secrets never come from a bundle). From is also CR/LF-guarded. */
+int cel_mail_send_from(const char *to, const char *subject, const char *body,
+                       const char *from_addr, const char *from_name);
 
 #endif /* CEL_MAILER_H */

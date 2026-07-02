@@ -222,6 +222,19 @@ const char *cel_policy_oauth_client_id(const char *provider) {
     return (cJSON_IsString(cid) && cid->valuestring[0]) ? cid->valuestring : NULL;
 }
 
+/* A field of the per-app `_mail` block ("from" | "from_name"), or NULL when unset
+ * (caller falls back to the process-wide CEL_MAIL_FROM / _FROM_NAME). Only these
+ * public identity fields are read — SMTP credentials never come from the bundle. */
+static const char *policy_mail_field(const char *field) {
+    if (!active()) return NULL;
+    const cJSON *mail = cJSON_GetObjectItemCaseSensitive(active(), "_mail");
+    if (!cJSON_IsObject(mail)) return NULL;
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(mail, field);
+    return (cJSON_IsString(v) && v->valuestring[0]) ? v->valuestring : NULL;
+}
+const char *cel_policy_mail_from(void)      { return policy_mail_field("from"); }
+const char *cel_policy_mail_from_name(void) { return policy_mail_field("from_name"); }
+
 bool cel_role_can_self_register(const char *role) {
     if (!role || !*role) return false;
     if (is_superuser_role(role)) return false;   /* boundary: never via signup */

@@ -310,6 +310,24 @@ int main(void) {
     load_policy("{ \"_oauth\": { \"google\": { \"client_id\": \"\" } } }");
     chk_str("empty client_id -> NULL", cel_policy_oauth_client_id("google"), NULL);
 
+    /* ---- per-app email From (bundle _mail) ---- */
+    printf("per-app _mail From\n");
+    load_policy("{ \"_mail\": { \"from\": \"no-reply@jarchy.com\", \"from_name\": \"Jarchy\" } }");
+    chk_str("mail from from bundle",      cel_policy_mail_from(),      "no-reply@jarchy.com");
+    chk_str("mail from_name from bundle", cel_policy_mail_from_name(), "Jarchy");
+
+    load_policy("{ \"_mail\": { \"from\": \"only-addr@x.com\" } }");   /* from without from_name */
+    chk_str("from set, name unset -> NULL", cel_policy_mail_from_name(), NULL);
+    chk_str("from still resolves",          cel_policy_mail_from(),      "only-addr@x.com");
+
+    load_policy("{ \"_default\": \"deny\" }");   /* no _mail */
+    chk_str("no _mail from -> NULL",  cel_policy_mail_from(),      NULL);
+    chk_str("no _mail name -> NULL",  cel_policy_mail_from_name(), NULL);
+
+    load_policy("{ \"_mail\": { \"from\": 7, \"from_name\": \"\" } }");  /* malformed / empty */
+    chk_str("non-string from -> NULL", cel_policy_mail_from(),      NULL);
+    chk_str("empty from_name -> NULL", cel_policy_mail_from_name(), NULL);
+
     cel_policy_cleanup();
     printf(failures ? "\nFAILED (%d)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;

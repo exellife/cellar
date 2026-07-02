@@ -855,7 +855,10 @@ static int notif_email_send(const char *recipient, const cel_notif_msg_t *msg, c
     if (!cel_mail_enabled()) return 0;   /* ops hasn't configured SMTP — skip, not fail */
     const char *subject = (msg && msg->title) ? msg->title : "Notification";
     const char *body    = (msg && msg->body)  ? msg->body  : "";
-    if (cel_mail_send(recipient, subject, body) != 0) {
+    /* per-app From (bundle _mail) — the notif job runs with the app's policy bound
+     * (via the Host-routed /jobs/run); NULL falls back to the process-wide From. */
+    if (cel_mail_send_from(recipient, subject, body,
+                           cel_policy_mail_from(), cel_policy_mail_from_name()) != 0) {
         if (err && errlen) snprintf(err, (size_t)errlen, "mail send failed");
         return -1;
     }

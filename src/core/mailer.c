@@ -63,9 +63,18 @@ static void rfc822_date(char *out, size_t n) {
 }
 
 int cel_mail_send(const char *to, const char *subject, const char *body) {
+    return cel_mail_send_from(to, subject, body, NULL, NULL);
+}
+
+int cel_mail_send_from(const char *to, const char *subject, const char *body,
+                       const char *from_addr, const char *from_name) {
     if (!cel_mail_enabled() || !to || !subject || !body) return -1;
-    if (has_crlf(to) || has_crlf(subject)) {            /* header-injection guard */
-        LOG_WARN("mailer: refusing recipient/subject with CR/LF");
+    /* Per-app From (bundle _mail) overrides the process-wide From/name; SMTP creds
+     * (g_url/g_user/g_pass) stay process-wide — secrets never come from a bundle. */
+    const char *from  = (from_addr && *from_addr) ? from_addr : g_from;
+    const char *fname = (from_name && *from_name) ? from_name : g_from_name;
+    if (has_crlf(to) || has_crlf(subject) || has_crlf(from) || has_crlf(fname)) {  /* header-injection guard */
+        LOG_WARN("mailer: refusing recipient/subject/from with CR/LF");
         return -1;
     }
 
@@ -73,9 +82,9 @@ int cel_mail_send(const char *to, const char *subject, const char *body) {
     rfc822_date(date, sizeof date);
     char mid[33] = "cellar";
     cel_random_token_hex(mid, sizeof mid, 16);          /* best-effort Message-ID */
-    const char *at = strchr(g_from, '@');
+    const char *at = strchr(from, '@');
 
-    size_t cap = strlen(body) + strlen(subject) + strlen(to) + strlen(g_from) + 512;
+    size_t cap = strlen(body) + strlen(subject) + strlen(to) + strlen(from) + strlen(fname) + 512;
     char *msg = malloc(cap);
     if (!msg) return -1;
     int len = snprintf(msg, cap,
@@ -89,7 +98,7 @@ int cel_mail_send(const char *to, const char *subject, const char *body) {
         "\r\n"
         "%s\r\n",
         date,
-        g_from_name[0] ? g_from_name : "", g_from_name[0] ? " " : "", g_from,
+        fname[0] ? fname : "", fname[0] ? " " : "", from,
         to, subject, mid, at ? at + 1 : "localhost", body);
     if (len < 0 || (size_t)len >= cap) { free(msg); return -1; }
 
@@ -97,7 +106,7 @@ int cel_mail_send(const char *to, const char *subject, const char *body) {
     if (!c) { free(msg); return -1; }
 
     char envfrom[300], envrcpt[300];
-    snprintf(envfrom, sizeof envfrom, "<%s>", g_from);
+    snprintf(envfrom, sizeof envfrom, "<%s>", from);
     snprintf(envrcpt, sizeof envrcpt, "<%s>", to);
     struct curl_slist *rcpt = curl_slist_append(NULL, envrcpt);
     upload_t up = { msg, (size_t)len, 0 };

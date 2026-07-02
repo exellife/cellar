@@ -1498,7 +1498,8 @@ static void send_email_verification(const char *user_id) {
         snprintf(body, sizeof body,
             "Welcome! Confirm your email address with this token (expires in 24 hours):\r\n%s\r\n",
             token);
-    cel_mail_send(to, "Verify your email", body);
+    cel_mail_send_from(to, "Verify your email", body,
+                       cel_policy_mail_from(), cel_policy_mail_from_name());
 }
 
 cel_api_result_t cel_api_verify_email(const cJSON *req) {
@@ -1545,7 +1546,8 @@ cel_api_result_t cel_api_password_forgot(const cJSON *req) {
                 "Someone requested a password reset for your account.\r\n\r\n"
                 "Your reset token (expires in 1 hour):\r\n%s\r\n\r\n"
                 "If you didn't request this, ignore this email.\r\n", token);
-        cel_mail_send(email->valuestring, "Reset your password", body);
+        cel_mail_send_from(email->valuestring, "Reset your password", body,
+                           cel_policy_mail_from(), cel_policy_mail_from_name());
     }
 
     /* Always 200 with the same body — never reveal whether the email is registered. */

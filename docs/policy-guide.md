@@ -68,7 +68,7 @@ Shape:
 ```
 
 Top-level keys come in two kinds:
-- **Reserved** (start with `_`): `_default`, `_roles`, `_rpc`, `_session`, `_oauth`.
+- **Reserved** (start with `_`): `_default`, `_roles`, `_rpc`, `_session`, `_oauth`, `_mail`.
 - **Table entries**: every other key is a table name; its value configures that table.
 
 > ⚠️ **Applying changes.** `policies.json` is loaded the first time an app is served and
@@ -232,6 +232,31 @@ exposed), which is exactly why it's safe to put in the committable bundle. **Nev
 SMTP *secret* in `policies.json`** — secrets stay in the environment. The app's frontend must use
 the same client id, and that origin must be in the client's Authorized JavaScript origins. Loaded
 with the rest of `policies.json` (per-request), so it's resolved per Host.
+
+---
+
+## 4d. Per-app email From (`_mail`)
+
+Who the app's emails appear to come from is **per-app** config. Omit `_mail` and every app
+sends from the process-wide `CEL_MAIL_FROM` / `CEL_MAIL_FROM_NAME`; declare it to give an app
+its own sender identity (verification, password-reset, notification emails):
+
+```jsonc
+"_mail": {
+  "from": "no-reply@jarchy.com",   // header + SMTP-envelope From
+  "from_name": "Jarchy"            // display name (optional)
+}
+```
+
+- Either field falls back to the process-wide default when unset.
+- The From address is used for **both** the message header and the SMTP envelope (so DMARC
+  aligns) — which means the SMTP account must be allowed to send as it. With the shared SES
+  account that means **the From-domain (e.g. `jarchy.com`) must be verified in that account**.
+- **SMTP credentials + server stay process-wide** (`CEL_SMTP_*`) — a bundle overrides only the
+  public From identity, **never secrets**. A per-app SMTP *account* (its own credentials) is not
+  a bundle concern; keep those in the environment.
+- Loaded per-request like the rest of `policies.json`, so it's resolved per Host (including for
+  notification emails, which fan out inside the Host-routed `/jobs/run`).
 
 ---
 
