@@ -44,6 +44,13 @@ Cloud box, **always-on** (candidate to replace residential srvlab for reliabilit
   ctest natively on ARM64. **Not yet running as a service / not serving traffic.**
 - Source at `~/workspace/cellar` (+ sibling `~/workspace/portico`), synced via rsync from the workstation.
 
+### 4. Hetzner — `89.167.89.235`  (x86-64, Helsinki `hel1`, paid ~€/mo)
+Cloud box, **always-on**. Hostname `ubuntu-8gb-hel1-2`.
+- Specs: **4 vCPU / 8 GB**, Ubuntu 26.04 LTS (x86-64), 75 GB disk. IPv4 + IPv6 (`2a01:4f9:c014:37cd::1`).
+- Access: ssh alias **`hetzner`** → user **`root`** (Hetzner default; no `ubuntu` user), key `~/.ssh/id_ed25519`.
+- **Status (2026-07-02): reachable, bare** — cellar not yet built or deployed here. Role/topology TBD
+  (candidate primary host, or second box in the multi-server split).
+
 ---
 
 ## Build on a fresh box (reference)
