@@ -58,11 +58,15 @@ personal page + web pages). Oracle A1 is dev/demo.
   - `CEL_APPS_DIR=/var/lib/cellar/apps` (no control db → filesystem host routing).
   - Drop-ins (`cellar.service.d/`): `cors.conf` (`*`), `oauth.conf` (Google), `smtp.conf` (SES — chmod 600).
   - Binary installed to `/usr/local/bin/cellar` (copied from the build); deploy = rebuild + re-copy + restart.
-  - TLS: **self-signed placeholder** at `/etc/cellar/tls/{cert,key}.pem` for now.
-- **Remaining to go live on svngn.com:** (a) real `*.svngn.com` cert via Cloudflare DNS-01 (needs a
-  scoped CF API token) → replace the placeholder + SIGHUP reload; (b) point `svngn.com` + `*.svngn.com`
-  A records at this IP in Cloudflare; (c) migrate the jarchy bundle (data.db + media) from srvlab; deploy
-  the personal page. Verified live now via `https://89.167.89.235/health` (200, self-signed).
+- **TLS: real Let's Encrypt `*.svngn.com` + `svngn.com` cert** (DNS-01 via Cloudflare). `certbot` +
+  `python3-certbot-dns-cloudflare`, token in `/root/.secrets/cloudflare.ini` (chmod 600).
+  **Auto-renews** (`certbot.timer`); deploy hook `/etc/letsencrypt/renewal-hooks/deploy/cellar.sh`
+  copies `fullchain`/`privkey` → `/etc/cellar/tls/{cert,key}.pem` (chown cellar) + `systemctl restart cellar`
+  (cellar has no SIGHUP handler yet → restart, ~2s blip every ~60d; SIGHUP-reload is a backlog item).
+- **DNS:** Cloudflare A records `svngn.com` + `*.svngn.com` → `89.167.89.235` (grey / DNS-only, TTL 300).
+- **LIVE (2026-07-02):** `https://svngn.com/` → 200 with a valid cert, serving a placeholder welcome page
+  (bundle `svngn.com`, admin `admin@svngn.com`). Apex + wildcard both serve.
+- **Deferred:** jarchy (classifieds) domain placement + migration from srvlab; real personal page.
 
 ---
 
