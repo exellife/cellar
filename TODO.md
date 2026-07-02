@@ -180,6 +180,38 @@ pattern, and the policy-engine concept. Rewrite the DB layer:
 
 ## Backlog — deferred features (post-Phase-2, before/alongside Phase 3)
 
+- [ ] **★ NEXT UPDATE — Per-app identity: OAuth client + email config in the bundle.**
+      Today OAuth (`CEL_OAUTH_*`) and mail (`CEL_SMTP_*`, `CEL_MAIL_FROM`) are read **process-wide from
+      env**, so every app on one cellar process shares one Google client (consent screen says the same
+      name for all) and one `From`. This is the one inconsistency in the "everything about an app lives
+      in its bundle" model (schema/hooks/policies are per-bundle; identity isn't). Make identity
+      per-bundle too, so e.g. Jarchy shows *"Jarchy wants to access…"* and sends from its own address,
+      while unbranded apps stay on the umbrella.
+      _Design (with a process-wide FALLBACK so it's opt-in, not a tax on every app):_
+      1. **OAuth per-bundle** — `policies.json` gains `"_oauth": { "google": { "client_id": "…" } }`
+         (accept string OR array for web+mobile). `cel_policy_oauth_client_id(provider)` reads it from
+         the per-request `active()` policy (mirrors `cel_policy_rpc_allows`). `cel_oauth_verify` takes an
+         `expected_audience` param; JWKS fetch/cache stays global (Google's keys are shared — only the
+         audience is per-app). `cel_api_oauth` passes the bundle's client id, **falling back to
+         `CEL_OAUTH_GOOGLE_CLIENT_ID`** when the bundle omits it. Allow a provider to be enabled with
+         issuer+JWKS but no global audience (audience supplied per-app).
+      2. **Mail per-bundle** — per-bundle `From`/`From-name` (and optionally SMTP creds/sending identity),
+         same env fallback. Ties the process-wide `CEL_MAIL_FROM` to a default, not a hard limit.
+      3. **Per-app styled emails** — the mailer is plain-text only (`cel_mail_send` hardcodes
+         `text/plain`). Add HTML/`multipart` support + a per-bundle Lua **`render_email(type, ctx) →
+         {subject, html}`** hook (types: verify-email, password-reset, notification) with an engine
+         built-in fallback. Lets each app own its email look; auth emails call the hook instead of the
+         fixed `snprintf` template in `api.c`.
+      _Real-world wrinkle:_ a Google consent screen with only an **app name** needs no Google review, but
+      adding a **logo** triggers per-client **app verification** — so "fully branded per-app consent" is
+      N client ids **and** N verification passes. Name-only is free/instant.
+      _Alternative that needs zero engine work:_ a genuinely-separate product can run as its **own cellar
+      deployment** (per-process env already gives it its own client + From) — prefer that if the product
+      is separate enough to deserve its own box.
+      _Touches:_ `src/core/oauth.{c,h}`, `src/core/mailer.{c,h}`, `src/engine/policy.{c,h}`,
+      `src/engine/api.c`, `src/engine/cel_hooks.{c,h}`, `docs/policy-guide.md`. Backward compatible
+      (env stays as the default). See `dist/DEPLOYMENTS.md` "Config scope caveat".
+
 - [ ] **Platform-admins over an API (control-plane management API).** Today the
       control-plane (design §11) is CLI-only: `provision / export / import / suspend /
       resume / apps`, run with shell access to the host. The `platform_admin` role exists
