@@ -93,9 +93,13 @@ personal page + web pages). Oracle A1 is dev/demo.
     → `< seed.sql` → copy `hooks.lua`/`policies.json` → `mkdir media`, run as the `cellar` user.
     **Deploy client:** `pnpm build` (client id defaults to the real one in `src/lib/config.ts`, `.env.local`
     is `VITE_MOCK=false`) → rsync `dist/` → atomic swap into `public/`.
-    - **Launch follow-ups:** (1) add `jarchy.svngn.com` as an **Authorized JavaScript origin** on the Google
-      OAuth client, else the Google button fails (email/password unaffected). (2) **No report/takedown yet**
-      — a public UGC site should get `report` + admin takedown before broad promotion (backend gap).
+    - **Trust & safety:** report → moderation queue → takedown is **LIVE (2026-07-03)** — `listing_report`
+      table + `listings.pre_moderation_status` + the `report_listing`/`list_reports`/`takedown`/`reinstate`/
+      `dismiss` rpcs (hardened via adversarial review, commit `9ca89cb`). Auto-hide (`CLS_AUTO_HIDE_REPORTS`)
+      is **off** by default → manual moderation. **Client UI still to build** (report button + admin queue —
+      contract in `apps/classifieds/FRONTEND.md`).
+    - **Launch follow-up:** add `jarchy.svngn.com` as an **Authorized JavaScript origin** on the Google
+      OAuth client, else the Google button fails (email/password unaffected).
 - **Footgun noted:** `cellar --version` is not a recognized flag → cellar ignores it and **starts a server
   on the default port 8080**. Don't probe the binary that way (leaves a stray root server); use it only to run.
 - **Deferred:** jarchy (classifieds) domain placement + migration from srvlab; real personal page.
