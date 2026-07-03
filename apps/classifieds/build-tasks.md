@@ -132,9 +132,12 @@
 - **[E/A]** recommendations — precompute similar/also-viewed/trending from events; personalize feed.
 - **[E]** webhook verify + `IdempotencyStore`. **[A]** promotion payments (featured/bump/VIP via jobs).
 
-## Phase 5 — Pro storefronts (Tier 2) *(epic-level)*
-- **[E]** untrusted-code **sandbox** (LuaJIT hardening); scoped catalog API; custom-domain TLS (ACME);
-  Tier-1 theme system. **[A]** pro storefront bundles.
+## Phase 5 — Seller storefronts (Tier 1, config-driven) *(epic-level)*
+> **Tier 2 (per-seller custom-code bundles) dropped — see classifieds-design.md Storefront model.**
+> No untrusted-code sandbox, no scoped cross-bundle catalog API.
+- **[A]** public **seller-page rpc** (profile + seller's active listings) + `seller` filter on `search`;
+  per-seller **theme** (`seller_theme` + set/read rpcs); featured/boosted placement.
+- **[E]** custom-domain mapping (Host → seller_id) + per-domain **ACME** (the only engine piece).
 
 ## Phase 6 — Scale-out *(epic-level, measured need only)*
 - swap adapters (S3 / external search / Redis); per-region deployment for KZ/UZ.

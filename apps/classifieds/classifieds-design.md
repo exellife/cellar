@@ -51,35 +51,49 @@ cellar covers the CRUD spine of this product today:
 - **Misc** — favorites & seller ratings (data model), reporting flags (data model), metrics,
   OpenAPI, multi-app, offline sync.
 
-## Storefront model & multi-tenancy — **DECIDED: hybrid / tiered**
+## Storefront model & multi-tenancy — **DECIDED: Tier-1 only (config-driven)**
 
-The catalog is **one app**; storefronts are tiered presentation on top of it.
+> **Revised 2026-07-03.** The earlier plan was a two-tier model (Tier-1 config storefronts + a Tier-2
+> "pro" tier of per-seller cellar bundles running custom seller-authored hooks). **Tier 2 is dropped**
+> (deferred indefinitely). Rationale: it forced the two hardest, riskiest engine primitives —
+> **untrusted-LuaJIT sandboxing** (a permanent security hazard: escape / resource exhaustion /
+> cross-tenant leaks) and a **scoped cross-bundle catalog API** (which breaks cellar's clean
+> one-DB-per-app model) — to serve a small advanced segment. Real marketplaces (Lalafo, Avito,
+> Alibaba storefronts) give sellers **rich templates/config, not code**; a feature a seller needs is
+> almost always one the *platform* should build for everyone. A config-driven Tier 1 delivers ~90% of
+> the "custom shop" value at a fraction of the risk, keeps the app a **single bundle**, and never
+> requires the sandbox / scoped-catalog work. Reversible: if a paying customer ever genuinely needs
+> bespoke per-seller logic, Tier 2 can be revisited then — Tier 1 forecloses nothing.
 
-- **Global catalog app (single source of truth)** — ALL listings, sellers, buyers, events, search
-  index, recs, messaging, trust/moderation in one DB. *Every* seller's listings live here,
-  **including pro sellers'**, so cross-seller discovery is always trivial.
-- **Tier 1 — branded storefront (default, free)** — `a.main.com` → the global app, filtered by
-  `seller_id`, rendered with a per-seller **theme config** (logo / colors / banner / layout preset +
-  featured listings). Pure presentation: no separate DB, no custom code.
-- **Tier 2 — pro storefront (paid)** — a per-seller cellar **bundle** giving **custom layout +
-  styling + custom logic (hooks)** — but it is a custom *face over the shared catalog*, **not a data
-  silo**. It reads/writes listings through the catalog API, scoped to its `seller_id`.
+The catalog is **one app** (one bundle, one DB); a storefront is a **filtered view + theme config**
+on top of it — no separate DB, no custom code, ever.
 
-> **Load-bearing rule:** *listing data always lives in the global catalog; the pro tier adds a
-> custom presentation + logic layer, never a separate listings DB.* This is what buys Shopify-like
-> custom shops AND a Lalafo-like cross-seller feed without the aggregation tax.
+- **Global catalog (single source of truth)** — ALL listings, sellers, buyers, events, search index,
+  recs, messaging, trust/moderation in one DB. Every seller's listings live here, so cross-seller
+  discovery is always trivial (no aggregation tax, no silos to federate).
+- **Seller storefront (Tier 1)** — a seller's public page = the global app **filtered by `seller_id`**,
+  rendered with a per-seller **theme config** (logo / colors / banner / layout preset + featured
+  listings + about / socials / hours). Pure presentation over the shared catalog.
 
-**What the pro tier introduces (design points):**
-- **Untrusted-code sandboxing** *(top concern)* — pro sellers run custom LuaJIT hooks; must be
-  sandboxed (no cross-seller data, no escape). **(engine)**
-- **Scoped catalog API** — the pro bundle calls the global catalog in-process (one cellar process),
-  scoped to its `seller_id` (`engine/api.c`). **(engine)**
-- **Custom domains + TLS** — Tier 1 subdomains ride a wildcard `*.main.com` cert; a pro seller's own
-  domain (`myshop.kg`) needs per-domain ACME provisioning. **(engine/ops)**
-- **Theme system** for Tier 1 — config-driven branding without a bundle. **(app + engine)**
-- **Provisioning** a pro bundle is per-paying-seller (low volume) → per-app cost is fine.
+> **Load-bearing rule:** *listing data always lives in the one global catalog; a storefront is only a
+> filtered, themed presentation of it.* Cross-seller feed and per-seller shop from the same rows.
 
-**Monetization tie-in:** the pro storefront *is* a paid tier (see §5.7 / §7) — custom shop = revenue.
+**What Tier 1 needs (all within the single app — no sandbox, no cross-bundle access):**
+- **Public seller-page rpc** *(the concrete gap)* — `seller {id}` → public profile block + that
+  seller's active listings (paginated); plus a `seller` filter on `search`. **(app)**
+- **Theme system** — a per-seller `seller_theme` record + set/read rpcs (config-driven branding).
+  **(app; optional tiny engine help for asset serving)**
+- **Custom domains** — a seller's own domain (`myshop.kg`) maps **Host → seller_id → their storefront
+  view** (no per-seller bundle). Rides a wildcard `*.main.com` cert for subdomains; a custom apex
+  needs per-domain **ACME**. **(engine/ops — but *only* the ACME piece, not the sandbox/scoped parts)**
+
+**Monetization tie-in:** the paid "pro" lever is now **config-based** (custom domain + expanded theme
+options + featured/boosted placement + more photos/listings + analytics), not custom code — same
+revenue, far less engine risk. See §5.7 / §7.
+
+**Cross-app note:** dropping Tier 2 also simplifies the planned B2B manufacturer marketplace — its
+company pages become the same config-driven Tier-1 storefronts over a global catalog, so the
+sandbox/scoped-catalog primitive is never needed there either.
 
 ## 5. Component gaps — what we need to build (ranked)
 
@@ -250,9 +264,10 @@ separate search/OLAP system needed.
   - *Why chat-primary:* it's also the moderation surface (§5.6) — the dominant off-platform scam is
     only detectable while the conversation is on-platform; an immediate "→ WhatsApp" push is itself a
     mild risk signal. Ties to WS realtime, SMS/push (§5.5), and jobs (§5.4) for notifications.
-- **Monetization** — levers: featured/bump promotion (§5.7), pro-dealer subscriptions, and the
-  **pro storefront tier** (custom shop, see Storefront model). *Which ship at launch* is still
-  **OPEN**, but the pro storefront is now a committed paid feature on the roadmap.
+- **Monetization** — levers: featured/bump promotion (§5.7), pro-dealer subscriptions, and a
+  **config-based "pro" storefront tier** (custom domain + expanded theme + featured placement +
+  analytics — Tier-1 only; see Storefront model). *Which ship at launch* is still **OPEN**. (The
+  earlier *custom-code* pro tier / Tier 2 is dropped — see the Storefront model revision.)
 - **Moderation** — ~~pre vs post-publish~~ → **LEANING: risk-routed** (low risk publishes
   immediately, high risk → review queue), per §5.6. Confirm the risk thresholds later.
 
@@ -377,15 +392,18 @@ region tag, **global UUIDs**, multi-currency/locale **[A/E]**.
 - **[E/A] Recommendations** — precompute similar/also-viewed/trending from accumulated events; personalize feed.
 - **[E]** Webhook intake + idempotency; **[A]** promotion payments (featured/bump/VIP via jobs).
 
-**Phase 5 — Pro storefronts (Tier 2).**
-- **[E]** Untrusted-code **sandboxing** (LuaJIT hardening — the big security project); scoped catalog API;
-  custom-domain TLS (ACME); Tier-1 theme system. **[A]** pro storefront bundles.
+**Phase 5 — Seller storefronts (Tier 1, config-driven).** *(Tier 2 dropped — see Storefront model.)*
+- **[A]** public **seller-page rpc** (profile + seller's active listings) + a `seller` filter on `search`;
+  per-seller **theme** (`seller_theme` + set/read rpcs); featured/boosted placement.
+- **[E]** custom-domain mapping (Host → seller_id) + per-domain **ACME** for custom apexes.
+  *No untrusted-code sandbox, no scoped cross-bundle catalog API — those were Tier-2-only.*
 
 **Phase 6 — Scale-out (measured need only).** Swap adapters (S3 / external search / Redis) +
 per-region deployment for KZ/UZ (the swap-path table).
 
 **cellar engine build order:** media pipeline → jobs → event ingest → captcha (+ passkeys) → push →
-image pHash → faceted-query support (if hot) → webhook/idempotency → untrusted-code sandbox → scale
+image pHash → faceted-query support (if hot) → webhook/idempotency → custom-domain ACME → scale
+*(untrusted-code sandbox removed — it was Tier-2-only)*
 adapters. *(SMS dropped from the critical path; TOTP already exists.)*
 
 ## 9. Parking lot / open questions
