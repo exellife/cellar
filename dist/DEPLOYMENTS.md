@@ -69,7 +69,20 @@ personal page + web pages). Oracle A1 is dev/demo.
 - **DNS:** Cloudflare A records `svngn.com` + `*.svngn.com` → `89.167.89.235` (grey / DNS-only, TTL 300).
 - **LIVE (2026-07-02):** `https://svngn.com/` → 200 with a valid cert, serving a placeholder welcome page
   (bundle `svngn.com`, admin `admin@svngn.com`). Apex + wildcard both serve.
-- **Deferred:** jarchy (classifieds) domain placement + migration from srvlab; real personal page.
+- **Apps (host-routed bundles under `/var/lib/cellar/apps/`):**
+  - `svngn.com` — placeholder welcome page (admin `admin@svngn.com`).
+  - `tandem.svngn.com` — **pan_web contact backend** (the `tandem` bundle: `submit_inquiry` + admin
+    console: inquiries / site settings / user mgmt). **LIVE (2026-07-03), backend/API only** — public
+    starter `public/index.html` until the Nuxt site is published. Admin `admin@tandem.svngn.com` (pw in
+    the vault, `app_logins`). No DNS/cert work needed — `*.svngn.com` A-record + wildcard cert cover it;
+    filesystem routing lazy-opens the app (no service restart). Redeploy: `pan_web/backend/tandem/deploy.sh`
+    with `CEL_APPS_DIR=/var/lib/cellar/apps CELLAR_BIN=/usr/local/bin/cellar TANDEM_HOST=tandem.svngn.com`,
+    run as the `cellar` user (set `CEL_PORT` to a free port so the write-lock guard passes — prod is on :443).
+    Publish the site: add `WITH_SITE=1` (needs the Nuxt build) or rsync `.output/public` → the bundle's `public/`.
+- **Footgun noted:** `cellar --version` is not a recognized flag → cellar ignores it and **starts a server
+  on the default port 8080**. Don't probe the binary that way (leaves a stray root server); use it only to run.
+- **Deferred:** publish the pan_web static site into `tandem.svngn.com/public/` when the frontend ships;
+  jarchy (classifieds) domain placement + migration from srvlab; real personal page.
 
 ---
 
