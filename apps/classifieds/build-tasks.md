@@ -124,8 +124,14 @@
 ---
 
 ## Phase 3 — Trust & safety + feed home *(epic-level)*
-- **[E]** image **pHash** lib. **[A]** report → auto-throttle → moderation queue → shadowban; safety
-  nudges + trust badges; blocklists + price-anomaly + duplicate/stolen-photo; then risk scoring.
+- ✓ **A3.1 report → moderation queue → takedown** *(launch minimum; pulled ahead)* — `listing_report`
+  table (UNIQUE (listing,reporter) → dedupe/anti-brigade); `report_listing` rpc (user, login-gated,
+  reason enum + own-listing guard); admin `list_reports` (grouped queue) / `listing_reports` (drill-in)
+  / `takedown_listing` (→ 'removed' + resolve reports + notify seller) / `reinstate_listing` / `dismiss_reports`;
+  **optional auto-hide** (`CLS_AUTO_HIDE_REPORTS` distinct reporters → 'pending', reversible; default off).
+  e2e `classifieds_moderation` (24 checks). *(UI: report button + admin queue → frontend, see FEEDBACK.)*
+- **[E]** image **pHash** lib. **[A]** auto-throttle + shadowban; safety nudges + trust badges;
+  blocklists + price-anomaly + duplicate/stolen-photo; then risk scoring.
 - **[A]** **Feed home** — non-personalized ranking (fresh + near + popular).
 
 ## Phase 4 — Recommendations + monetization *(epic-level)*

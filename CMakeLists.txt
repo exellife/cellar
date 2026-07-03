@@ -472,6 +472,11 @@ if(CELLAR_BUILD_TESTS)
         add_test(NAME classifieds_velocity
             COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/apps/classifieds/test_velocity.py
                     $<TARGET_FILE:cellar>)
+        # classifieds trust & safety (report -> queue -> takedown): user reports,
+        # admin queue + takedown/reinstate, dedupe, and the optional auto-hide.
+        add_test(NAME classifieds_moderation
+            COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/apps/classifieds/test_moderation.py
+                    $<TARGET_FILE:cellar>)
         # Mailer (no DB): send via the send-test-mail CLI to a local mock SMTP sink
         # and assert the captured message is well-formed RFC 5322.
         add_test(NAME mailer

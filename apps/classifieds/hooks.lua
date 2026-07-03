@@ -877,6 +877,127 @@ local function mark_read(args, who)
   return unread_count(args, who)
 end
 
+-- ── Trust & safety: report → moderation queue → takedown ────────────────────
+-- Public (login-gated) reporting + admin review/action. Takedown flips a listing
+-- to 'removed' (out of public search/detail, which enforce status='active');
+-- reinstate reverses it. All access is via these rpcs — the listing_report table
+-- is admin-only for /api (defense-in-depth).
+local REPORT_REASONS = { spam=true, scam=true, prohibited=true, offensive=true,
+                         duplicate=true, miscat=true, other=true }
+
+-- Optional auto-hide: once a listing accrues >= N DISTINCT open reports, move it
+-- to 'pending' (hidden from the public, REVERSIBLE via reinstate) pending admin
+-- review. 0 = off (default) → rely on manual moderation. Env-tunable. Counts
+-- distinct reporters (the UNIQUE index guarantees one row per reporter), so a
+-- single account can't trip it — real brigading needs N genuine accounts.
+local AUTO_HIDE_REPORTS = tonumber(os.getenv('CLS_AUTO_HIDE_REPORTS') or '') or 0
+
+-- report_listing {listing_id, reason, note?} (user): flag a listing for review.
+-- Idempotent per (listing, reporter): a repeat is a silent no-op (returns ok).
+local function report_listing(args, who)
+  if not (who and who.authenticated) then return nil end
+  local lid = args and args.listing_id
+  local reason = args and args.reason
+  if not lid or type(reason) ~= 'string' or not REPORT_REASONS[reason] then
+    return { ok = false, error = 'listing_id and a valid reason are required' }
+  end
+  local l = cellar.query('SELECT id, seller_id, status FROM listings WHERE id = ?', { lid })[1]
+  if not l then return { ok = false, error = 'no such listing' } end
+  if l.seller_id == who.user_id then
+    return { ok = false, error = 'you cannot report your own listing' }
+  end
+  local id, ts = server_uuid(), now_iso()
+  cellar.exec(
+    "INSERT OR IGNORE INTO listing_report(id, listing_id, reporter_id, reason, note, status, created_at) " ..
+    "VALUES (?,?,?,?,?,'open',?)", { id, lid, who.user_id, reason, utf8_trunc(args.note or '', 1000), ts })
+  cellar.emit('listing_reported', { actor = who.user_id, subject = lid })   -- telemetry (T&S signals)
+  if AUTO_HIDE_REPORTS > 0 and l.status == 'active' then
+    local n = cellar.query(
+      "SELECT count(*) AS n FROM listing_report WHERE listing_id = ? AND status = 'open'", { lid })[1].n
+    if n >= AUTO_HIDE_REPORTS then
+      -- guard the WHERE on status='active' so we never clobber sold/removed
+      cellar.exec("UPDATE listings SET status='pending', updated_at=? WHERE id=? AND status='active'", { ts, lid })
+    end
+  end
+  return { ok = true }
+end
+
+-- list_reports {status?, limit?, offset?} (admin): the moderation queue, one row
+-- per reported listing with its report count + distinct reasons (what a queue UI
+-- renders), newest report first. status defaults to 'open'.
+local function list_reports(args, who)
+  if not (who and who.role == 'admin') then return nil end
+  local status = (args and args.status) or 'open'
+  local lim = math.min(tonumber(args and args.limit) or 50, 200)
+  local off = math.max(tonumber(args and args.offset) or 0, 0)
+  local rows = cellar.query(
+    "SELECT r.listing_id, l.title, l.status AS listing_status, l.seller_id, " ..
+    "count(*) AS reports, group_concat(DISTINCT r.reason) AS reasons, max(r.created_at) AS last_reported " ..
+    "FROM listing_report r JOIN listings l ON l.id = r.listing_id " ..
+    "WHERE r.status = ? GROUP BY r.listing_id ORDER BY last_reported DESC LIMIT ? OFFSET ?",
+    { status, lim, off })
+  return { reports = rows }
+end
+
+-- listing_reports {listing_id} (admin): every report on one listing (drill-in).
+local function listing_reports_rpc(args, who)
+  if not (who and who.role == 'admin') then return nil end
+  local lid = args and args.listing_id
+  if not lid then return nil end
+  return { listing_id = lid, reports = cellar.query(
+    "SELECT id, reporter_id, reason, note, status, created_at, resolved_at, resolved_by " ..
+    "FROM listing_report WHERE listing_id = ? ORDER BY created_at DESC", { lid }) }
+end
+
+-- takedown_listing {listing_id, note?} (admin): remove from public view and
+-- resolve its open reports as 'actioned'. Notifies the seller. Reversible.
+local function takedown_listing(args, who)
+  if not (who and who.role == 'admin') then return nil end
+  local lid = args and args.listing_id
+  if not lid then return nil end
+  local l = cellar.query('SELECT id, seller_id FROM listings WHERE id = ?', { lid })[1]
+  if not l then return { ok = false, error = 'no such listing' } end
+  local ts = now_iso()
+  cellar.exec("UPDATE listings SET status='removed', updated_at=? WHERE id=?", { ts, lid })
+  cellar.exec("UPDATE listing_report SET status='actioned', resolved_at=?, resolved_by=? " ..
+              "WHERE listing_id = ? AND status = 'open'", { ts, who.user_id, lid })
+  cellar.emit('listing_takedown', { actor = who.user_id, subject = lid })
+  notify(l.seller_id, 'listing_removed', 'Объявление удалено модератором',
+         utf8_trunc(args.note or 'Ваше объявление удалено за нарушение правил площадки.', 500), lid)
+  return { ok = true, listing_id = lid, status = 'removed' }
+end
+
+-- reinstate_listing {listing_id} (admin): reverse a takedown / un-hide an
+-- auto-hidden listing — back to 'active' with a fresh expiry window, and dismiss
+-- its open reports. Notifies the seller.
+local function reinstate_listing(args, who)
+  if not (who and who.role == 'admin') then return nil end
+  local lid = args and args.listing_id
+  if not lid then return nil end
+  local l = cellar.query('SELECT id, seller_id FROM listings WHERE id = ?', { lid })[1]
+  if not l then return { ok = false, error = 'no such listing' } end
+  local ts = now_iso()
+  cellar.exec("UPDATE listings SET status='active', expires_at=?, updated_at=? WHERE id=?",
+              { iso_in(EXPIRY_DAYS), ts, lid })
+  cellar.exec("UPDATE listing_report SET status='dismissed', resolved_at=?, resolved_by=? " ..
+              "WHERE listing_id = ? AND status = 'open'", { ts, who.user_id, lid })
+  notify(l.seller_id, 'listing_reinstated', 'Объявление восстановлено',
+         'Ваше объявление снова активно.', lid)
+  return { ok = true, listing_id = lid, status = 'active' }
+end
+
+-- dismiss_reports {listing_id} (admin): reviewed, no action on the listing —
+-- clears its open reports from the queue (the listing stays as-is).
+local function dismiss_reports(args, who)
+  if not (who and who.role == 'admin') then return nil end
+  local lid = args and args.listing_id
+  if not lid then return nil end
+  local ts = now_iso()
+  cellar.exec("UPDATE listing_report SET status='dismissed', resolved_at=?, resolved_by=? " ..
+              "WHERE listing_id = ? AND status = 'open'", { ts, who.user_id, lid })
+  return { ok = true, listing_id = lid }
+end
+
 -- ── repair / ops primitive ──────────────────────────────────────────────────
 -- POST /rpc/rebuild_facets {"id": "<listing-id>"}  (admin) — reconcile one
 -- listing's facets if an after() fault ever left them stale.
@@ -990,5 +1111,12 @@ function rpc(name, args, who)
     local n = cellar.query('SELECT count(*) AS n FROM listing_facet WHERE listing_id = ?', { id })
     return { listing_id = id, facets = n[1].n }
   end
+  -- Trust & safety (report → queue → takedown)
+  if name == 'report_listing'    then return report_listing(args, who)     end
+  if name == 'list_reports'      then return list_reports(args, who)       end
+  if name == 'listing_reports'   then return listing_reports_rpc(args, who) end
+  if name == 'takedown_listing'  then return takedown_listing(args, who)   end
+  if name == 'reinstate_listing' then return reinstate_listing(args, who)  end
+  if name == 'dismiss_reports'   then return dismiss_reports(args, who)    end
   return nil
 end

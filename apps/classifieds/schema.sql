@@ -316,3 +316,27 @@ CREATE TABLE user_profile (
   created_at   TEXT NOT NULL DEFAULT '',
   updated_at   TEXT NOT NULL DEFAULT ''
 );
+
+-- ── Trust & safety: listing reports (moderation queue) ──────────────────────
+-- Users flag a listing (login-gated report_listing rpc); admins review the queue
+-- (list_reports) and act (takedown_listing / reinstate_listing / dismiss_reports).
+-- ONE open report per (listing, reporter) — the UNIQUE index makes a repeat a
+-- no-op (INSERT OR IGNORE), so a single account can't inflate a listing's report
+-- count (the anti-brigading property the optional auto-hide relies on). Reports
+-- are never exposed via /api (admin-only there); all access is through the rpcs.
+CREATE TABLE listing_report (
+  id           TEXT PRIMARY KEY,
+  listing_id   TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+  reporter_id  TEXT,                                    -- cel_users.id (rpc is login-gated)
+  reason       TEXT NOT NULL
+               CHECK (reason IN ('spam','scam','prohibited','offensive','duplicate','miscat','other')),
+  note         TEXT NOT NULL DEFAULT '',
+  status       TEXT NOT NULL DEFAULT 'open'
+               CHECK (status IN ('open','actioned','dismissed')),
+  created_at   TEXT NOT NULL DEFAULT '',
+  resolved_at  TEXT NOT NULL DEFAULT '',
+  resolved_by  TEXT                                     -- admin cel_users.id that resolved it
+);
+CREATE UNIQUE INDEX idx_report_dedupe  ON listing_report (listing_id, reporter_id);
+CREATE INDEX        idx_report_queue   ON listing_report (status, created_at);
+CREATE INDEX        idx_report_listing ON listing_report (listing_id);

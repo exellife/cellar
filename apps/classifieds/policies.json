@@ -23,6 +23,7 @@
   "listing_facet": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
   "listing_contact": { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
   "contact_event":   { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
+  "listing_report":  { "list": ["admin"], "get": ["admin"], "create": ["admin"], "update": ["admin"], "delete": ["admin"] },
 
   "_comment_chat": "Chat: conversations are created via the start_conversation rpc (raw inserts, bypass policy), so create/update/delete here are admin-only; list/get scope to the user's own conversations via owner_any. conversation_member is the internal VIA membership table (admin only; the engine reads it via raw SQL). message: create is allowed for users but before() enforces conversation membership (VIA can't gate inserts); list/get use owner_via so /api reads AND realtime subscribe are scoped to the caller's conversations; messages are immutable (no update/delete).",
   "conversation": {
@@ -68,6 +69,12 @@
     "notifications": { "roles": ["user"] },
     "unread_count": { "roles": ["user"] },
     "mark_read": { "roles": ["user"] },
+    "report_listing": { "roles": ["user"] },
+    "list_reports": { "roles": ["admin"] },
+    "listing_reports": { "roles": ["admin"] },
+    "takedown_listing": { "roles": ["admin"] },
+    "reinstate_listing": { "roles": ["admin"] },
+    "dismiss_reports": { "roles": ["admin"] },
     "enqueue_job": { "roles": ["admin"] },
     "rebuild_facets": { "roles": ["admin"] }
   }
