@@ -248,6 +248,33 @@ A buyer↔seller conversation per listing. All login-gated; participants only.
 - The `listing` RPC returns `favorited` (your state) + `favorite_count` (social
   proof) for the heart toggle + count.
 
+## Trust & safety: report + moderation *(NEW — needs UI)*
+
+Backend shipped (commit `f9d29c8`); the client work is a **report button** on the
+listing detail + an **admin moderation queue** in the admin surface.
+
+**User-facing — the report button** (`POST /rpc/report_listing`, role `user`, login-gated):
+- Body `{ listing_id, reason, note? }`. `reason` ∈
+  `spam | scam | prohibited | offensive | duplicate | miscat | other` (offer these as a small menu);
+  `note` is free text (≤1000 chars, optional).
+- Reply `{ result: { ok: true } }` on success. Validation → `{ ok: false, error }` (show inline).
+- **Idempotent per user+listing** — a repeat report returns `ok:true` and changes nothing (no "already
+  reported" error to handle). Reporting **your own** listing → `{ ok:false }`. Show a simple confirmation
+  ("Thanks, our team will review"), not a report count.
+- Only show the button to logged-in users (gate in UI; the server enforces it regardless).
+
+**Admin — moderation queue** (role `admin`; all `POST /rpc/<fn>`):
+- `list_reports { status?, limit?, offset? }` → `{ reports: [ { listing_id, title, listing_status,
+  seller_id, reports (count), reasons (comma-str), last_reported }, … ] }`. Default `status:"open"` =
+  the queue. **Empty serializes as `{}`** (not `[]`) — treat falsy as empty.
+- `listing_reports { listing_id }` → `{ reports: [ { id, reporter_id, reason, note, status, created_at,
+  resolved_at, resolved_by }, … ] }` — the drill-in for one listing.
+- `takedown_listing { listing_id, note? }` → listing → `removed` (drops from public search/detail),
+  its open reports → `actioned`, seller notified. `reinstate_listing { listing_id }` reverses it
+  (→ `active`, fresh expiry). `dismiss_reports { listing_id }` = reviewed, no action (clears the queue row).
+- Optional server auto-hide (`CLS_AUTO_HIDE_REPORTS` distinct reporters → listing `pending`, hidden but
+  reversible) is **off by default**; if enabled, such listings show up with `listing_status:"pending"`.
+
 ## Security model the client should assume
 
 - Treat the server as the source of truth: it enforces validation, ownership,
