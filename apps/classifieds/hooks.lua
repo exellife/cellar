@@ -762,7 +762,10 @@ local function renew_listing(args, who)
   local l = cellar.query('SELECT seller_id, status FROM listings WHERE id = ?', { lid })[1]
   if not l then return nil end
   if l.seller_id ~= who.user_id and who.role ~= 'admin' then return nil end
-  if l.status == 'removed' or l.status == 'sold' then return nil end   -- nothing to renew
+  -- 'pending' is a moderation hold (auto-hide) — only admin reinstate clears it,
+  -- never the owner's renew (else a brigaded seller self-un-hides). 'removed'/'sold'
+  -- are terminal for renew too.
+  if l.status == 'removed' or l.status == 'sold' or l.status == 'pending' then return nil end
   cellar.exec("UPDATE listings SET status='active', expires_at=?, updated_at=? WHERE id=?",
               { iso_in(EXPIRY_DAYS), now_iso(), lid })
   return { listing_id = lid, expires_at = iso_in(EXPIRY_DAYS) }
@@ -902,21 +905,28 @@ local function report_listing(args, who)
     return { ok = false, error = 'listing_id and a valid reason are required' }
   end
   local l = cellar.query('SELECT id, seller_id, status FROM listings WHERE id = ?', { lid })[1]
-  if not l then return { ok = false, error = 'no such listing' } end
+  -- Only ACTIVE (publicly-visible) listings are reportable. Collapse absent +
+  -- non-active into the SAME 'no such listing' response so report_listing can't be
+  -- used as an existence/ownership oracle for removed/draft/pending/sold rows
+  -- (search()/get_listing() already hide those from non-owners).
+  if not l or l.status ~= 'active' then return { ok = false, error = 'no such listing' } end
   if l.seller_id == who.user_id then
     return { ok = false, error = 'you cannot report your own listing' }
   end
   local id, ts = server_uuid(), now_iso()
+  -- Dedupe is on OPEN reports only (partial index): a repeat while open is ignored,
+  -- but a reporter can re-flag after their prior report was resolved (reoffense).
   cellar.exec(
     "INSERT OR IGNORE INTO listing_report(id, listing_id, reporter_id, reason, note, status, created_at) " ..
     "VALUES (?,?,?,?,?,'open',?)", { id, lid, who.user_id, reason, utf8_trunc(args.note or '', 1000), ts })
   cellar.emit('listing_reported', { actor = who.user_id, subject = lid })   -- telemetry (T&S signals)
-  if AUTO_HIDE_REPORTS > 0 and l.status == 'active' then
+  if AUTO_HIDE_REPORTS > 0 then
     local n = cellar.query(
       "SELECT count(*) AS n FROM listing_report WHERE listing_id = ? AND status = 'open'", { lid })[1].n
     if n >= AUTO_HIDE_REPORTS then
-      -- guard the WHERE on status='active' so we never clobber sold/removed
-      cellar.exec("UPDATE listings SET status='pending', updated_at=? WHERE id=? AND status='active'", { ts, lid })
+      -- record the pre-hold status so reinstate/dismiss restore the true prior state.
+      cellar.exec("UPDATE listings SET pre_moderation_status='active', status='pending', updated_at=? " ..
+                  "WHERE id=? AND status='active'", { ts, lid })
     end
   end
   return { ok = true }
@@ -950,15 +960,21 @@ local function listing_reports_rpc(args, who)
 end
 
 -- takedown_listing {listing_id, note?} (admin): remove from public view and
--- resolve its open reports as 'actioned'. Notifies the seller. Reversible.
+-- resolve its open reports as 'actioned'. Records the prior status (so reinstate
+-- restores the TRUE state, not a guessed 'active') and is idempotent — a repeat
+-- takedown on an already-'removed' listing is a silent no-op (no re-notify).
 local function takedown_listing(args, who)
   if not (who and who.role == 'admin') then return nil end
   local lid = args and args.listing_id
   if not lid then return nil end
-  local l = cellar.query('SELECT id, seller_id FROM listings WHERE id = ?', { lid })[1]
+  local l = cellar.query('SELECT id, seller_id, status, pre_moderation_status AS pms FROM listings WHERE id = ?', { lid })[1]
   if not l then return { ok = false, error = 'no such listing' } end
+  if l.status == 'removed' then return { ok = true, listing_id = lid, status = 'removed' } end   -- already down: no-op
+  -- prior status to restore later. If it was auto-hidden ('pending'), the true prior
+  -- was already saved in pms (='active') — keep that, don't record 'pending'.
+  local prev = (l.status == 'pending') and (l.pms ~= '' and l.pms or 'active') or l.status
   local ts = now_iso()
-  cellar.exec("UPDATE listings SET status='removed', updated_at=? WHERE id=?", { ts, lid })
+  cellar.exec("UPDATE listings SET pre_moderation_status=?, status='removed', updated_at=? WHERE id=?", { prev, ts, lid })
   cellar.exec("UPDATE listing_report SET status='actioned', resolved_at=?, resolved_by=? " ..
               "WHERE listing_id = ? AND status = 'open'", { ts, who.user_id, lid })
   cellar.emit('listing_takedown', { actor = who.user_id, subject = lid })
@@ -968,26 +984,37 @@ local function takedown_listing(args, who)
 end
 
 -- reinstate_listing {listing_id} (admin): reverse a takedown / un-hide an
--- auto-hidden listing — back to 'active' with a fresh expiry window, and dismiss
--- its open reports. Notifies the seller.
+-- auto-hidden listing. Restores the RECORDED prior status (not a hardcoded
+-- 'active', so a sold/expired item is never resurrected into public search) and
+-- dismisses its open reports. Time-neutral: expiry is only refreshed if it has
+-- already lapsed. No-op unless the listing is actually under a hold.
 local function reinstate_listing(args, who)
   if not (who and who.role == 'admin') then return nil end
   local lid = args and args.listing_id
   if not lid then return nil end
-  local l = cellar.query('SELECT id, seller_id FROM listings WHERE id = ?', { lid })[1]
+  local l = cellar.query('SELECT id, seller_id, status, pre_moderation_status AS pms FROM listings WHERE id = ?', { lid })[1]
   if not l then return { ok = false, error = 'no such listing' } end
+  if l.status ~= 'removed' and l.status ~= 'pending' then
+    return { ok = false, error = 'listing is not under a moderation hold' }   -- nothing to reinstate
+  end
+  local restore = (l.pms ~= '' and l.pms) or 'active'
+  if restore == 'removed' or restore == 'pending' then restore = 'active' end   -- never restore to a hold state
   local ts = now_iso()
-  cellar.exec("UPDATE listings SET status='active', expires_at=?, updated_at=? WHERE id=?",
-              { iso_in(EXPIRY_DAYS), ts, lid })
+  cellar.exec(
+    "UPDATE listings SET status=?, pre_moderation_status='', " ..
+    "expires_at = CASE WHEN expires_at IS NULL OR expires_at = '' OR expires_at < ? THEN ? ELSE expires_at END, " ..
+    "updated_at=? WHERE id=?", { restore, ts, iso_in(EXPIRY_DAYS), ts, lid })
   cellar.exec("UPDATE listing_report SET status='dismissed', resolved_at=?, resolved_by=? " ..
               "WHERE listing_id = ? AND status = 'open'", { ts, who.user_id, lid })
   notify(l.seller_id, 'listing_reinstated', 'Объявление восстановлено',
          'Ваше объявление снова активно.', lid)
-  return { ok = true, listing_id = lid, status = 'active' }
+  return { ok = true, listing_id = lid, status = restore }
 end
 
--- dismiss_reports {listing_id} (admin): reviewed, no action on the listing —
--- clears its open reports from the queue (the listing stays as-is).
+-- dismiss_reports {listing_id} (admin): reviewed, reports were not actionable —
+-- clear the open reports. If the listing was AUTO-HIDDEN ('pending'), dismissing
+-- the reports un-hides it (restores the recorded prior status), so it is never
+-- stranded invisible-and-off-the-queue.
 local function dismiss_reports(args, who)
   if not (who and who.role == 'admin') then return nil end
   local lid = args and args.listing_id
@@ -995,6 +1022,8 @@ local function dismiss_reports(args, who)
   local ts = now_iso()
   cellar.exec("UPDATE listing_report SET status='dismissed', resolved_at=?, resolved_by=? " ..
               "WHERE listing_id = ? AND status = 'open'", { ts, who.user_id, lid })
+  cellar.exec("UPDATE listings SET status = CASE WHEN pre_moderation_status <> '' THEN pre_moderation_status ELSE 'active' END, " ..
+              "pre_moderation_status='', updated_at=? WHERE id=? AND status='pending'", { ts, lid })
   return { ok = true, listing_id = lid }
 end
 

@@ -120,6 +120,11 @@ CREATE TABLE listings (
   condition   TEXT,                             -- e.g. new | used (category-refined)
   status      TEXT NOT NULL DEFAULT 'active'
               CHECK (status IN ('draft','pending','active','sold','expired','removed')),
+  -- The status a listing held before an admin/auto MODERATION hold (takedown ->
+  -- 'removed', auto-hide -> 'pending'), so reinstate can restore the true prior
+  -- state instead of guessing 'active' (which would resurrect a sold/expired item).
+  -- '' when the listing is not under a hold. Empty for every publicly-visible row.
+  pre_moderation_status TEXT NOT NULL DEFAULT '',
   -- contact CHANNEL flags are public (the detail page shows the right buttons);
   -- the number itself lives in listing_contact, never exposed on this row.
   allow_chat     INTEGER NOT NULL DEFAULT 1,
@@ -337,6 +342,10 @@ CREATE TABLE listing_report (
   resolved_at  TEXT NOT NULL DEFAULT '',
   resolved_by  TEXT                                     -- admin cel_users.id that resolved it
 );
-CREATE UNIQUE INDEX idx_report_dedupe  ON listing_report (listing_id, reporter_id);
+-- Dedupe is scoped to OPEN reports (partial index): one open report per
+-- (listing, reporter) — a repeat while open is a no-op (INSERT OR IGNORE) — but
+-- once a report is resolved (actioned/dismissed) the same reporter CAN file a
+-- fresh 'open' report if the listing reoffends (e.g. seller edits abuse back in).
+CREATE UNIQUE INDEX idx_report_dedupe  ON listing_report (listing_id, reporter_id) WHERE status = 'open';
 CREATE INDEX        idx_report_queue   ON listing_report (status, created_at);
 CREATE INDEX        idx_report_listing ON listing_report (listing_id);

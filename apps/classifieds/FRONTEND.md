@@ -266,9 +266,13 @@ listing detail + an **admin moderation queue** in the admin surface.
 **Admin — moderation queue** (role `admin`; all `POST /rpc/<fn>`):
 - `list_reports { status?, limit?, offset? }` → `{ reports: [ { listing_id, title, listing_status,
   seller_id, reports (count), reasons (comma-str), last_reported }, … ] }`. Default `status:"open"` =
-  the queue. **Empty serializes as `{}`** (not `[]`) — treat falsy as empty.
+  the queue.
 - `listing_reports { listing_id }` → `{ reports: [ { id, reporter_id, reason, note, status, created_at,
   resolved_at, resolved_by }, … ] }` — the drill-in for one listing.
+- ⚠️ **Empty `reports` serializes as `{}`, not `[]`** (cellar's Lua→JSON quirk), and `{}` is **truthy**
+  in JS — so `(res.result.reports || []).map(...)` throws on the (common) empty queue. **Normalize by
+  shape, not truthiness:** `const rows = Array.isArray(res.result.reports) ? res.result.reports : []`.
+  Applies to both `list_reports` and `listing_reports`.
 - `takedown_listing { listing_id, note? }` → listing → `removed` (drops from public search/detail),
   its open reports → `actioned`, seller notified. `reinstate_listing { listing_id }` reverses it
   (→ `active`, fresh expiry). `dismiss_reports { listing_id }` = reviewed, no action (clears the queue row).

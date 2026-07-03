@@ -110,6 +110,13 @@ def status_of(db, lid):
     c = sqlite3.connect(db); r = c.execute("SELECT status FROM listings WHERE id=?", (lid,)).fetchone(); c.close()
     return r[0] if r else None
 
+def col(db, lid, name):   # name is a test-controlled literal
+    c = sqlite3.connect(db); r = c.execute(f"SELECT {name} FROM listings WHERE id=?", (lid,)).fetchone(); c.close()
+    return r[0] if r else None
+
+def set_status(db, lid, st):
+    c = sqlite3.connect(db); c.execute("UPDATE listings SET status=? WHERE id=?", (st, lid)); c.commit(); c.close()
+
 def core_flow(port, db):
     req = mkreq(port)
     print(f"== core flow (manual moderation) -> 127.0.0.1:{port} ==")
@@ -155,6 +162,12 @@ def core_flow(port, db):
     s, b = req("POST", "/rpc/listing", {"id": lid})
     chk("removed listing no longer public (400)", s != 200, f"status={s}")
 
+    # #6: a removed (non-active) listing is not reportable, and the response is the
+    # SAME 'no such listing' as a truly-absent row (no existence/ownership oracle).
+    s, b = req("POST", "/rpc/report_listing", {"listing_id": lid, "reason": "spam"}, token=r2)
+    chk("cannot report a removed listing (oracle collapsed)",
+        result(b) and result(b).get("ok") is False and result(b).get("error") == "no such listing", str(result(b)))
+
     chk("db status = removed", status_of(db, lid) == "removed", status_of(db, lid))
     chk("open reports cleared -> actioned",
         count(db, "SELECT count(*) FROM listing_report WHERE listing_id=? AND status='open'", (lid,)) == 0 and
@@ -170,25 +183,98 @@ def core_flow(port, db):
     s, b = req("POST", "/rpc/listing", {"id": lid})
     chk("public again after reinstate", s == 200 and result(b) and result(b).get("listing"), f"status={s}")
 
+# #8 (dismiss_reports + listing_reports coverage) + #2 (re-report after resolution)
+def dismiss_flow(port, db):
+    req = mkreq(port)
+    print(f"== dismiss_reports + listing_reports drill-in + re-report -> 127.0.0.1:{port} ==")
+    atok = login(req, ADMIN); stok = login(req, SELLER); r1 = login(req, R1)
+    s, lid = post_listing(req, stok, "Fine listing")
+    chk("post -> 201", s == 201 and bool(lid), f"status={s}")
+    req("POST", "/rpc/report_listing", {"listing_id": lid, "reason": "other", "note": "a mistake"}, token=r1)
+
+    s, b = req("POST", "/rpc/listing_reports", {"listing_id": lid}, token=atok)
+    reps = result(b).get("reports") if result(b) else None
+    chk("listing_reports drill-in returns the report (admin)",
+        bool(reps) and reps[0]["reason"] == "other" and reps[0]["status"] == "open", str(reps))
+    s, b = req("POST", "/rpc/listing_reports", {"listing_id": lid}, token=r1)
+    chk("listing_reports denied for non-admin", s in (401, 403), f"status={s}")
+
+    s, b = req("POST", "/rpc/dismiss_reports", {"listing_id": lid}, token=atok)
+    chk("dismiss_reports -> ok", result(b) and result(b).get("ok") is True, str(result(b)))
+    chk("reports -> dismissed", count(db, "SELECT count(*) FROM listing_report WHERE listing_id=? AND status='dismissed'", (lid,)) == 1)
+    chk("listing unchanged (still active) after dismiss", status_of(db, lid) == "active", status_of(db, lid))
+
+    # #2: the same reporter can re-flag after their prior report was resolved
+    s, b = req("POST", "/rpc/report_listing", {"listing_id": lid, "reason": "scam"}, token=r1)
+    chk("re-report after resolution accepted", result(b) and result(b).get("ok") is True, str(result(b)))
+    chk("a fresh OPEN report exists (reopen)",
+        count(db, "SELECT count(*) FROM listing_report WHERE listing_id=? AND status='open'", (lid,)) == 1)
+
+# #3 / #5: takedown records prior status; reinstate restores it (never resurrects sold)
+def sold_flow(port, db):
+    req = mkreq(port)
+    print(f"== takedown preserves prior status; reinstate restores sold -> 127.0.0.1:{port} ==")
+    atok = login(req, ADMIN); stok = login(req, SELLER)
+    s, lid = post_listing(req, stok, "Sold item")
+    chk("post -> 201", s == 201 and bool(lid), f"status={s}")
+    set_status(db, lid, "sold")               # seller marked it sold (owner PATCH path is incidental here)
+
+    s, b = req("POST", "/rpc/takedown_listing", {"listing_id": lid}, token=atok)
+    chk("takedown of a sold listing -> removed", result(b) and result(b).get("status") == "removed", str(result(b)))
+    chk("prior 'sold' recorded in pre_moderation_status", col(db, lid, "pre_moderation_status") == "sold",
+        col(db, lid, "pre_moderation_status"))
+
+    s, b = req("POST", "/rpc/reinstate_listing", {"listing_id": lid}, token=atok)
+    chk("reinstate restores 'sold' (NOT resurrected to active)", result(b) and result(b).get("status") == "sold", str(result(b)))
+    chk("db status = sold", status_of(db, lid) == "sold", status_of(db, lid))
+    s, b = req("POST", "/rpc/listing", {"id": lid})
+    chk("restored-sold not public", s != 200, f"status={s}")
+
+    # double takedown is a silent no-op (idempotent) — no error
+    set_status(db, lid, "removed")
+    s, b = req("POST", "/rpc/takedown_listing", {"listing_id": lid}, token=atok)
+    chk("double takedown is a no-op ok", result(b) and result(b).get("status") == "removed", str(result(b)))
+
+    # reinstate is a no-op unless under a hold
+    set_status(db, lid, "active")
+    s, b = req("POST", "/rpc/reinstate_listing", {"listing_id": lid}, token=atok)
+    chk("reinstate of a non-held listing is rejected", result(b) and result(b).get("ok") is False, str(result(b)))
+
+# #9 (single account can't trip auto-hide) + #1 (seller can't self-un-hide) + #4 (dismiss un-hides)
 def autohide_flow(port, db):
     req = mkreq(port)
-    print(f"== auto-hide flow (CLS_AUTO_HIDE_REPORTS=2) -> 127.0.0.1:{port} ==")
+    print(f"== auto-hide (CLS_AUTO_HIDE_REPORTS=2): anti-brigade + self-un-hide + dismiss un-hide -> 127.0.0.1:{port} ==")
     atok = login(req, ADMIN); stok = login(req, SELLER); r1 = login(req, R1); r2 = login(req, R2)
     s, lid = post_listing(req, stok, "Suzuki Swift")
     chk("post -> 201", s == 201 and bool(lid), f"status={s}")
 
+    # #9: one account reporting twice must NOT reach the threshold (dedupe holds)
     req("POST", "/rpc/report_listing", {"listing_id": lid, "reason": "spam"}, token=r1)
-    chk("1 report: still active", status_of(db, lid) == "active", status_of(db, lid))
+    req("POST", "/rpc/report_listing", {"listing_id": lid, "reason": "spam"}, token=r1)
+    chk("single account (2 reports) does NOT auto-hide", status_of(db, lid) == "active", status_of(db, lid))
 
     req("POST", "/rpc/report_listing", {"listing_id": lid, "reason": "scam"}, token=r2)
-    chk("2nd distinct report auto-hides (pending)", status_of(db, lid) == "pending", status_of(db, lid))
-
+    chk("2nd DISTINCT reporter auto-hides (pending)", status_of(db, lid) == "pending", status_of(db, lid))
+    chk("pre_moderation_status recorded 'active'", col(db, lid, "pre_moderation_status") == "active", col(db, lid, "pre_moderation_status"))
     s, b = req("POST", "/rpc/listing", {"id": lid})
     chk("auto-hidden not public (400)", s != 200, f"status={s}")
 
+    # #1: seller cannot self-un-hide a 'pending' hold via renew_listing
+    s, b = req("POST", "/rpc/renew_listing", {"listing_id": lid}, token=stok)
+    chk("renew_listing refused on 'pending' (no self-un-hide)", s != 200 or not result(b), f"status={s}")
+    chk("still pending after renew attempt", status_of(db, lid) == "pending", status_of(db, lid))
+
     req("POST", "/rpc/reinstate_listing", {"listing_id": lid}, token=atok)
+    chk("admin reinstate -> active", status_of(db, lid) == "active", status_of(db, lid))
     s, b = req("POST", "/rpc/listing", {"id": lid})
-    chk("admin reinstate restores it", s == 200 and result(b) and result(b).get("listing"), f"status={s}")
+    chk("public after reinstate", s == 200 and result(b) and result(b).get("listing"), f"status={s}")
+
+    # #4: re-hide, then dismiss must UN-HIDE (not strand it in 'pending')
+    req("POST", "/rpc/report_listing", {"listing_id": lid, "reason": "spam"}, token=r1)
+    req("POST", "/rpc/report_listing", {"listing_id": lid, "reason": "scam"}, token=r2)
+    chk("re-hidden to pending", status_of(db, lid) == "pending", status_of(db, lid))
+    req("POST", "/rpc/dismiss_reports", {"listing_id": lid}, token=atok)
+    chk("dismiss un-hides the auto-hidden listing (#4)", status_of(db, lid) == "active", status_of(db, lid))
 
 def run(extra_env, fn):
     d = tempfile.mkdtemp(prefix="cls-mod-")
@@ -209,6 +295,8 @@ def main():
         print("usage: test_moderation.py <cellar-binary>", file=sys.stderr); return 2
     BIN = sys.argv[1]
     run(None, core_flow)
+    run(None, dismiss_flow)
+    run(None, sold_flow)
     run({"CLS_AUTO_HIDE_REPORTS": "2"}, autohide_flow)
     print(f"\n{'ALL PASS' if fail == 0 else f'FAILED ({fail})'}  ({ok} ok)")
     return 1 if fail else 0
