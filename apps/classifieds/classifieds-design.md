@@ -95,6 +95,35 @@ revenue, far less engine risk. See §5.7 / §7.
 company pages become the same config-driven Tier-1 storefronts over a global catalog, so the
 sandbox/scoped-catalog primitive is never needed there either.
 
+## Admin panel / management surface — *(planned; thinking-through TBD)*
+
+> Noted 2026-07-03. Management console for jarchy **and** the B2B app (they share the catalog, so
+> **one admin panel serves both**). Key finding: **most of the backend already exists** — the panel is
+> largely a *frontend*, not engine work.
+
+**Already admin-manageable today (generic `/api` CRUD, `create/update/delete` = admin-only):**
+`category`, `category_attribute` (the facet schema), `geo_oblast/geo_city/geo_district`. So adding a
+category/attribute/geo is `POST /api/<table>` as admin **right now** — the data surface is live.
+(tandem also already has its admin surface: `inquiries` / `set_inquiry_status` / `blocklist_add`.)
+
+**Where the panel UI can live (all supported by cellar):**
+1. **cellar's built-in admin UI** — the generic table console cellar already ships (fallback when a
+   bundle has no `public/`). Zero build; the **interim** for raw category adds today. Not workflow-aware.
+2. **Role-gated `/admin`** section of the main app, **or**
+3. **A separate admin bundle** (`admin.svngn.com`) — cleanest; **one panel for jarchy + b2b**. ← recommended.
+
+**Backend to *add* for a real panel (incremental admin rpcs — engine/app side, when we build it):**
+- **Moderation** (cross-owner → dedicated rpcs, not CRUD): `takedown_listing`, `ban_user`, flagged-review queue.
+- **Seller/company**: `verify_seller`; for b2b, company verification + membership management.
+- **Taxonomy convenience**: category reorder + bulk import/seed (raw CRUD works; bulk is nicer as an rpc).
+- **Dashboard**: stats rpcs off EventSink (`listing_viewed`, inquiries, …).
+- Plus the already-scoped **`site_setting`** (editable contact/site config) and **public seller-page** rpcs.
+
+**Recommendation:** a single **admin SPA** (jarchy + b2b) served as its own **role-gated bundle**,
+driving the existing admin CRUD + the workflow rpcs above; use the **built-in admin UI as the interim**.
+Next step when resumed: inventory exactly which admin rpcs exist vs. need building + spec the panel's
+data contract (once, for both apps).
+
 ## 5. Component gaps — what we need to build (ranked)
 
 > Ranked by how central each is to *this* product (discovery + connection), not eBay's.
