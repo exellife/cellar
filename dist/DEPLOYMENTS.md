@@ -81,6 +81,21 @@ personal page + web pages). Oracle A1 is dev/demo.
     run as the `cellar` user (set `CEL_PORT` to a free port so the write-lock guard passes — prod is on :443).
     **Redeploy site:** `nuxt generate` → rsync `.output/public/` to the box → atomic swap into the
     bundle's `public/` (chown `cellar:cellar`); prior `public` kept as `public.old` for rollback.
+  - `jarchy.svngn.com` — **classifieds** (the `apps/classifieds` bundle: catalog + search/facets +
+    listings + media + chat + favorites/saved-searches/notifications) **+ the Vite SPA client**
+    (`frontend-apps/apps/classifieds`, same-origin). **LIVE (2026-07-03).** Provisioned with the real
+    KG seed (`seed.sql`: 14 categories + geo tree) — **not** `seed_fake.py`, and **not** the dev
+    seller/buyer test users. Admin `admin@jarchy.svngn.com` (pw in the vault, `app_logins`). Recurring
+    jobs enqueued: `expire_listings` (86400s) + `match_saved_searches` (900s) — driven by the process
+    worker (`CEL_JOBS_INTERVAL=30`, on by default). Media/blobs at `<app>/media` (per-app disk). Inherits
+    process-wide SES + Google OAuth. No DNS/cert work (wildcard covers it); lazy app-open, no restart.
+    **Deploy backend:** `cellar provision jarchy.svngn.com <admin> <pw>` → `sqlite3 data.db < schema.sql`
+    → `< seed.sql` → copy `hooks.lua`/`policies.json` → `mkdir media`, run as the `cellar` user.
+    **Deploy client:** `pnpm build` (client id defaults to the real one in `src/lib/config.ts`, `.env.local`
+    is `VITE_MOCK=false`) → rsync `dist/` → atomic swap into `public/`.
+    - **Launch follow-ups:** (1) add `jarchy.svngn.com` as an **Authorized JavaScript origin** on the Google
+      OAuth client, else the Google button fails (email/password unaffected). (2) **No report/takedown yet**
+      — a public UGC site should get `report` + admin takedown before broad promotion (backend gap).
 - **Footgun noted:** `cellar --version` is not a recognized flag → cellar ignores it and **starts a server
   on the default port 8080**. Don't probe the binary that way (leaves a stray root server); use it only to run.
 - **Deferred:** jarchy (classifieds) domain placement + migration from srvlab; real personal page.
