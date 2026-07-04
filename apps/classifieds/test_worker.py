@@ -52,6 +52,7 @@ def main():
         env = dict(os.environ, CEL_PORT=str(port), CEL_DATA_DB=db, CEL_LOG_LEVEL="warn",
                    CEL_POLICY_FILE=os.path.join(d, "policies.json"),
                    CEL_JOBS_INTERVAL="1",                  # autonomous worker, 1s tick
+                   CLS_REQUIRE_VERIFIED="0",               # seeded seller is unverified; not testing the gate
                    CEL_AUTH_RATELIMIT="0", CEL_API_RATELIMIT="0",
                    CEL_SEED_USERS=f"{ADMIN[0]}:{ADMIN[1]}:admin;{SELLER[0]}:{SELLER[1]}:user")
         log = open(os.path.join(d, "server.log"), "w")

@@ -103,7 +103,7 @@ def main():
         port = free_port()
         env = dict(os.environ, CEL_PORT=str(port), CEL_DATA_DB=db, CEL_LOG_LEVEL="warn",
                    CEL_POLICY_FILE=os.path.join(d, "policies.json"),
-                   CLS_REQUIRE_VERIFIED_CONTACT="0",   # seeded users are unverified; gate tested separately
+                   CLS_REQUIRE_VERIFIED="0",   # seeded users are unverified; gate tested separately
                    CEL_AUTH_RATELIMIT="0", CEL_API_RATELIMIT="0",
                    CEL_SEED_USERS=(f"{ADMIN[0]}:{ADMIN[1]}:admin;{BUYER[0]}:{BUYER[1]}:user;"
                                    f"{SELLER[0]}:{SELLER[1]}:user;{STRANGER[0]}:{STRANGER[1]}:user"))

@@ -86,7 +86,7 @@ for uc in seller buyer; do
 done
 
 # Mark the dev seller+buyer email-verified so the (default-on) contact gate lets
-# them reveal/chat out of the box; a NEW self-signup still exercises the gate +
+# them post/reveal/chat out of the box; a NEW self-signup still exercises the gate +
 # the 6-digit code flow (code lands in the mock-mail capture above).
 sqlite3 "$DB" "UPDATE cel_users SET email_verified_at = COALESCE(email_verified_at, strftime('%s','now')) \
   WHERE email IN ('seller@classifieds.local','buyer@classifieds.local');" 2>/dev/null || true
@@ -106,7 +106,7 @@ cat <<EOF
   Posting a listing needs a logged-in user (see policies.json). Ctrl-C to stop.
   Logs: /tmp/classifieds.log
   Dev mail sink: ${MAIL_CAP:-<real SMTP configured>}  (6-digit verify codes land here)
-  Contact gate: reveal/chat require a verified email (dev seller/buyer are pre-verified);
+  Verify gate: post/reveal/chat require a verified email (dev seller/buyer are pre-verified);
     a new signup auto-logs-in + gets a code in the sink — read the latest:
     grep -oE 'Jarchy: [0-9]{6}' "${MAIL_CAP:-…}" | tail -1
 

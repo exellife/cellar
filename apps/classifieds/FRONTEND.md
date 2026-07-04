@@ -279,6 +279,22 @@ listing detail + an **admin moderation queue** in the admin surface.
 - Optional server auto-hide (`CLS_AUTO_HIDE_REPORTS` distinct reporters → listing `pending`, hidden but
   reversible) is **off by default**; if enabled, such listings show up with `listing_status:"pending"`.
 
+## Email-verification gate *(participate = verified)*
+
+A verified email is required to **post a listing**, **reveal a seller's contact**, or **start a chat**.
+Browsing/search stays fully open. Admins are exempt. (Server-enforced in the bundle; env
+`CLS_REQUIRE_VERIFIED`, default on.) The signal is the stable string **`email_not_verified`** — key on
+it to open the verify prompt instead of showing a generic error. Two response shapes, by path:
+
+- **Posting** (`POST /api/listings`, blocked in the write hook) → **HTTP 400**, body
+  `{ "status":"error", "message":"email_not_verified" }`.
+- **Contact rpcs** (`reveal_contact`, `start_conversation`) → **HTTP 200**, body
+  `{ "result": { "ok":false, "error":"email_not_verified" } }`.
+
+So branch like: `const gate = res.status === 400 ? body.message : body.result?.error; if (gate === 'email_not_verified') openVerifyPrompt()`. The verify flow itself (6-digit code) is in
+`docs/frontend-guide.md` → *Email verification*. New signups can browse immediately; the prompt appears
+the first time they try to post or contact.
+
 ## Security model the client should assume
 
 - Treat the server as the source of truth: it enforces validation, ownership,

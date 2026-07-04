@@ -281,25 +281,37 @@ def autohide_flow(port, db):
     req("POST", "/rpc/dismiss_reports", {"listing_id": lid}, token=atok)
     chk("dismiss un-hides the auto-hidden listing (#4)", status_of(db, lid) == "active", status_of(db, lid))
 
-# item 7: email_verified gate on contact actions (reveal + start chat); posting stays open
+# item 7: email_verified gate — verified email required to POST, reveal, or chat (browsing open)
 def contact_gate_flow(port, db):
     req = mkreq(port)
-    print(f"== contact gate: verified email required to reveal/chat (posting open) -> 127.0.0.1:{port} ==")
+    print(f"== verify gate: post + reveal + chat require a verified email -> 127.0.0.1:{port} ==")
     stok = login(req, SELLER); r1 = login(req, R1)
+
+    car = {"category_id": "cat-cars", "city_id": "ci-bishkek", "attributes": {"make": "Toyota", "year": 2018}}
+
+    # unverified user cannot POST (before() gate -> 400 with the stable code)
+    s, b = req("POST", "/api/listings", dict(car, title="Nope"), token=r1)
+    chk("unverified user cannot post -> 400 email_not_verified",
+        s == 400 and "email_not_verified" in (b or {}).get("message", ""), f"status={s} {b}")
+
+    # verify the seller so they can post the fixture listing
+    verify_user(db, SELLER[0])
     s, lid = post_listing(req, stok, "Gated-contact item")
-    chk("posting is NOT gated (unverified seller posts) -> 201", s == 201 and bool(lid), f"status={s}")
+    chk("verified seller can post -> 201", s == 201 and bool(lid), f"status={s}")
     req("POST", "/rpc/set_listing_contact", {"listing_id": lid, "phone": "+996700000000"}, token=stok)
 
-    # R1 is unverified -> both contact actions return the stable gate signal
+    # unverified R1 -> both contact actions return the stable gate signal
     s, b = req("POST", "/rpc/reveal_contact", {"listing_id": lid}, token=r1)
     chk("unverified reveal -> email_not_verified",
-        result(b) and result(b).get("ok") is False and result(b).get("error") == "email_not_verified", str(result(b)))
+        result(b) and result(b).get("error") == "email_not_verified", str(result(b)))
     s, b = req("POST", "/rpc/start_conversation", {"listing_id": lid}, token=r1)
     chk("unverified start_conversation -> email_not_verified",
         result(b) and result(b).get("error") == "email_not_verified", str(result(b)))
 
-    # verify R1's email -> reveal now returns the phone
+    # verify R1 -> can now POST and reveal
     verify_user(db, R1[0])
+    s, _ = req("POST", "/api/listings", dict(car, title="Now allowed"), token=r1)
+    chk("verified user can now post -> 201", s == 201, f"status={s}")
     s, b = req("POST", "/rpc/reveal_contact", {"listing_id": lid}, token=r1)
     chk("verified reveal returns the phone", result(b) and result(b).get("phone") == "+996700000000", str(result(b)))
 
@@ -321,11 +333,12 @@ def main():
     if len(sys.argv) < 2:
         print("usage: test_moderation.py <cellar-binary>", file=sys.stderr); return 2
     BIN = sys.argv[1]
-    run(None, core_flow)
-    run(None, dismiss_flow)
-    run(None, sold_flow)
-    run(None, contact_gate_flow)   # gate on by default
-    run({"CLS_AUTO_HIDE_REPORTS": "2"}, autohide_flow)
+    # moderation flows post with unverified seeded users -> run them with the gate off
+    run({"CLS_REQUIRE_VERIFIED": "0"}, core_flow)
+    run({"CLS_REQUIRE_VERIFIED": "0"}, dismiss_flow)
+    run({"CLS_REQUIRE_VERIFIED": "0"}, sold_flow)
+    run(None, contact_gate_flow)   # gate ON (default): exercises the verify gate on post + contact
+    run({"CLS_AUTO_HIDE_REPORTS": "2", "CLS_REQUIRE_VERIFIED": "0"}, autohide_flow)
     print(f"\n{'ALL PASS' if fail == 0 else f'FAILED ({fail})'}  ({ok} ok)")
     return 1 if fail else 0
 

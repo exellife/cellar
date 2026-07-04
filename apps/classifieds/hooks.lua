@@ -169,17 +169,24 @@ local function trust_mult(user_id)
   return 1
 end
 
--- Email-verified gate (item 7): contacting a seller (phone reveal / start chat)
--- requires a verified email — the higher-abuse actions (anti number-scraping /
--- spam-DM). Posting + browsing stay open. Admins exempt. Returns a stable,
--- distinguishable signal the client keys on to open the verify prompt.
--- Env-tunable (CLS_REQUIRE_VERIFIED_CONTACT=0 turns the gate off; default on).
-local REQUIRE_VERIFIED_CONTACT = (os.getenv('CLS_REQUIRE_VERIFIED_CONTACT') or '1') ~= '0'
+-- Email-verified gate (item 7): a verified email is required to PARTICIPATE —
+-- post a listing, reveal a seller's contact, or start a chat. Browsing stays fully
+-- open. Admins exempt. The client keys on the stable 'email_not_verified' signal to
+-- open the verify prompt. Env-tunable (CLS_REQUIRE_VERIFIED=0 turns the gate off).
+local REQUIRE_VERIFIED = (os.getenv('CLS_REQUIRE_VERIFIED') or '1') ~= '0'
+
+-- Predicate: may `who` act? (verified email, or admin, or the gate is disabled.)
+local function is_verified(who)
+  if not REQUIRE_VERIFIED then return true end
+  if who and who.role == 'admin' then return true end
+  local u = who and cellar.query('SELECT email_verified_at FROM cel_users WHERE id = ?', { who.user_id })[1]
+  return u ~= nil and u.email_verified_at ~= nil
+end
+
+-- rpc form: the stable gate error table (for reveal_contact / start_conversation),
+-- or nil to proceed.
 local function require_verified(who)
-  if not REQUIRE_VERIFIED_CONTACT then return nil end
-  if who.role == 'admin' then return nil end
-  local u = cellar.query('SELECT email_verified_at FROM cel_users WHERE id = ?', { who.user_id })[1]
-  if u and u.email_verified_at ~= nil then return nil end
+  if is_verified(who) then return nil end
   return { ok = false, error = 'email_not_verified' }
 end
 
@@ -205,6 +212,7 @@ function before(op, tbl, input, who)
   if tbl ~= 'listings' then return true end
 
   if op == 'create' then
+    if not is_verified(who) then return false, 'email_not_verified' end   -- item 7: verified email to post
     if over_post_limit(who) then return false, 'daily posting limit reached — try again later' end
     input.seller_id  = who.user_id            -- server-owned (anti-spoof); id via column DEFAULT
     input.created_at = now_iso()              -- server-owned (drives the "newest" sort)

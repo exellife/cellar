@@ -58,14 +58,15 @@ _(no open items)_
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
 
-- **Item 7 — gate contact actions on `email_verified`** — SHIPPED `93168de` (product decision:
-  **contact-reveal only**, posting stays open). `reveal_contact` + `start_conversation` require a
-  verified email; an unverified caller gets a stable **`{ ok:false, error:"email_not_verified" }`** the
-  client keys on to open the verify prompt. Admins exempt. Bundle-side (`require_verified` in
-  `apps/classifieds/hooks.lua`), **env-tunable `CLS_REQUIRE_VERIFIED_CONTACT`** (default on; `=0` off).
-  Listing-create is deliberately NOT gated (avoids signup→post friction on the fresh marketplace).
-  Test: `test_moderation.py` `contact_gate_flow` (unverified blocked on reveal + chat, posting open,
-  verified reveal works). **Live status: deployed to the LOCAL :8080 instance only; jarchy prod pending.**
+- **Item 7 — gate participation on `email_verified`** — SHIPPED `93168de`, widened (product decision
+  updated: **a verified email is required to POST, reveal a contact, or start a chat**; browsing stays
+  open). Gated in the write hook (`before(create, listings)`) + `reveal_contact` + `start_conversation`;
+  admins exempt. Stable signal **`email_not_verified`** in two shapes the client keys on: posting →
+  **400** `{message:"email_not_verified"}`; contact rpcs → **200** `{result:{ok:false,error:"email_not_verified"}}`
+  (documented in `apps/classifieds/FRONTEND.md`). Bundle-side (`require_verified`/`is_verified` in
+  `apps/classifieds/hooks.lua`), **env-tunable `CLS_REQUIRE_VERIFIED`** (default on; `=0` off). Test:
+  `test_moderation.py` `contact_gate_flow` (unverified blocked on post + reveal + chat; verified can do
+  all three). **Live status: deployed to the LOCAL :8080 instance only; jarchy prod pending.**
 
 - **Email verification — 6-digit code (soft, non-blocking)** — SHIPPED `45ed373`. Answers to the two
   questions first: **(a)** SES **is** enabled for classifieds (jarchy inherits process-wide
