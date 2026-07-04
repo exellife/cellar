@@ -24,6 +24,17 @@ void cel_mailer_init(void);
 /* True when a usable SMTP config is present (URL + From). */
 bool cel_mail_enabled(void);
 
+/* Optional per-recipient outbound throttle (anti mail-bomb). main.c creates the
+ * limiter and installs it here; NULL/unset disables it (all mail allowed). The key
+ * is a canonicalized recipient (lowercased, +tag stripped, gmail dots removed) so
+ * trivial aliases of one inbox share a bucket. */
+typedef struct cel_ratelimit cel_ratelimit_t;
+void cel_mail_set_ratelimit(cel_ratelimit_t *rl);
+
+/* True if another email may be sent to `to` right now (canonicalized + rate-checked);
+ * true when the throttle is disabled. Callers of the auth-mail paths gate on this. */
+bool cel_mail_recipient_allowed(const char *to);
+
 /* Send a plain-text/UTF-8 email to a single recipient using the process-wide From
  * (CEL_MAIL_FROM / _FROM_NAME). Returns 0 on success, -1 on failure or when
  * disabled. `to`/`subject` are rejected if they contain CR/LF (header-injection). */

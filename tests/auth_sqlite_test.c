@@ -212,6 +212,19 @@ int main(void) {
         CHECK(cel_auth_create_email_code(first_id, c2, sizeof c2, e2, sizeof e2) == CEL_AUTH_LOCKED,
               "resend within cooldown -> LOCKED");
 
+        /* lifetime send cap: force sends to the cap + clear the cooldown -> still LOCKED
+         * (the code itself is untouched, so the verify below still works). */
+        {
+            sqlite3 *mc = app_db_conn_acquire(app);
+            sqlite3_exec(mc, "UPDATE cel_email_verifications SET sends=10, last_sent_at=0 "
+                             "WHERE user_id IN (SELECT id FROM cel_users WHERE email='a@x.com')",
+                         NULL, NULL, NULL);
+            app_db_conn_release(app, mc);
+        }
+        char c5[8], e5[256];
+        CHECK(cel_auth_create_email_code(first_id, c5, sizeof c5, e5, sizeof e5) == CEL_AUTH_LOCKED,
+              "lifetime send cap -> LOCKED");
+
         /* a wrong code (guaranteed != code) is rejected; the right code verifies */
         char wrong[8]; snprintf(wrong, sizeof wrong, "%s", code);
         wrong[0] = (code[0] == '9') ? '0' : (char)(code[0] + 1);

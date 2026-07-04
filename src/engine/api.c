@@ -1519,9 +1519,10 @@ static void send_auth_email(const char *to, const char *kind,
 static void send_email_verification(const char *user_id) {
     if (!cel_mail_enabled()) return;
     char code[8], to[256];   /* 6 digits + NUL */
-    /* No-op on already-verified (CONFLICT), unknown user, or resend cooldown (LOCKED). */
+    /* No-op on already-verified (CONFLICT), unknown user, or resend cooldown/send-cap (LOCKED). */
     if (cel_auth_create_email_code(user_id, code, sizeof code, to, sizeof to) != CEL_AUTH_OK)
         return;
+    if (!cel_mail_recipient_allowed(to)) return;   /* per-recipient anti-mail-bomb throttle */
     char body[512];
     snprintf(body, sizeof body,
         "Your verification code is: %s\r\n\r\nEnter it to confirm your email. "
@@ -1565,7 +1566,7 @@ cel_api_result_t cel_api_password_forgot(const cJSON *req) {
 
     char token[129];
     if (cel_auth_create_password_reset(email->valuestring, token, sizeof token) == CEL_AUTH_OK
-        && cel_mail_enabled()) {
+        && cel_mail_enabled() && cel_mail_recipient_allowed(email->valuestring)) {
         const char *app = getenv("CEL_APP_URL");
         char url[512] = {0}, body[1024];
         if (app && *app) {
@@ -2019,12 +2020,28 @@ int cel_api_authorize_subscription(const cel_identity_t *who, const cJSON *req,
     return 200;
 }
 
+/* Minimal email syntax sanity for registration: non-empty local part, exactly one
+ * '@', a non-empty domain, sane length, and no whitespace/control bytes (rejects the
+ * CR/LF that would enable header injection). Deliberately NOT requiring a dotted
+ * domain — the engine serves apps that may use intranet/localhost addresses; the
+ * real mail-abuse defense is the per-recipient outbound throttle. Just rejects garbage. */
+static bool valid_email_syntax(const char *e) {
+    size_t n = strlen(e);
+    if (n < 3 || n > 254) return false;
+    const char *at = strchr(e, '@');
+    if (!at || at == e || !at[1] || strchr(at + 1, '@')) return false;   /* one @, non-empty local+domain */
+    for (const char *p = e; *p; p++) { unsigned char c = (unsigned char)*p; if (c <= 0x20 || c == 0x7f) return false; }
+    return true;
+}
+
 cel_api_result_t cel_api_register(const cJSON *req) {
     const cJSON *email  = cJSON_GetObjectItemCaseSensitive(req, "email");
     const cJSON *pass   = cJSON_GetObjectItemCaseSensitive(req, "password");
     const cJSON *role_j = cJSON_GetObjectItemCaseSensitive(req, "role");
     if (!cJSON_IsString(email) || !cJSON_IsString(pass) || !email->valuestring[0])
         return result_error(400, "email and password required");
+    if (!valid_email_syntax(email->valuestring))
+        return result_error(400, "invalid email address");
     if (strlen(pass->valuestring) < MIN_PASSWORD_LEN)
         return result_error(400, "password too short (min 8 characters)");
     if (strlen(pass->valuestring) > MAX_PASSWORD_LEN)

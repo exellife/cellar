@@ -65,6 +65,7 @@ static opcode_dispatcher_t *g_dispatcher = NULL;
 static volatile sig_atomic_t g_running   = 1;
 static cel_ratelimit_t     *g_auth_rl    = NULL;   /* auth-endpoint throttle */
 static cel_ratelimit_t     *g_api_rl     = NULL;   /* data-API throttle */
+static cel_ratelimit_t     *g_mail_rl    = NULL;   /* per-recipient outbound-mail throttle */
 
 /* ---- response helpers ------------------------------------------------------ */
 
@@ -972,6 +973,15 @@ int main(int argc, char **argv) {
         if (g_api_rl) LOG_INFO("api rate limit: %d req / %ds per caller", api_n, api_w);
 
         cel_http_set_rate_limiters(g_auth_rl, g_api_rl);
+
+        /* Per-recipient outbound-mail throttle (anti mail-bomb via register/resend).
+         * CEL_MAIL_RATELIMIT="N/W" caps verification/reset emails per canonical
+         * recipient (default 3/3600 = 3 per hour). "0" disables. */
+        int mail_n = 3, mail_w = 3600;
+        sscanf(env_str("CEL_MAIL_RATELIMIT", "3/3600"), "%d/%d", &mail_n, &mail_w);
+        g_mail_rl = cel_ratelimit_create(mail_n, mail_w);
+        if (g_mail_rl) LOG_INFO("mail rate limit: %d emails / %ds per recipient", mail_n, mail_w);
+        cel_mail_set_ratelimit(g_mail_rl);
     }
     /* Per-account login lockout (opt-in). CEL_AUTH_LOCKOUT="N/W": after N failed
      * password logins within W seconds, lock the account for W seconds. Unset/"0"
@@ -1125,6 +1135,7 @@ int main(int argc, char **argv) {
     opcode_dispatcher_destroy(g_dispatcher);
     cel_apps_shutdown();          /* frees the per-app catalogs */
     cel_session_cache_cleanup();
+    cel_ratelimit_destroy(g_mail_rl);
     cel_ratelimit_destroy(g_auth_rl);
     cel_ratelimit_destroy(g_api_rl);
     cel_oauth_cleanup();

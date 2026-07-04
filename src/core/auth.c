@@ -879,6 +879,7 @@ int cel_auth_push_list(const char *user_id, cel_push_cb cb, void *ctx) {
 #define EMAIL_CODE_DIGITS         6
 #define EMAIL_CODE_MAX_ATTEMPTS   5   /* wrong-code guesses before the code is dead */
 #define EMAIL_RESEND_COOLDOWN    60   /* server-side min seconds between code sends */
+#define EMAIL_MAX_SENDS          10   /* lifetime verification emails per pending code cycle */
 
 int cel_auth_create_email_code(const char *user_id,
                                char *out_code, size_t code_size,
@@ -908,15 +909,23 @@ int cel_auth_create_email_code(const char *user_id,
     }
     if (already) { rc = CEL_AUTH_CONFLICT; goto out; }   /* nothing to do */
 
-    /* Server-side resend cooldown: refuse if a code was sent very recently. */
+    /* Server-side throttle: refuse a resend within the cooldown window, OR once the
+     * per-pending-verification lifetime send cap is hit — bounds email-bombing via a
+     * single account's resend loop (the per-recipient mail throttle bounds the
+     * many-accounts path). Both reset only when the code is consumed (row deleted). */
     {
         const char *p[1] = { user_id };
-        char lbuf[24] = {0};
-        if (cel_db_one_text(c, "SELECT last_sent_at FROM cel_email_verifications WHERE user_id=?1",
-                            p, 1, lbuf, sizeof lbuf) == 1 && lbuf[0]) {
-            long last = strtol(lbuf, NULL, 10);
-            if (last && cel_now_epoch() - last < EMAIL_RESEND_COOLDOWN) { rc = CEL_AUTH_LOCKED; goto out; }
+        sqlite3_stmt *st;
+        long last = 0; int sends = 0;
+        if (cel_db_prep(c, "SELECT last_sent_at, sends FROM cel_email_verifications WHERE user_id=?1",
+                        p, 1, &st) != SQLITE_OK) goto out;
+        if (sqlite3_step(st) == SQLITE_ROW) {
+            last  = (long)sqlite3_column_int64(st, 0);
+            sends = sqlite3_column_int(st, 1);
         }
+        sqlite3_finalize(st);
+        if (last && cel_now_epoch() - last < EMAIL_RESEND_COOLDOWN) { rc = CEL_AUTH_LOCKED; goto out; }
+        if (sends >= EMAIL_MAX_SENDS) { rc = CEL_AUTH_LOCKED; goto out; }
     }
 
     if (cel_random_code(out_code, code_size, EMAIL_CODE_DIGITS) != 0) goto out;
@@ -928,10 +937,11 @@ int cel_auth_create_email_code(const char *user_id,
         /* One pending code per user: replace any prior one and reset the attempt count. */
         const char *ins[4] = { user_id, hbuf, exp, now };
         rc = cel_db_exec(c,
-            "INSERT INTO cel_email_verifications(user_id, code_hash, expires_at, attempts, last_sent_at) "
-            "VALUES(?1, ?2, ?3, 0, ?4) "
+            "INSERT INTO cel_email_verifications(user_id, code_hash, expires_at, attempts, last_sent_at, sends) "
+            "VALUES(?1, ?2, ?3, 0, ?4, 1) "
             "ON CONFLICT(user_id) DO UPDATE SET code_hash=excluded.code_hash, "
-            "expires_at=excluded.expires_at, attempts=0, last_sent_at=excluded.last_sent_at",
+            "expires_at=excluded.expires_at, attempts=0, last_sent_at=excluded.last_sent_at, "
+            "sends=sends+1",
             ins, 4) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
     }
 out:

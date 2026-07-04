@@ -114,7 +114,13 @@ static cel_app_t *open_into_cache(const char *host, const char *db_path) {
     if (!db) return NULL;
     sqlite3 *c = app_db_conn_acquire(db);
     if (!c) return NULL;
-    cel_auth_schema_apply(c);
+    /* Migration is atomic (all-or-nothing); a failure leaves the db at its prior
+     * consistent version. Refuse to open rather than serve a half-migrated schema. */
+    if (cel_auth_schema_apply(c) != 0) {
+        LOG_ERROR("apps: auth schema migration failed for '%s' — refusing to open", host);
+        app_db_conn_release(db, c);
+        return NULL;
+    }
     cel_catalog_t *cat = cel_catalog_build_sqlite(c);
     /* If any table opted into sync (carries rev + deleted), ensure this app's
      * monotonic rev source exists. _sync_seq is _%-prefixed → not in the catalog. */

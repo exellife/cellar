@@ -1,9 +1,11 @@
 #include "mailer.h"
 #include "password.h"   /* cel_random_token_hex (Message-ID) */
+#include "rate_limit.h"
 #include "logger.h"
 
 #include <curl/curl.h>
 
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,41 @@ static char g_pass[256];
 static char g_from[256];
 static char g_from_name[128];
 static int  g_tls = TLS_REQUIRE;
+
+/* Optional per-recipient outbound throttle (set by main.c). Bounds how many
+ * verification/reset emails any one mailbox can be sent — an anti-abuse guard so a
+ * scripted register/resend loop can't mail-bomb a victim through our sending domain. */
+static cel_ratelimit_t *g_recipient_rl = NULL;
+
+void cel_mail_set_ratelimit(cel_ratelimit_t *rl) { g_recipient_rl = rl; }
+
+/* Canonicalize a recipient for throttling so trivial aliases collapse to one key:
+ * lowercase; drop a "+tag" from the local part; for gmail/googlemail also drop dots
+ * (they alias to the same inbox) and fold to gmail.com. Unknown domains → lowercase. */
+static void canon_recipient(const char *to, char *out, size_t cap) {
+    const char *at = strchr(to, '@');
+    if (!at || at == to || !at[1]) {           /* no usable @ → just lowercase */
+        size_t i = 0; for (; to[i] && i + 1 < cap; i++) out[i] = (char)tolower((unsigned char)to[i]);
+        out[i] = 0; return;
+    }
+    char local[160] = {0}, domain[160] = {0};
+    size_t ll = (size_t)(at - to); if (ll >= sizeof local) ll = sizeof local - 1;
+    for (size_t i = 0; i < ll; i++) local[i] = (char)tolower((unsigned char)to[i]);
+    for (size_t i = 0; at[1 + i] && i + 1 < sizeof domain; i++) domain[i] = (char)tolower((unsigned char)at[1 + i]);
+    char *plus = strchr(local, '+'); if (plus) *plus = 0;   /* strip +tag */
+    if (strcmp(domain, "gmail.com") == 0 || strcmp(domain, "googlemail.com") == 0) {
+        char *r = local, *w = local; for (; *r; r++) if (*r != '.') *w++ = *r; *w = 0;
+        snprintf(out, cap, "%s@gmail.com", local);
+    } else {
+        snprintf(out, cap, "%s@%s", local, domain);
+    }
+}
+
+bool cel_mail_recipient_allowed(const char *to) {
+    if (!g_recipient_rl || !to || !*to) return true;   /* disabled → allow */
+    char key[340]; canon_recipient(to, key, sizeof key);
+    return cel_ratelimit_allow(g_recipient_rl, key);
+}
 
 static void setenv_str(char *dst, size_t cap, const char *name) {
     const char *v = getenv(name);

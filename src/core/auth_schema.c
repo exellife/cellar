@@ -92,6 +92,7 @@ static const char *AUTH_SCHEMA =
     "  expires_at   INTEGER NOT NULL,"
     "  attempts     INTEGER NOT NULL DEFAULT 0,"
     "  last_sent_at INTEGER NOT NULL DEFAULT 0,"
+    "  sends        INTEGER NOT NULL DEFAULT 0,"
     "  created_at   INTEGER NOT NULL DEFAULT (unixepoch())"
     ");"
 
@@ -126,7 +127,7 @@ static const char *AUTH_SCHEMA =
 /* Bump this when the cel_* infra schema changes, and add the matching ALTER step
  * in cel_auth_schema_apply below. Tracked per app via SQLite's PRAGMA
  * user_version, so a newer cellar can evolve an existing app's bundle in place. */
-#define CEL_AUTH_SCHEMA_VERSION 5
+#define CEL_AUTH_SCHEMA_VERSION 6
 
 /* v1 -> v2: per-user MFA-verify lockout (M-1). A fresh db gets these via the base
  * AUTH_SCHEMA above; only a db already at v1 needs the ALTERs. */
@@ -175,14 +176,22 @@ static const char *AUTH_SCHEMA_V4 =
  * schema, so this only runs on an already-provisioned db (gated v >= 1). */
 static const char *AUTH_SCHEMA_V5 =
     "DROP TABLE IF EXISTS cel_email_verifications;"
-    "CREATE TABLE cel_email_verifications ("
+    "CREATE TABLE IF NOT EXISTS cel_email_verifications ("
     "  user_id      TEXT PRIMARY KEY REFERENCES cel_users(id) ON DELETE CASCADE,"
     "  code_hash    TEXT NOT NULL,"
     "  expires_at   INTEGER NOT NULL,"
     "  attempts     INTEGER NOT NULL DEFAULT 0,"
     "  last_sent_at INTEGER NOT NULL DEFAULT 0,"
+    "  sends        INTEGER NOT NULL DEFAULT 0,"
     "  created_at   INTEGER NOT NULL DEFAULT (unixepoch())"
     ");";
+
+/* v5 -> v6: cel_email_verifications gains a per-cycle `sends` counter (email-abuse
+ * cap). A fresh db and any v4->v5 db already have the column (base schema + V5's
+ * CREATE both carry it), so this ALTER runs ONLY for a db that stopped exactly at
+ * v5 — gated `v == 5` below (ADD COLUMN is not idempotent). */
+static const char *AUTH_SCHEMA_V6 =
+    "ALTER TABLE cel_email_verifications ADD COLUMN sends INTEGER NOT NULL DEFAULT 0;";
 
 static long user_version(struct sqlite3 *db) {
     sqlite3_stmt *st = NULL;
@@ -208,20 +217,34 @@ int cel_auth_schema_apply(struct sqlite3 *db) {
     long v = user_version(db);
     if (v >= CEL_AUTH_SCHEMA_VERSION) return 0;   /* already current */
 
-    if (v < 1 && exec_or_log(db, AUTH_SCHEMA) != 0) return -1;
-    /* Only an existing v1 db needs the ALTERs (a fresh db got the columns from the
-     * base schema above, so applying them again would error on a duplicate column). */
-    if (v == 1 && exec_or_log(db, AUTH_SCHEMA_V2) != 0) return -1;
-    /* v < 3 adds cel_device_tokens to an already-provisioned db. IF NOT EXISTS, so
-     * harmless on a fresh db that just got it from the base schema. */
-    if (v < 3 && exec_or_log(db, AUTH_SCHEMA_V3) != 0) return -1;
-    /* v < 4 adds cel_push_subscriptions (same idempotent IF NOT EXISTS pattern). */
-    if (v < 4 && exec_or_log(db, AUTH_SCHEMA_V4) != 0) return -1;
-    /* v1..v4 -> v5 re-keys cel_email_verifications (token -> 6-digit code). DROP +
-     * CREATE, so gated v >= 1 (a fresh db already got the new shape from base). */
-    if (v >= 1 && v < 5 && exec_or_log(db, AUTH_SCHEMA_V5) != 0) return -1;
+    /* Run the whole migration (steps + the user_version stamp) ATOMICALLY: DDL and
+     * PRAGMA user_version are both transactional in SQLite, so a crash mid-migration
+     * rolls back cleanly and the next open re-runs from the correct prior version —
+     * no half-applied schema, no non-idempotent step re-running against a partial db. */
+    if (exec_or_log(db, "BEGIN IMMEDIATE") != 0) return -1;
 
-    char stamp[48];
-    snprintf(stamp, sizeof stamp, "PRAGMA user_version = %d", CEL_AUTH_SCHEMA_VERSION);
-    return exec_or_log(db, stamp);
+    int rc = 0;
+    do {
+        if (v < 1 && (rc = exec_or_log(db, AUTH_SCHEMA)) != 0) break;
+        /* Only an existing v1 db needs the ALTERs (a fresh db got the columns from the
+         * base schema above, so applying them again would error on a duplicate column). */
+        if (v == 1 && (rc = exec_or_log(db, AUTH_SCHEMA_V2)) != 0) break;
+        /* v < 3 adds cel_device_tokens to an already-provisioned db (IF NOT EXISTS). */
+        if (v < 3 && (rc = exec_or_log(db, AUTH_SCHEMA_V3)) != 0) break;
+        /* v < 4 adds cel_push_subscriptions (same idempotent IF NOT EXISTS pattern). */
+        if (v < 4 && (rc = exec_or_log(db, AUTH_SCHEMA_V4)) != 0) break;
+        /* v1..v4 -> v5 re-keys cel_email_verifications (token -> 6-digit code). DROP +
+         * CREATE IF NOT EXISTS, gated v >= 1 (a fresh db already got it from base). */
+        if (v >= 1 && v < 5 && (rc = exec_or_log(db, AUTH_SCHEMA_V5)) != 0) break;
+        /* v5 -> v6 adds the `sends` column; ONLY a db stopped exactly at v5 lacks it
+         * (fresh + v4->v5 already have it from base/V5), so gate on v == 5. */
+        if (v == 5 && (rc = exec_or_log(db, AUTH_SCHEMA_V6)) != 0) break;
+
+        char stamp[48];
+        snprintf(stamp, sizeof stamp, "PRAGMA user_version = %d", CEL_AUTH_SCHEMA_VERSION);
+        rc = exec_or_log(db, stamp);
+    } while (0);
+
+    if (rc != 0) { exec_or_log(db, "ROLLBACK"); return -1; }
+    return exec_or_log(db, "COMMIT");
 }
