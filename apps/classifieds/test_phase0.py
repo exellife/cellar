@@ -169,7 +169,7 @@ def run_checks(port, db):
     s, b = req("POST", "/api/listings",
                {"category_id": "cat-apartments", "title": "2-комн квартира", "price": 80000,
                 "city_id": "ci-bishkek",
-                "attributes": {"deal": "Аренда", "rooms": 2, "area": 55.5, "floor": 3,
+                "attributes": {"deal": "Аренда долгосрочная", "rooms": 2, "area": 55.5, "floor": 3,
                                "total_floors": 9, "furnished": True}}, token=tok)
     chk("valid apartment -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
     aid = (b or {}).get("row", {}).get("id")
@@ -178,6 +178,23 @@ def run_checks(port, db):
     chk("facet area (num)",  af.get("area") == (55.5, None), str(af.get("area")))
     chk("facet furnished (bool->1)", af.get("furnished") == (1.0, None), str(af.get("furnished")))
     chk("non-filterable total_floors excluded", "total_floors" not in af, str(list(af.keys())))
+
+    # ---- new taxonomy (FEEDBACK ask 1): a new subcategory's attributes drive the form + validation ----
+    s, b = req("POST", "/rpc/category_form", {"category": "clothing"}, token=tok)
+    cf = (b or {}).get("result") or {}
+    cattrs = {a["key"]: a for a in cf.get("attributes", [])}
+    chk("new subcat category_form (clothing)",
+        (cf.get("category") or {}).get("slug") == "clothing" and cattrs.get("gender", {}).get("required") is True, str(list(cattrs)))
+    s, b = req("POST", "/api/listings",
+               {"category_id": "cat-clothing", "title": "Куртка", "city_id": "ci-bishkek",
+                "attributes": {"gender": "Мужская", "size": "L"}}, token=tok)
+    cid = (b or {}).get("row", {}).get("id")
+    chk("post in new subcat (clothing) -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
+    chk("new subcat facet (gender)", (facets(db, cid) if cid else {}).get("gender") == (None, "Мужская"), "")
+    s, _ = req("POST", "/api/listings",
+               {"category_id": "cat-clothing", "title": "No gender", "city_id": "ci-bishkek",
+                "attributes": {"size": "L"}}, token=tok)
+    chk("new subcat missing required (gender) -> 400", s == 400, f"status={s}")
 
     # ---- A1.1 photos attach + validation ----
     pid_a, pid_b = "a" * 32, "b" * 32
@@ -714,7 +731,7 @@ def run_checks(port, db):
     chk("update attrs bad enum -> 400", s == 400, f"status={s}")
     # a valid category+attributes change succeeds
     s, _ = req("PATCH", f"/api/listings/{hid}",
-               {"category_id": "cat-apartments", "attributes": {"deal": "Аренда", "rooms": 2}}, token=seller)
+               {"category_id": "cat-apartments", "attributes": {"deal": "Аренда долгосрочная", "rooms": 2}}, token=seller)
     chk("valid category+attrs change -> 200", s == 200, f"status={s}")
     # a PATCH touching neither category nor attributes is unaffected
     s, _ = req("PATCH", f"/api/listings/{hid}", {"title": "Just a title edit"}, token=seller)
