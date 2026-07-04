@@ -50,13 +50,34 @@ instead of working around it silently** — engine problems get fixed in the eng
   `mutation_id` → second response has no `winner`.
 - **filed:** 2026-06-22 by cellar-agent (seed example — known backlog item)
 
-_(no open items)_
-
 ---
 
 ## Resolved
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
+
+- **Classifieds catalog — taxonomy + `is_free` + admin-managed taxonomy** — SHIPPED (`6b4d7c7` is_free,
+  `54e8a09` taxonomy, `fdfcd96` validation, `e867b7e` review hardening). All three asks:
+  - **ask 1 — full taxonomy seeded** per `TAXONOMY.md`: **6 → 31 subcategories, 24 → 66 attributes** across
+    Транспорт / Недвижимость / Электроника / Дом-и-сад / Личные-вещи / Животные (Работа + Услуги left bare,
+    deferred). Real-estate: kept the `deal` **key** (no rename — old data/facets/tests hold) and **expanded
+    its options to the 3-way** `["Продажа","Аренда долгосрочная","Аренда посуточно"]`, shared across all 5
+    real-estate subcats. (Old dev-seed rows with `deal="Аренда"` were re-seeded; not on prod.)
+  - **ask 2 — `is_free`** shipped. Contract: **create/update** accept `is_free:true` (a free listing carries
+    **no price** — the engine nulls it + `price_negotiable=0`; a later priced update auto-clears `is_free`);
+    **`price 0` is now invalid** (use `is_free`). Returned on **search rows, listing detail, and favorites**.
+    Search: **`{ free:true }`** filters to free (facet-like) and every `search` response carries **`free_count`**
+    (over the base set) for the sidebar toggle.
+  - **ask 3 — YES, taxonomy is admin-manageable at runtime.** `category` + `category_attribute` are already
+    `create/update/delete = admin` via generic `/api` (`POST /api/category`, `PATCH /api/category_attribute/<id>`,
+    …). Added a **validation hook** (the integrity SQLite can't express) — rejects with a friendly **400**:
+    category (slug format, `parent_id` exists, name/slug required); attribute (`type` ∈ enum|int|number|bool|text,
+    `key` a lowercase ident, `category_id` exists, **enum requires a non-empty JSON `options` array** — on create
+    AND update, `depends_on` references a real sibling key + needs `category_id` in the write). Slug uniqueness +
+    FKs are DB-enforced. So the operator admin panel can self-serve the catalog.
+  - **Reviewed:** two adversarial passes; 9 catalog findings fixed (the real ones: `is_free`-on-UPDATE integrity
+    — a hook can't write SQL NULL on update, so `after()` reconciles — and an enum-flip validation bypass).
+    Tests: `test_phase0.py` → **189 checks**; all classifieds ctests green.
 
 - **Item 7 — gate participation on `email_verified`** — SHIPPED `93168de`, widened (product decision
   updated: **a verified email is required to POST, reveal a contact, or start a chat**; browsing stays
