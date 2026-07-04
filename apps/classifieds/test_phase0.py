@@ -223,6 +223,11 @@ def run_checks(port, db):
     s, b = req("POST", "/api/category_attribute",
                {"id": "ca-x5", "category_id": "cat-test-x", "key": "sub", "label": "Под", "type": "text", "depends_on": "kind"}, token=tok)
     chk("depends_on existing key -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
+    # ask-3 update-path hardening (review): enum-flip needs options; depends_on needs category_id
+    s, _ = req("PATCH", "/api/category_attribute/ca-x5", {"type": "enum"}, token=tok)
+    chk("PATCH type->enum without options -> 400", s == 400, f"status={s}")
+    s, _ = req("PATCH", "/api/category_attribute/ca-x5", {"depends_on": "kind"}, token=tok)
+    chk("PATCH depends_on without category_id -> 400", s == 400, f"status={s}")
 
     # ---- A1.1 photos attach + validation ----
     pid_a, pid_b = "a" * 32, "b" * 32
@@ -741,6 +746,19 @@ def run_checks(port, db):
     s, b = req("POST", "/rpc/search", {"category": "cat-cars"})
     r = (b or {}).get("result") or {}
     chk("search reports free_count", isinstance(r.get("free_count"), int) and r.get("free_count") >= 1, str(r.get("free_count")))
+    # is_free UPDATE integrity (review fix): flip priced->free nulls price; set price->clears is_free
+    def listing_row(lid_):
+        _s, _b = req("POST", "/rpc/listing", {"id": lid_}, token=seller)
+        return ((_b or {}).get("result") or {}).get("listing") or {}
+    s, b = req("POST", "/api/listings", dict(base_ok, title="Priced then free", price=7000), token=seller)
+    plid = (b or {}).get("row", {}).get("id")
+    chk("priced listing -> 201", s == 201 and bool(plid), f"status={s}")
+    req("PATCH", f"/api/listings/{plid}", {"is_free": True}, token=seller)
+    g = listing_row(plid)
+    chk("PATCH to free nulls the price", g.get("is_free") == 1 and g.get("price") is None, str((g.get("is_free"), g.get("price"))))
+    req("PATCH", f"/api/listings/{plid}", {"price": 3000}, token=seller)
+    g = listing_row(plid)
+    chk("PATCH price on free clears is_free", g.get("is_free") == 0 and g.get("price") == 3000, str((g.get("is_free"), g.get("price"))))
     # #6 created_at is server-owned (a forged far-future value is ignored)
     s, b = req("POST", "/api/listings", dict(base_ok, created_at="2099-01-01T00:00:00Z"), token=seller)
     hid = (b or {}).get("row", {}).get("id")

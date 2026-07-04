@@ -156,10 +156,14 @@ local function valid_price(p)
   return type(p) == 'number' and p > 0 and p == math.floor(p)   -- positive whole; 0 is invalid (use is_free)
 end
 
--- Coerce a JSON-ish boolean (true/1/"1") to 0/1, else nil-passthrough.
+-- Coerce a JSON-ish boolean to 0/1 (nil passes through). Accepts booleans, 1/0, and
+-- the common checkbox/string encodings so a truthy value isn't silently dropped.
 local function to_bool01(v)
   if v == nil then return nil end
-  return (v == true or v == 1 or v == '1') and 1 or 0
+  if v == true or v == 1 then return 1 end
+  if v == false or v == 0 then return 0 end
+  local s = tostring(v):lower()
+  return (s == '1' or s == 'true' or s == 'on' or s == 'yes') and 1 or 0
 end
 
 -- A2.5: trust multiplier from account age + email-verified (read from the
@@ -265,14 +269,22 @@ local function before_category_attribute(op, input)
       return false, 'options must be a non-empty JSON array, e.g. ["A","B"]'
     end
   end
-  if input.type == 'enum' and op == 'create' and not has_opts then
+  -- enum needs options — on create OR when a PATCH sets type='enum' (else a PATCH
+  -- {type:"enum"} on a text attr would land a choiceless enum that bricks its category).
+  if input.type == 'enum' and not has_opts then
     return false, 'an enum attribute needs an options array'
   end
-  -- depends_on must reference an existing key in the SAME category (not a FK → check here)
-  if input.depends_on ~= nil and input.depends_on ~= '' and input.category_id ~= nil and input.category_id ~= '' and
-     not cellar.query('SELECT 1 AS ok FROM category_attribute WHERE category_id = ? AND key = ?',
-                      { input.category_id, input.depends_on })[1] then
-    return false, 'depends_on must reference an existing attribute key in the same category'
+  -- depends_on must reference an existing key in the SAME category (not a FK → check
+  -- here). Requires category_id in the write so the target can be verified (an UPDATE
+  -- omitting it can't be validated, so we reject rather than skip).
+  if input.depends_on ~= nil and input.depends_on ~= '' then
+    if input.category_id == nil or input.category_id == '' then
+      return false, 'category_id is required when setting depends_on'
+    end
+    if not cellar.query('SELECT 1 AS ok FROM category_attribute WHERE category_id = ? AND key = ?',
+                        { input.category_id, input.depends_on })[1] then
+      return false, 'depends_on must reference an existing attribute key in the same category'
+    end
   end
   return true
 end
@@ -304,7 +316,9 @@ function before(op, tbl, input, who)
     input.created_at = nil                    -- can't be backdated via a PATCH
     if input.is_free ~= nil then
       input.is_free = to_bool01(input.is_free)
-      if input.is_free == 1 then input.price = nil; input.price_negotiable = 0 end
+      if input.is_free == 1 then input.price = nil; input.price_negotiable = 0 end   -- after() nulls the stored price
+    elseif type(input.price) == 'number' and input.price > 0 then
+      input.is_free = 0                        -- a priced update is definitionally not free (clears a stale is_free)
     end
     if not valid_price(input.price) then return false, 'price must be a whole positive number (omit for «договорная», or set is_free)' end
     local pok, perr = validate_photos(input.photos)
@@ -372,6 +386,12 @@ function after(op, tbl, row, who)
   end
   if tbl ~= 'listings' then return end
   if op == 'create' or op == 'update' then
+    -- Enforce the free/price invariant authoritatively. before() can't write SQL NULL
+    -- on update (a nil assignment UNSETS the key rather than nulling the column), so a
+    -- free listing that still carries a price is reconciled here where row.id is known.
+    if tonumber(row.is_free) == 1 and row.price ~= nil then
+      cellar.exec('UPDATE listings SET price = NULL, price_negotiable = 0 WHERE id = ?', { row.id })
+    end
     sync_facets(row.id)
   end
   -- delete: ON DELETE CASCADE already removed the facet rows
@@ -771,7 +791,7 @@ end
 local function favorites(args, who)
   if not (who and who.authenticated) then return nil end
   local rows = cellar.query(
-    'SELECT l.id, l.title, l.price, l.currency, l.category_id, l.city_id, l.photos, l.status, ' ..
+    'SELECT l.id, l.title, l.price, l.currency, l.is_free, l.price_negotiable, l.category_id, l.city_id, l.photos, l.status, ' ..
     'f.created_at AS saved_at ' ..
     'FROM favorite f JOIN listings l ON l.id = f.listing_id ' ..
     'WHERE f.user_id = ? ORDER BY f.created_at DESC LIMIT 200', { who.user_id })
