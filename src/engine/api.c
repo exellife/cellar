@@ -1518,34 +1518,28 @@ static void send_auth_email(const char *to, const char *kind,
  * the resend endpoint. */
 static void send_email_verification(const char *user_id) {
     if (!cel_mail_enabled()) return;
-    char token[129], to[256];
-    if (cel_auth_create_email_verification(user_id, token, sizeof token, to, sizeof to) != CEL_AUTH_OK)
+    char code[8], to[256];   /* 6 digits + NUL */
+    /* No-op on already-verified (CONFLICT), unknown user, or resend cooldown (LOCKED). */
+    if (cel_auth_create_email_code(user_id, code, sizeof code, to, sizeof to) != CEL_AUTH_OK)
         return;
-    const char *app = getenv("CEL_APP_URL");
-    char url[512] = {0}, body[1024];
-    if (app && *app) {
-        snprintf(url, sizeof url, "%s/verify-email?token=%s", app, token);
-        snprintf(body, sizeof body,
-            "Welcome! Please confirm your email address:\r\n%s\r\n\r\n"
-            "This link expires in 24 hours.\r\n", url);
-    } else {
-        snprintf(body, sizeof body,
-            "Welcome! Confirm your email address with this token (expires in 24 hours):\r\n%s\r\n",
-            token);
-    }
+    char body[512];
+    snprintf(body, sizeof body,
+        "Your verification code is: %s\r\n\r\nEnter it to confirm your email. "
+        "It expires in 15 minutes.\r\n", code);
+    /* The bundle's render_email hook can localize/style the message using `code`. */
     cJSON *ctx = cJSON_CreateObject();
     cJSON_AddStringToObject(ctx, "email", to);
-    cJSON_AddStringToObject(ctx, "token", token);
-    if (url[0]) cJSON_AddStringToObject(ctx, "url", url);
-    cJSON_AddNumberToObject(ctx, "expires_in", 24 * 3600);
+    cJSON_AddStringToObject(ctx, "code", code);
+    cJSON_AddNumberToObject(ctx, "expires_in", 900);
     send_auth_email(to, "verify_email", "Verify your email", body, ctx);
 }
 
-cel_api_result_t cel_api_verify_email(const cJSON *req) {
-    const cJSON *token = cJSON_GetObjectItemCaseSensitive(req, "token");
-    if (!cJSON_IsString(token)) return result_error(400, "token required");
-    int rc = cel_auth_verify_email(token->valuestring);
-    if (rc == CEL_AUTH_INVALID) return result_error(400, "invalid or expired token");
+cel_api_result_t cel_api_verify_email(const cel_identity_t *who, const cJSON *req) {
+    if (!who->authenticated) return result_error(401, "authentication required");
+    const cJSON *code = cJSON_GetObjectItemCaseSensitive(req, "code");
+    if (!cJSON_IsString(code) || !code->valuestring[0]) return result_error(400, "code required");
+    int rc = cel_auth_verify_email_code(who->user_id, code->valuestring);
+    if (rc == CEL_AUTH_INVALID) return result_error(400, "invalid or expired code");
     if (rc != CEL_AUTH_OK)      return result_error(500, "server error");
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
@@ -1556,10 +1550,10 @@ cel_api_result_t cel_api_verify_email(const cJSON *req) {
 
 cel_api_result_t cel_api_verify_email_resend(const cel_identity_t *who) {
     if (!who->authenticated) return result_error(401, "authentication required");
-    send_email_verification(who->user_id);   /* best-effort; idempotent if already verified */
+    send_email_verification(who->user_id);   /* best-effort; cooldown + already-verified enforced inside */
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "status", "ok");
-    cJSON_AddStringToObject(o, "message", "if your email is unverified, a verification link has been sent");
+    cJSON_AddStringToObject(o, "message", "if your email is unverified, a code has been sent");
     cel_api_result_t r = { o, 200 };
     return r;
 }

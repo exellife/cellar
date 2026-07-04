@@ -299,6 +299,31 @@ function job(name, payload)
   end
 end
 
+-- ── Localized auth emails (RU) ──────────────────────────────────────────────
+-- render_email(kind, ctx) -> { subject?, text?, html? } (nil => engine default).
+-- verify_email carries a 6-digit ctx.code (engine email-verification flow); we
+-- render it in Russian. Other kinds fall through to the engine's built-in body.
+function render_email(kind, ctx)
+  if kind == 'verify_email' and ctx and ctx.code then
+    local code = tostring(ctx.code)
+    return {
+      subject = 'Код подтверждения Jarchy: ' .. code,
+      text = 'Ваш код подтверждения: ' .. code ..
+             '\r\n\r\nВведите его в приложении, чтобы подтвердить адрес эл. почты. ' ..
+             'Код действителен 15 минут.\r\n\r\n' ..
+             'Если вы не регистрировались на Jarchy, проигнорируйте это письмо.\r\n',
+      html = '<div style="font-family:sans-serif;max-width:420px;margin:0 auto;color:#1c1917">' ..
+             '<h2 style="color:#c2410c;margin:0 0 12px">Jarchy</h2>' ..
+             '<p>Ваш код подтверждения:</p>' ..
+             '<p style="font-size:30px;font-weight:700;letter-spacing:6px;margin:8px 0">' .. code .. '</p>' ..
+             '<p style="color:#57534e">Введите его в приложении. Код действителен 15 минут.</p>' ..
+             '<p style="color:#a8a29e;font-size:12px;margin-top:20px">' ..
+             'Если вы не регистрировались на Jarchy, проигнорируйте это письмо.</p></div>',
+    }
+  end
+  return nil
+end
+
 -- ── A1.2: post-form contract ────────────────────────────────────────────────
 -- POST /rpc/category_form {"category": "<id-or-slug>"} → the data a client needs
 -- to render the post form / filters for a category, in one call: the category,

@@ -875,11 +875,15 @@ int cel_auth_push_list(const char *user_id, cel_push_cb cb, void *ctx) {
     return rc;
 }
 
-#define VERIFY_TTL_SECONDS 86400   /* an email-verification link is good for 24h */
+#define EMAIL_CODE_TTL_SECONDS  900   /* a 6-digit email code is good for 15 minutes */
+#define EMAIL_CODE_DIGITS         6
+#define EMAIL_CODE_MAX_ATTEMPTS   5   /* wrong-code guesses before the code is dead */
+#define EMAIL_RESEND_COOLDOWN    60   /* server-side min seconds between code sends */
 
-int cel_auth_create_email_verification(const char *user_id,
-                                       char *out_token, size_t token_size,
-                                       char *out_email, size_t email_size) {
+int cel_auth_create_email_code(const char *user_id,
+                               char *out_code, size_t code_size,
+                               char *out_email, size_t email_size) {
+    if (code_size < EMAIL_CODE_DIGITS + 1) return CEL_AUTH_DBERR;
     app_db_t *app = app_db_current();
     if (!app) return CEL_AUTH_DBERR;
     app_db_write_lock(app);
@@ -904,14 +908,31 @@ int cel_auth_create_email_verification(const char *user_id,
     }
     if (already) { rc = CEL_AUTH_CONFLICT; goto out; }   /* nothing to do */
 
-    if (cel_random_token_hex(out_token, token_size, TOKEN_BYTES) != 0) goto out;
+    /* Server-side resend cooldown: refuse if a code was sent very recently. */
+    {
+        const char *p[1] = { user_id };
+        char lbuf[24] = {0};
+        if (cel_db_one_text(c, "SELECT last_sent_at FROM cel_email_verifications WHERE user_id=?1",
+                            p, 1, lbuf, sizeof lbuf) == 1 && lbuf[0]) {
+            long last = strtol(lbuf, NULL, 10);
+            if (last && cel_now_epoch() - last < EMAIL_RESEND_COOLDOWN) { rc = CEL_AUTH_LOCKED; goto out; }
+        }
+    }
+
+    if (cel_random_code(out_code, code_size, EMAIL_CODE_DIGITS) != 0) goto out;
     {
         char hbuf[65];
-        if (cel_token_hash(out_token, hbuf, sizeof hbuf) != 0) goto out;
-        char exp[24]; snprintf(exp, sizeof exp, "%ld", cel_now_epoch() + VERIFY_TTL_SECONDS);
-        const char *ins[3] = { hbuf, user_id, exp };
-        rc = cel_db_exec(c, "INSERT INTO cel_email_verifications(token, user_id, expires_at) "
-                       "VALUES(?1, ?2, ?3)", ins, 3) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
+        if (cel_token_hash(out_code, hbuf, sizeof hbuf) != 0) goto out;
+        char exp[24]; snprintf(exp, sizeof exp, "%ld", cel_now_epoch() + EMAIL_CODE_TTL_SECONDS);
+        char now[24]; snprintf(now, sizeof now, "%ld", cel_now_epoch());
+        /* One pending code per user: replace any prior one and reset the attempt count. */
+        const char *ins[4] = { user_id, hbuf, exp, now };
+        rc = cel_db_exec(c,
+            "INSERT INTO cel_email_verifications(user_id, code_hash, expires_at, attempts, last_sent_at) "
+            "VALUES(?1, ?2, ?3, 0, ?4) "
+            "ON CONFLICT(user_id) DO UPDATE SET code_hash=excluded.code_hash, "
+            "expires_at=excluded.expires_at, attempts=0, last_sent_at=excluded.last_sent_at",
+            ins, 4) ? CEL_AUTH_OK : CEL_AUTH_DBERR;
     }
 out:
     app_db_conn_release(app, c);
@@ -919,9 +940,10 @@ out:
     return rc;
 }
 
-int cel_auth_verify_email(const char *token) {
+int cel_auth_verify_email_code(const char *user_id, const char *code) {
+    if (!user_id || !user_id[0] || !code || !code[0]) return CEL_AUTH_INVALID;
     char h[65];
-    if (cel_token_hash(token, h, sizeof h) != 0) return CEL_AUTH_INVALID;
+    if (cel_token_hash(code, h, sizeof h) != 0) return CEL_AUTH_INVALID;
 
     app_db_t *app = app_db_current();
     if (!app) return CEL_AUTH_DBERR;
@@ -930,27 +952,50 @@ int cel_auth_verify_email(const char *token) {
     if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
     int rc = CEL_AUTH_DBERR;
     bool in_txn = false;
-    char user_id[37] = {0};
+    char stored[65] = {0}, expbuf[24] = {0}, attbuf[24] = {0};
 
     if (!tx(c, "BEGIN")) goto out;
     in_txn = true;
 
-    /* Atomically claim the token (unexpired + unused). */
+    /* Fetch this user's pending code. */
     {
-        char nowbuf[24]; snprintf(nowbuf, sizeof nowbuf, "%ld", cel_now_epoch());
-        const char *p[2] = { h, nowbuf };
-        int f = cel_db_one_text(c,
-            "UPDATE cel_email_verifications SET used_at=unixepoch() "
-            "WHERE token=?1 AND used_at IS NULL AND expires_at > ?2 "
-            "RETURNING user_id", p, 2, user_id, sizeof user_id);
-        if (f != 1 || !user_id[0]) { rc = CEL_AUTH_INVALID; goto out; }
+        const char *p[1] = { user_id };
+        sqlite3_stmt *st;
+        if (cel_db_prep(c, "SELECT code_hash, expires_at, attempts FROM cel_email_verifications WHERE user_id=?1",
+                        p, 1, &st) != SQLITE_OK) goto out;
+        int step = sqlite3_step(st);
+        if (step == SQLITE_ROW) {
+            snprintf(stored, sizeof stored, "%s", (const char *)sqlite3_column_text(st, 0));
+            snprintf(expbuf, sizeof expbuf, "%lld", (long long)sqlite3_column_int64(st, 1));
+            snprintf(attbuf, sizeof attbuf, "%d", sqlite3_column_int(st, 2));
+        }
+        sqlite3_finalize(st);
+        if (step != SQLITE_ROW) { rc = CEL_AUTH_INVALID; goto out; }   /* no pending code */
     }
 
-    /* Mark the email verified (idempotent: keep the first verification time). */
+    /* Expired or attempt-capped -> dead; the client must request a fresh code. */
+    if (strtol(expbuf, NULL, 10) <= cel_now_epoch() ||
+        strtol(attbuf, NULL, 10) >= EMAIL_CODE_MAX_ATTEMPTS) {
+        rc = CEL_AUTH_INVALID; goto out;
+    }
+
+    /* Wrong code: bump the attempt counter (bounds brute force) and fail. The
+     * compared values are server-side sha256 hashes of the guess, so a strcmp
+     * timing side-channel leaks nothing an attacker can steer toward. */
+    if (strcmp(stored, h) != 0) {
+        const char *up[1] = { user_id };
+        cel_db_exec(c, "UPDATE cel_email_verifications SET attempts=attempts+1 WHERE user_id=?1", up, 1);
+        if (!tx(c, "COMMIT")) goto out;
+        in_txn = false;
+        rc = CEL_AUTH_INVALID; goto out;
+    }
+
+    /* Match: mark verified (idempotent first-time) and consume the code. */
     {
         const char *up[1] = { user_id };
         if (!cel_db_exec(c, "UPDATE cel_users SET email_verified_at=COALESCE(email_verified_at, unixepoch()) "
                        "WHERE id=?1", up, 1)) goto out;
+        if (!cel_db_exec(c, "DELETE FROM cel_email_verifications WHERE user_id=?1", up, 1)) goto out;
     }
 
     if (!tx(c, "COMMIT")) goto out;

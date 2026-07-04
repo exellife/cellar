@@ -182,17 +182,21 @@ typedef void (*cel_push_cb)(void *ctx, const char *id, const char *endpoint,
                             const char *ua, long created_at, long last_used_at);
 int cel_auth_push_list(const char *user_id, cel_push_cb cb, void *ctx);
 
-/* Create a single-use email-verification token for `user_id`. On success writes
- * the raw token (>= 65 bytes) and the account email (for the caller to send to),
- * returning CEL_AUTH_OK. Returns CEL_AUTH_CONFLICT if the email is already
- * verified (caller sends nothing), CEL_AUTH_INVALID if the user is unknown. */
-int cel_auth_create_email_verification(const char *user_id,
-                                       char *out_token, size_t token_size,
-                                       char *out_email, size_t email_size);
+/* Generate a fresh 6-digit email-verification CODE for `user_id`. On success
+ * writes the plaintext code (>= 7 bytes) + the account email (for the caller to
+ * send to) and stores sha256(code) with a short TTL, resetting the attempt count
+ * (one pending code per user). Returns CEL_AUTH_OK, CEL_AUTH_CONFLICT if the email
+ * is already verified (caller sends nothing), CEL_AUTH_LOCKED if a code was sent
+ * within the resend cooldown, CEL_AUTH_INVALID if the user is unknown. */
+int cel_auth_create_email_code(const char *user_id,
+                               char *out_code, size_t code_size,
+                               char *out_email, size_t email_size);
 
-/* Redeem a verification token: mark the account's email verified (single use).
- * Returns CEL_AUTH_OK / CEL_AUTH_INVALID (bad/expired/used) / DBERR. */
-int cel_auth_verify_email(const char *token);
+/* Verify a 6-digit code against the AUTHENTICATED `user_id`. On a match, marks
+ * the account email verified and consumes the code. A wrong code increments a
+ * capped attempt counter; wrong/expired/too-many/none all return CEL_AUTH_INVALID
+ * (the client requests a fresh code). CEL_AUTH_OK on success, DBERR on failure. */
+int cel_auth_verify_email_code(const char *user_id, const char *code);
 
 /* Revoke ALL sessions for the user with this email (e.g. on password change,
  * "log out everywhere", or suspend) and clear the session cache. Returns the

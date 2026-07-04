@@ -102,7 +102,7 @@ cel_api_result_t cel_api_push_list(const cel_identity_t *who);
  * the token; resend re-sends to the authenticated caller (idempotent).
  *   verify-email        : { token }  -> 200 / 400
  *   verify-email/resend : (Bearer)   -> 200 (always)                              */
-cel_api_result_t cel_api_verify_email(const cJSON *req);
+cel_api_result_t cel_api_verify_email(const cel_identity_t *who, const cJSON *req);
 cel_api_result_t cel_api_verify_email_resend(const cel_identity_t *who);
 
 /* register is public self-service signup. Gated by the role config: only roles

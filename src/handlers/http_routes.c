@@ -359,11 +359,18 @@ static int route(const portico_request_t *req, portico_response_t *res) {
         return st;
     }
 
-    /* POST /auth/verify-email — redeem an email-verification token (public) */
+    /* POST /auth/verify-email — submit the 6-digit code for the authenticated user
+     * (Bearer). Rate-limited; the per-code attempt cap is the primary brute guard. */
     if (portico_req_method_is(req, "POST") && portico_req_path_is(req, "/auth/verify-email")) {
+        if (!cel_ratelimit_allow(g_auth_rl, portico_req_client_ip(req))) {
+            cel_metric_inc(CEL_M_RATELIMITED);
+            return send_error(res, 429, "too many requests");
+        }
+        cel_identity_t who;
+        identity_from_request(req, &who);
         cJSON *body = cJSON_ParseWithLength(req->body, req->body_len);
         if (!body) return send_error(res, 400, "invalid JSON");
-        int st = send_api(res, cel_api_verify_email(body));
+        int st = send_api(res, cel_api_verify_email(&who, body));
         cJSON_Delete(body);
         return st;
     }

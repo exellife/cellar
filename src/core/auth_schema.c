@@ -83,12 +83,16 @@ static const char *AUTH_SCHEMA =
     "  created_at INTEGER NOT NULL DEFAULT (unixepoch())"
     ");"
 
+    /* Email verification is a 6-digit CODE (not a link), verified against the
+     * authenticated session — one pending code per user (user_id PK), stored as
+     * sha256(code) with a short TTL, an attempt cap, and a resend cooldown. */
     "CREATE TABLE IF NOT EXISTS cel_email_verifications ("
-    "  token      TEXT PRIMARY KEY,"
-    "  user_id    TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,"
-    "  expires_at INTEGER NOT NULL,"
-    "  used_at    INTEGER,"
-    "  created_at INTEGER NOT NULL DEFAULT (unixepoch())"
+    "  user_id      TEXT PRIMARY KEY REFERENCES cel_users(id) ON DELETE CASCADE,"
+    "  code_hash    TEXT NOT NULL,"
+    "  expires_at   INTEGER NOT NULL,"
+    "  attempts     INTEGER NOT NULL DEFAULT 0,"
+    "  last_sent_at INTEGER NOT NULL DEFAULT 0,"
+    "  created_at   INTEGER NOT NULL DEFAULT (unixepoch())"
     ");"
 
     /* MFA tables — created now so auth's cross-references (e.g. dropping pending
@@ -122,7 +126,7 @@ static const char *AUTH_SCHEMA =
 /* Bump this when the cel_* infra schema changes, and add the matching ALTER step
  * in cel_auth_schema_apply below. Tracked per app via SQLite's PRAGMA
  * user_version, so a newer cellar can evolve an existing app's bundle in place. */
-#define CEL_AUTH_SCHEMA_VERSION 4
+#define CEL_AUTH_SCHEMA_VERSION 5
 
 /* v1 -> v2: per-user MFA-verify lockout (M-1). A fresh db gets these via the base
  * AUTH_SCHEMA above; only a db already at v1 needs the ALTERs. */
@@ -163,6 +167,23 @@ static const char *AUTH_SCHEMA_V4 =
     ");"
     "CREATE INDEX IF NOT EXISTS idx_cel_push_subscriptions_user ON cel_push_subscriptions(user_id);";
 
+/* v4 -> v5: email verification moves from a random link TOKEN to a 6-digit CODE
+ * verified against the authenticated session. The table is re-keyed (token PK ->
+ * user_id PK) and gains code_hash/attempts/last_sent_at, so an existing table is
+ * dropped and recreated (any pending link verifications are discarded — the user
+ * just requests a fresh code). A fresh db already has the new shape from the base
+ * schema, so this only runs on an already-provisioned db (gated v >= 1). */
+static const char *AUTH_SCHEMA_V5 =
+    "DROP TABLE IF EXISTS cel_email_verifications;"
+    "CREATE TABLE cel_email_verifications ("
+    "  user_id      TEXT PRIMARY KEY REFERENCES cel_users(id) ON DELETE CASCADE,"
+    "  code_hash    TEXT NOT NULL,"
+    "  expires_at   INTEGER NOT NULL,"
+    "  attempts     INTEGER NOT NULL DEFAULT 0,"
+    "  last_sent_at INTEGER NOT NULL DEFAULT 0,"
+    "  created_at   INTEGER NOT NULL DEFAULT (unixepoch())"
+    ");";
+
 static long user_version(struct sqlite3 *db) {
     sqlite3_stmt *st = NULL;
     long v = 0;
@@ -196,6 +217,9 @@ int cel_auth_schema_apply(struct sqlite3 *db) {
     if (v < 3 && exec_or_log(db, AUTH_SCHEMA_V3) != 0) return -1;
     /* v < 4 adds cel_push_subscriptions (same idempotent IF NOT EXISTS pattern). */
     if (v < 4 && exec_or_log(db, AUTH_SCHEMA_V4) != 0) return -1;
+    /* v1..v4 -> v5 re-keys cel_email_verifications (token -> 6-digit code). DROP +
+     * CREATE, so gated v >= 1 (a fresh db already got the new shape from base). */
+    if (v >= 1 && v < 5 && exec_or_log(db, AUTH_SCHEMA_V5) != 0) return -1;
 
     char stamp[48];
     snprintf(stamp, sizeof stamp, "PRAGMA user_version = %d", CEL_AUTH_SCHEMA_VERSION);

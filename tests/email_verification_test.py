@@ -33,13 +33,13 @@ def login():
     return req("POST", "/auth/login", {"email": EMAIL, "password": PW})
 
 
-def read_verify_token():
+def read_verify_code():
     for _ in range(30):
         if os.path.exists(CAPTURE) and os.path.getsize(CAPTURE) > 0:
             break
         time.sleep(0.1)
     body = open(CAPTURE, "r", errors="replace").read()
-    m = re.search(r"token=([0-9a-fA-F]+)", body)
+    m = re.search(r"code is:\s*(\d{6})", body)
     return m.group(1) if m else None
 
 
@@ -58,20 +58,25 @@ def main():
     chk("register -> 201 + token", s == 201 and bool(token), f"status={s}")
     chk("registered user is unverified", (b or {}).get("user", {}).get("email_verified") is False)
 
-    vtoken = read_verify_token()
-    chk("verification token delivered by email", bool(vtoken), vtoken or "(none)")
+    vcode = read_verify_code()
+    chk("6-digit code delivered by email", bool(vcode) and len(vcode) == 6, vcode or "(none)")
 
     # login confirms the flag is false before verifying
     s, b = login()
     chk("login shows email_verified false",
         s == 200 and (b or {}).get("user", {}).get("email_verified") is False, f"status={s}")
 
-    # a bad token is rejected
-    s, _ = req("POST", "/auth/verify-email", {"token": "deadbeef"})
-    chk("verify bad token -> 400", s == 400, f"status={s}")
+    # verify requires a session (authenticated) — anon is rejected
+    s, _ = req("POST", "/auth/verify-email", {"code": vcode})
+    chk("verify without a session -> 401", s == 401, f"status={s}")
 
-    # redeem the real token
-    s, _ = req("POST", "/auth/verify-email", {"token": vtoken})
+    # a wrong code (guaranteed != the real one) is rejected
+    wrong = ("1" if vcode[0] == "0" else "0") + vcode[1:]
+    s, _ = req("POST", "/auth/verify-email", {"code": wrong}, token=token)
+    chk("verify wrong code -> 400", s == 400, f"status={s}")
+
+    # submit the real code (Bearer session identifies the user)
+    s, _ = req("POST", "/auth/verify-email", {"code": vcode}, token=token)
     chk("verify -> 200", s == 200, f"status={s}")
 
     # now the flag is true
@@ -79,9 +84,9 @@ def main():
     chk("login shows email_verified true",
         s == 200 and (b or {}).get("user", {}).get("email_verified") is True, f"status={s}")
 
-    # the token is single-use
-    s, _ = req("POST", "/auth/verify-email", {"token": vtoken})
-    chk("reused token -> 400", s == 400, f"status={s}")
+    # the code is single-use (consumed on success)
+    s, _ = req("POST", "/auth/verify-email", {"code": vcode}, token=token)
+    chk("reused code -> 400", s == 400, f"status={s}")
 
     # resend for an already-verified user is a no-op 200 (idempotent)
     s, _ = req("POST", "/auth/verify-email/resend", token=token)

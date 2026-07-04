@@ -132,9 +132,30 @@ device tokens; subscriptions are pruned when the push service reports them gone.
 > notifications (the realtime feed) already work today.
 
 Also available when the app enables them: `POST /auth/oauth` (OIDC sign-in),
-`POST /auth/password/forgot` + `/auth/password/reset`, `POST /auth/verify-email`,
-and the `POST /auth/mfa/*` (TOTP) flow. `POST /auth/users` (Bearer, **superuser**)
-creates users out-of-band.
+`POST /auth/password/forgot` + `/auth/password/reset`, the email-verification code
+flow (below), and the `POST /auth/mfa/*` (TOTP) flow. `POST /auth/users` (Bearer,
+**superuser**) creates users out-of-band.
+
+### Email verification — 6-digit code (soft, non-blocking)
+
+Modern signup: **register auto-logs-in immediately** (you get a session token), and a
+**6-digit code** is emailed in the background (when the app's mailer is on). Verification
+is *non-blocking* — the user is already in; verifying just flips `email_verified` (which
+apps use for progressive trust / higher limits). Mobile-friendly: the code is typed in-app,
+so you stay in one session (OS one-time-code autofill), no cross-browser magic link.
+
+- **`user.email_verified`** — a boolean on the register/login user object.
+- **`POST /auth/verify-email { code }`** — **authenticated** (send the Bearer session from
+  register/login; the session identifies the user). `200` on success → `email_verified`
+  becomes true; `400` on a wrong/expired code (show "wrong or expired — resend"); `429` if
+  hammered. The code is **single-use**, TTL **15 min**, and **capped at 5 wrong attempts**
+  (after which it's dead — request a new one).
+- **`POST /auth/verify-email/resend`** — (Bearer) re-sends a fresh code; always `200`
+  (no-op if already verified). A **server-side ~60s cooldown** rate-limits it, so a client
+  timer isn't the only guard.
+- Already-verified (or an OAuth signup, which arrives pre-verified) → no code is sent.
+- The email body/subject are localizable/brandable per app via the `render_email`
+  hook (jarchy ships a **RU** template carrying the code) — see `docs/policy-guide.md`.
 
 **Letting a non-superuser role create accounts** (e.g. a `manager` onboarding a
 `clerk`): `POST /auth/users` is superuser-only, so do it from a hook instead. The

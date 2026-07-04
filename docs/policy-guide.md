@@ -279,9 +279,9 @@ end
 ```
 
 - **`kind`** is `"verify_email"` | `"password_reset"` | `"notification"`.
-- **`ctx`** carries the relevant fields — e.g. `url`, `token`, `email`, `expires_in` for the auth
-  kinds; `title`, `body`, `url`, `data` for `"notification"`. You can `cellar.query(...)` inside it
-  (e.g. to fetch the user's display name).
+- **`ctx`** carries the relevant fields — `code`, `email`, `expires_in` for `"verify_email"` (a 6-digit
+  code); `url`, `token`, `email`, `expires_in` for `"password_reset"`; `title`, `body`, `url`, `data`
+  for `"notification"`. You can `cellar.query(...)` inside it (e.g. to fetch the user's display name).
 - **Return** a table with any of `subject` / `html` / `text`. When `html` is present the message is
   sent `multipart/alternative` (HTML + the `text` part, or the built-in plain body if you omit `text`)
   so non-HTML clients still work. Returning `nil` / a non-table → the built-in template.

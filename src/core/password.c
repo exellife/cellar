@@ -1,6 +1,7 @@
 #include "password.h"
 
 #include <sodium.h>
+#include <stdio.h>
 #include <string.h>
 #include <uuid/uuid.h>
 
@@ -37,6 +38,17 @@ int cel_random_token_hex(char *out, size_t out_size, size_t nbytes) {
     if (out_size < nbytes * 2 + 1) return -1;
     randombytes_buf(buf, nbytes);
     sodium_bin2hex(out, out_size, buf, nbytes);
+    return 0;
+}
+
+/* A numeric one-time code of `digits` digits (leading zeros preserved), drawn
+ * from a uniform, bias-free CSPRNG. `out` needs >= digits+1 bytes. */
+int cel_random_code(char *out, size_t out_size, unsigned digits) {
+    if (digits < 4 || digits > 9 || out_size < (size_t)digits + 1) return -1;
+    uint32_t bound = 1;
+    for (unsigned i = 0; i < digits; i++) bound *= 10u;
+    uint32_t n = randombytes_uniform(bound);   /* unbiased 0 .. bound-1 */
+    snprintf(out, out_size, "%0*u", (int)digits, n);
     return 0;
 }
 

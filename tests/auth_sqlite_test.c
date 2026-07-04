@@ -198,6 +198,65 @@ int main(void) {
     pcount = 0; cel_auth_push_list(id2, count_pushes_cb, &pcount);
     CHECK(pcount == 0, "push_list empty after unsubscribe");
 
+    /* ---- email verification (6-digit code) ---- */
+    /* Happy path on a@x.com (first_id, not yet email-verified). */
+    {
+        char code[8], email[256];
+        CHECK(cel_auth_create_email_code(first_id, code, sizeof code, email, sizeof email) == CEL_AUTH_OK,
+              "create_email_code ok");
+        CHECK(strlen(code) == 6, "code is 6 digits");
+        CHECK(strcmp(email, "a@x.com") == 0, "code carries the account email");
+
+        /* resend inside the cooldown window is refused */
+        char c2[8], e2[256];
+        CHECK(cel_auth_create_email_code(first_id, c2, sizeof c2, e2, sizeof e2) == CEL_AUTH_LOCKED,
+              "resend within cooldown -> LOCKED");
+
+        /* a wrong code (guaranteed != code) is rejected; the right code verifies */
+        char wrong[8]; snprintf(wrong, sizeof wrong, "%s", code);
+        wrong[0] = (code[0] == '9') ? '0' : (char)(code[0] + 1);
+        CHECK(cel_auth_verify_email_code(first_id, wrong) == CEL_AUTH_INVALID, "wrong code rejected");
+        CHECK(cel_auth_verify_email_code(first_id, code) == CEL_AUTH_OK, "correct code verifies the email");
+        CHECK(cel_auth_verify_email_code(first_id, code) == CEL_AUTH_INVALID, "code is single-use (consumed)");
+
+        /* already verified -> CONFLICT (no code minted) */
+        char c3[8], e3[256];
+        CHECK(cel_auth_create_email_code(first_id, c3, sizeof c3, e3, sizeof e3) == CEL_AUTH_CONFLICT,
+              "already-verified -> CONFLICT");
+    }
+
+    /* Attempt cap: 5 wrong guesses kill the code — even the correct one then fails. */
+    {
+        char code[8], email[256];
+        CHECK(cel_auth_create_email_code(id2, code, sizeof code, email, sizeof email) == CEL_AUTH_OK,
+              "create code for id2");
+        char wrong[8]; snprintf(wrong, sizeof wrong, "%s", code);
+        wrong[0] = (code[0] == '9') ? '0' : (char)(code[0] + 1);
+        for (int i = 0; i < 5; i++)   /* == EMAIL_CODE_MAX_ATTEMPTS */
+            (void)cel_auth_verify_email_code(id2, wrong);
+        CHECK(cel_auth_verify_email_code(id2, code) == CEL_AUTH_INVALID,
+              "correct code rejected after the attempt cap");
+    }
+
+    /* v4 -> v5 migration: an already-provisioned db with the OLD token-keyed table
+     * is re-keyed to the code table on re-apply, and the code flow then works. */
+    {
+        sqlite3 *mc = app_db_conn_acquire(app);
+        CHECK(sqlite3_exec(mc,
+            "DROP TABLE cel_email_verifications;"
+            "CREATE TABLE cel_email_verifications(token TEXT PRIMARY KEY, user_id TEXT, "
+            "  expires_at INTEGER, used_at INTEGER, created_at INTEGER);"
+            "PRAGMA user_version = 4;", NULL, NULL, NULL) == SQLITE_OK,
+            "simulate a v4 db with the old token table");
+        CHECK(cel_auth_schema_apply(mc) == 0, "re-apply upgrades v4 -> v5 (re-keys email verifications)");
+        app_db_conn_release(app, mc);
+
+        char code[8], email[256];
+        CHECK(cel_auth_create_email_code(id2, code, sizeof code, email, sizeof email) == CEL_AUTH_OK,
+              "code flow works after the v5 migration");
+        CHECK(cel_auth_verify_email_code(id2, code) == CEL_AUTH_OK, "verify works after the v5 migration");
+    }
+
     app_db_global_shutdown();
     unlink(path);
     { char x[300]; snprintf(x,sizeof x,"%s-wal",path); unlink(x); snprintf(x,sizeof x,"%s-shm",path); unlink(x); }

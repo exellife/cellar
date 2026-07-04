@@ -19,6 +19,11 @@ bool cel_password_verify(const char *hash, const char *password);
  * (`out` must be >= nbytes*2 + 1). Returns 0 on success, -1 on error. */
 int cel_random_token_hex(char *out, size_t out_size, size_t nbytes);
 
+/* Write a numeric one-time code of `digits` digits (4..9, leading zeros kept)
+ * into `out` (>= digits+1 bytes), drawn from a uniform bias-free CSPRNG.
+ * Returns 0 on success, -1 on error. */
+int cel_random_code(char *out, size_t out_size, unsigned digits);
+
 /* Hex-encoded SHA-256 of `token` into `out` (>= 65 bytes). Session tokens are
  * stored hashed at rest, so a DB read-leak yields no usable bearer tokens — the
  * client keeps the raw token; the server hashes it and looks up by the hash.
