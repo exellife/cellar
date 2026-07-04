@@ -196,6 +196,34 @@ def run_checks(port, db):
                 "attributes": {"size": "L"}}, token=tok)
     chk("new subcat missing required (gender) -> 400", s == 400, f"status={s}")
 
+    # ---- admin taxonomy writes + validation (FEEDBACK ask 3) ----
+    s, b = req("POST", "/api/category",
+               {"id": "cat-test-x", "slug": "test-x", "name": "Тест", "parent_id": "cat-home"}, token=tok)
+    chk("admin create category -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
+    s, _ = req("POST", "/api/category", {"id": "cat-bad", "slug": "BadSlug", "name": "x"}, token=tok)
+    chk("category bad slug -> 400", s == 400, f"status={s}")
+    s, _ = req("POST", "/api/category", {"id": "cat-bad2", "slug": "bad2", "name": "x", "parent_id": "cat-nope"}, token=tok)
+    chk("category bad parent -> 400", s == 400, f"status={s}")
+    # attribute integrity
+    s, _ = req("POST", "/api/category_attribute",
+               {"id": "ca-x1", "category_id": "cat-test-x", "key": "kind", "label": "Тип", "type": "enum"}, token=tok)
+    chk("enum without options -> 400", s == 400, f"status={s}")
+    s, _ = req("POST", "/api/category_attribute",
+               {"id": "ca-x2", "category_id": "cat-test-x", "key": "kind", "label": "Тип", "type": "enum", "options": "not json"}, token=tok)
+    chk("bad options JSON -> 400", s == 400, f"status={s}")
+    s, _ = req("POST", "/api/category_attribute",
+               {"id": "ca-x6", "category_id": "cat-test-x", "key": "z", "label": "Z", "type": "bogus"}, token=tok)
+    chk("bad attribute type -> 400", s == 400, f"status={s}")
+    s, b = req("POST", "/api/category_attribute",
+               {"id": "ca-x3", "category_id": "cat-test-x", "key": "kind", "label": "Тип", "type": "enum", "options": "[\"A\",\"B\"]", "filterable": 1}, token=tok)
+    chk("valid enum attribute -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
+    s, _ = req("POST", "/api/category_attribute",
+               {"id": "ca-x4", "category_id": "cat-test-x", "key": "sub", "label": "Под", "type": "text", "depends_on": "nope"}, token=tok)
+    chk("depends_on nonexistent key -> 400", s == 400, f"status={s}")
+    s, b = req("POST", "/api/category_attribute",
+               {"id": "ca-x5", "category_id": "cat-test-x", "key": "sub", "label": "Под", "type": "text", "depends_on": "kind"}, token=tok)
+    chk("depends_on existing key -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
+
     # ---- A1.1 photos attach + validation ----
     pid_a, pid_b = "a" * 32, "b" * 32
     s, b = req("POST", "/api/listings",

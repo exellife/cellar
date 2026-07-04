@@ -220,8 +220,67 @@ local function over_contact_limit(who)
   return n >= CONTACT_LIMIT_1H * trust_mult(who.user_id)
 end
 
+-- FEEDBACK ask 3: validate admin taxonomy writes beyond what the schema enforces —
+-- friendly errors + the integrity SQLite can't express (well-formed enum options;
+-- depends_on points at a real sibling key). Policy already limits these to admins.
+local ATTR_TYPES = { enum = true, int = true, number = true, bool = true, text = true }
+
+local function before_category(op, input)
+  if op == 'delete' then return true end
+  if op == 'create' and (not input.name or input.name == '') then return false, 'name is required' end
+  if op == 'create' and (not input.slug or input.slug == '') then return false, 'slug is required' end
+  if input.slug ~= nil and not tostring(input.slug):match('^[a-z0-9%-]+$') then
+    return false, 'slug must be lowercase letters, digits, or hyphens'   -- (uniqueness is enforced by the schema)
+  end
+  if input.parent_id ~= nil and input.parent_id ~= '' and
+     not cellar.query('SELECT 1 AS ok FROM category WHERE id = ?', { input.parent_id })[1] then
+    return false, 'parent_id does not reference an existing category'
+  end
+  return true
+end
+
+local function before_category_attribute(op, input)
+  if op == 'delete' then return true end
+  if input.type ~= nil and not ATTR_TYPES[tostring(input.type)] then
+    return false, 'type must be one of enum | int | number | bool | text'
+  end
+  if op == 'create' then
+    if not input.key or input.key == '' then return false, 'key is required' end
+    if not input.category_id or input.category_id == '' then return false, 'category_id is required' end
+    if not input.label or input.label == '' then return false, 'label is required' end
+  end
+  if input.key ~= nil and not tostring(input.key):match('^[a-z][a-z0-9_]*$') then
+    return false, 'key must be a lowercase identifier (letter, then letters/digits/underscore)'
+  end
+  if input.category_id ~= nil and input.category_id ~= '' and
+     not cellar.query('SELECT 1 AS ok FROM category WHERE id = ?', { input.category_id })[1] then
+    return false, 'category_id does not reference an existing category'
+  end
+  -- options: must be a non-empty JSON array; an enum needs it, non-enums shouldn't.
+  local has_opts = input.options ~= nil and input.options ~= ''
+  if has_opts then
+    local r = cellar.query('SELECT json_valid(?) AS v, json_type(?) AS t, json_array_length(?) AS n',
+                           { input.options, input.options, input.options })[1]
+    if not r or r.v ~= 1 or r.t ~= 'array' or (tonumber(r.n) or 0) < 1 then
+      return false, 'options must be a non-empty JSON array, e.g. ["A","B"]'
+    end
+  end
+  if input.type == 'enum' and op == 'create' and not has_opts then
+    return false, 'an enum attribute needs an options array'
+  end
+  -- depends_on must reference an existing key in the SAME category (not a FK → check here)
+  if input.depends_on ~= nil and input.depends_on ~= '' and input.category_id ~= nil and input.category_id ~= '' and
+     not cellar.query('SELECT 1 AS ok FROM category_attribute WHERE category_id = ? AND key = ?',
+                      { input.category_id, input.depends_on })[1] then
+    return false, 'depends_on must reference an existing attribute key in the same category'
+  end
+  return true
+end
+
 function before(op, tbl, input, who)
   if tbl == 'message' then return before_message(op, input, who) end
+  if tbl == 'category' then return before_category(op, input) end
+  if tbl == 'category_attribute' then return before_category_attribute(op, input) end
   if tbl ~= 'listings' then return true end
 
   if op == 'create' then
