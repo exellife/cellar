@@ -63,10 +63,13 @@ _Engine fixes that came out of dogfooding (the loop working). New resolutions go
   open). Gated in the write hook (`before(create, listings)`) + `reveal_contact` + `start_conversation`;
   admins exempt. Stable signal **`email_not_verified`** in two shapes the client keys on: posting →
   **400** `{message:"email_not_verified"}`; contact rpcs → **200** `{result:{ok:false,error:"email_not_verified"}}`
-  (documented in `apps/classifieds/FRONTEND.md`). Bundle-side (`require_verified`/`is_verified` in
-  `apps/classifieds/hooks.lua`), **env-tunable `CLS_REQUIRE_VERIFIED`** (default on; `=0` off). Test:
-  `test_moderation.py` `contact_gate_flow` (unverified blocked on post + reveal + chat; verified can do
-  all three). **Live status: deployed to the LOCAL :8080 instance only; jarchy prod pending.**
+  (documented in `apps/classifieds/FRONTEND.md`). Bundle-side (`require_verified`/`is_verified(who,action)`
+  in `apps/classifieds/hooks.lua`). **Per-action env toggles** (`f914a6a`): `CLS_REQUIRE_VERIFIED_POST` /
+  `CLS_REQUIRE_VERIFIED_CONTACT` each override the shared `CLS_REQUIRE_VERIFIED` default (all on unless a
+  flag is `0`) — so you can gate post-only, contact-only, both, or neither, env-only. Tests:
+  `test_moderation.py` `contact_gate_flow` (both gated) + `split_gate_flow` (post gated, contact open).
+  Adversarial-reviewed (`wf` post-gate review: 1 low test-hermeticity finding, fixed; no bypass/fail-open).
+  **Live status: deployed to the LOCAL :8080 instance only; jarchy prod pending.**
 
 - **Email verification — 6-digit code (soft, non-blocking)** — SHIPPED `45ed373`. Answers to the two
   questions first: **(a)** SES **is** enabled for classifieds (jarchy inherits process-wide
