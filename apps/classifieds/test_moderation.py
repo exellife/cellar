@@ -117,6 +117,11 @@ def col(db, lid, name):   # name is a test-controlled literal
 def set_status(db, lid, st):
     c = sqlite3.connect(db); c.execute("UPDATE listings SET status=? WHERE id=?", (st, lid)); c.commit(); c.close()
 
+def verify_user(db, email):
+    c = sqlite3.connect(db)
+    c.execute("UPDATE cel_users SET email_verified_at = strftime('%s','now') WHERE email=?", (email,))
+    c.commit(); c.close()
+
 def core_flow(port, db):
     req = mkreq(port)
     print(f"== core flow (manual moderation) -> 127.0.0.1:{port} ==")
@@ -276,6 +281,28 @@ def autohide_flow(port, db):
     req("POST", "/rpc/dismiss_reports", {"listing_id": lid}, token=atok)
     chk("dismiss un-hides the auto-hidden listing (#4)", status_of(db, lid) == "active", status_of(db, lid))
 
+# item 7: email_verified gate on contact actions (reveal + start chat); posting stays open
+def contact_gate_flow(port, db):
+    req = mkreq(port)
+    print(f"== contact gate: verified email required to reveal/chat (posting open) -> 127.0.0.1:{port} ==")
+    stok = login(req, SELLER); r1 = login(req, R1)
+    s, lid = post_listing(req, stok, "Gated-contact item")
+    chk("posting is NOT gated (unverified seller posts) -> 201", s == 201 and bool(lid), f"status={s}")
+    req("POST", "/rpc/set_listing_contact", {"listing_id": lid, "phone": "+996700000000"}, token=stok)
+
+    # R1 is unverified -> both contact actions return the stable gate signal
+    s, b = req("POST", "/rpc/reveal_contact", {"listing_id": lid}, token=r1)
+    chk("unverified reveal -> email_not_verified",
+        result(b) and result(b).get("ok") is False and result(b).get("error") == "email_not_verified", str(result(b)))
+    s, b = req("POST", "/rpc/start_conversation", {"listing_id": lid}, token=r1)
+    chk("unverified start_conversation -> email_not_verified",
+        result(b) and result(b).get("error") == "email_not_verified", str(result(b)))
+
+    # verify R1's email -> reveal now returns the phone
+    verify_user(db, R1[0])
+    s, b = req("POST", "/rpc/reveal_contact", {"listing_id": lid}, token=r1)
+    chk("verified reveal returns the phone", result(b) and result(b).get("phone") == "+996700000000", str(result(b)))
+
 def run(extra_env, fn):
     d = tempfile.mkdtemp(prefix="cls-mod-")
     try:
@@ -297,6 +324,7 @@ def main():
     run(None, core_flow)
     run(None, dismiss_flow)
     run(None, sold_flow)
+    run(None, contact_gate_flow)   # gate on by default
     run({"CLS_AUTO_HIDE_REPORTS": "2"}, autohide_flow)
     print(f"\n{'ALL PASS' if fail == 0 else f'FAILED ({fail})'}  ({ok} ok)")
     return 1 if fail else 0

@@ -169,6 +169,20 @@ local function trust_mult(user_id)
   return 1
 end
 
+-- Email-verified gate (item 7): contacting a seller (phone reveal / start chat)
+-- requires a verified email — the higher-abuse actions (anti number-scraping /
+-- spam-DM). Posting + browsing stay open. Admins exempt. Returns a stable,
+-- distinguishable signal the client keys on to open the verify prompt.
+-- Env-tunable (CLS_REQUIRE_VERIFIED_CONTACT=0 turns the gate off; default on).
+local REQUIRE_VERIFIED_CONTACT = (os.getenv('CLS_REQUIRE_VERIFIED_CONTACT') or '1') ~= '0'
+local function require_verified(who)
+  if not REQUIRE_VERIFIED_CONTACT then return nil end
+  if who.role == 'admin' then return nil end
+  local u = cellar.query('SELECT email_verified_at FROM cel_users WHERE id = ?', { who.user_id })[1]
+  if u and u.email_verified_at ~= nil then return nil end
+  return { ok = false, error = 'email_not_verified' }
+end
+
 -- posts in the last 24h vs the trust-scaled cap (admins exempt).
 local function over_post_limit(who)
   if who.role == 'admin' then return false end
@@ -695,6 +709,7 @@ end
 -- 'phone' (default) or 'whatsapp'; the listing's channel flag must allow it.
 local function reveal_contact(args, who)
   if not (who and who.authenticated) then return nil end
+  local gate = require_verified(who); if gate then return gate end   -- item 7: verified email to contact
   if over_contact_limit(who) then return nil end     -- A2.5 velocity gate (anti number-scraping)
   local id = args and args.listing_id
   if not id then return nil end
@@ -731,6 +746,7 @@ end
 -- reads + realtime subscribe.
 local function start_conversation(args, who)
   if not (who and who.authenticated) then return nil end
+  local gate = require_verified(who); if gate then return gate end   -- item 7: verified email to contact
   if over_contact_limit(who) then return nil end     -- A2.5 velocity gate (anti spam-DM)
   local lid = args and args.listing_id
   if not lid then return nil end

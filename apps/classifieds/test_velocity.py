@@ -54,6 +54,7 @@ def main():
         env = dict(os.environ, CEL_PORT=str(port), CEL_DATA_DB=db, CEL_LOG_LEVEL="warn",
                    CEL_POLICY_FILE=os.path.join(d, "policies.json"),
                    CEL_JOBS_INTERVAL="0", CLS_POST_LIMIT="3", CLS_CONTACT_LIMIT="2",
+                   CLS_REQUIRE_VERIFIED_CONTACT="0",   # this test exercises the velocity gate, not the verify gate
                    CEL_AUTH_RATELIMIT="0", CEL_API_RATELIMIT="0",
                    CEL_SEED_USERS=f"{ADMIN[0]}:{ADMIN[1]}:admin")
         log = open(os.path.join(d, "server.log"), "w")
