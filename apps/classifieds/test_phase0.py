@@ -682,6 +682,20 @@ def run_checks(port, db):
     chk("negative price -> 400", s == 400, f"status={s}")
     s, _ = req("POST", "/api/listings", dict(base_ok, price=10.5), token=seller)
     chk("fractional price -> 400", s == 400, f"status={s}")
+    # is_free: price 0 now rejected; a free listing stores is_free=1, nulls price, and is searchable
+    s, _ = req("POST", "/api/listings", dict(base_ok, price=0), token=seller)
+    chk("price 0 -> 400 (use is_free)", s == 400, f"status={s}")
+    s, b = req("POST", "/api/listings", dict(base_ok, title="Free thing", is_free=True, price=500), token=seller)
+    frow = (b or {}).get("row", {})
+    chk("free listing -> 201", s == 201, f"status={s}")
+    chk("is_free stored as 1 + price nulled", frow.get("is_free") == 1 and frow.get("price") is None, str(frow))
+    s, b = req("POST", "/rpc/search", {"free": True, "category": "cat-cars"})
+    r = (b or {}).get("result") or {}
+    chk("search free filter -> only free rows",
+        r.get("total", 0) >= 1 and all(x.get("is_free") == 1 for x in (r.get("results") or [])), str(r.get("total")))
+    s, b = req("POST", "/rpc/search", {"category": "cat-cars"})
+    r = (b or {}).get("result") or {}
+    chk("search reports free_count", isinstance(r.get("free_count"), int) and r.get("free_count") >= 1, str(r.get("free_count")))
     # #6 created_at is server-owned (a forged far-future value is ignored)
     s, b = req("POST", "/api/listings", dict(base_ok, created_at="2099-01-01T00:00:00Z"), token=seller)
     hid = (b or {}).get("row", {}).get("id")

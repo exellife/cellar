@@ -111,8 +111,9 @@ CREATE TABLE listings (
   category_id TEXT NOT NULL REFERENCES category(id),
   title       TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
-  price       INTEGER,                          -- whole units of `currency`; NULL = unpriced
+  price       INTEGER,                          -- whole units of `currency`; NULL = unpriced ("договорная")
   price_negotiable INTEGER NOT NULL DEFAULT 0,  -- "договорная"
+  is_free     INTEGER NOT NULL DEFAULT 0,       -- "Бесплатно" (free); distinct from unpriced + rejects price 0
   currency    TEXT NOT NULL DEFAULT 'KGS',
   locale      TEXT NOT NULL DEFAULT 'ru',
   city_id     TEXT REFERENCES geo_city(id),

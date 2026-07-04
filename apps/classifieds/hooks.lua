@@ -152,8 +152,14 @@ end
 
 -- price is optional, but if present must be a whole, non-negative number (soms).
 local function valid_price(p)
-  if p == nil then return true end
-  return type(p) == 'number' and p >= 0 and p == math.floor(p)
+  if p == nil then return true end                       -- unpriced ("договорная")
+  return type(p) == 'number' and p > 0 and p == math.floor(p)   -- positive whole; 0 is invalid (use is_free)
+end
+
+-- Coerce a JSON-ish boolean (true/1/"1") to 0/1, else nil-passthrough.
+local function to_bool01(v)
+  if v == nil then return nil end
+  return (v == true or v == 1 or v == '1') and 1 or 0
 end
 
 -- A2.5: trust multiplier from account age + email-verified (read from the
@@ -225,7 +231,10 @@ function before(op, tbl, input, who)
     input.created_at = now_iso()              -- server-owned (drives the "newest" sort)
     input.updated_at = input.created_at
     input.expires_at = iso_in(EXPIRY_DAYS)    -- server-owned
-    if not valid_price(input.price) then return false, 'price must be a whole, non-negative number' end
+    -- "Бесплатно": normalize to 0/1; a free listing carries no price.
+    input.is_free = to_bool01(input.is_free)
+    if input.is_free == 1 then input.price = nil; input.price_negotiable = 0 end
+    if not valid_price(input.price) then return false, 'price must be a whole positive number (omit for «договорная», or set is_free)' end
     local pok, perr = validate_photos(input.photos)
     if not pok then return false, perr end
     return validate_attrs(input.category_id, input.attributes)
@@ -234,7 +243,11 @@ function before(op, tbl, input, who)
     input.updated_at = now_iso()
     input.seller_id  = nil                    -- ownership can't be reassigned via update
     input.created_at = nil                    -- can't be backdated via a PATCH
-    if not valid_price(input.price) then return false, 'price must be a whole, non-negative number' end
+    if input.is_free ~= nil then
+      input.is_free = to_bool01(input.is_free)
+      if input.is_free == 1 then input.price = nil; input.price_negotiable = 0 end
+    end
+    if not valid_price(input.price) then return false, 'price must be a whole positive number (omit for «договорная», or set is_free)' end
     local pok, perr = validate_photos(input.photos)
     if not pok then return false, perr end
     -- before() sees only the PATCH body (no row id / no stored attributes), so a
@@ -572,6 +585,7 @@ local function search(args)
   for i = 1, #binds do base_binds[i] = binds[i] end
 
   add_facet_conds(args.filters, conds, binds)
+  if args.free then conds[#conds+1] = 'l.is_free = 1' end   -- "Бесплатно" filter (facet-like; free_count is over the base set)
   local where = table.concat(conds, ' AND ')
 
   -- ordering: relevance only with a query; else newest. price sorts push NULLs last.
@@ -589,7 +603,7 @@ local function search(args)
   pbinds[#pbinds+1] = limit; pbinds[#pbinds+1] = offset
   local rows = cellar.query(
     'SELECT l.id, l.title, l.price, l.currency, l.category_id, l.city_id, l.district_id, ' ..
-    'l.condition, l.price_negotiable, l.seller_id, l.photos, l.created_at, ' ..
+    'l.condition, l.price_negotiable, l.is_free, l.seller_id, l.photos, l.created_at, ' ..
     'up.display_name AS seller_name, ' ..
     '(SELECT count(*) FROM favorite fav WHERE fav.listing_id = l.id) AS saved_count ' ..
     'FROM ' .. from .. ' LEFT JOIN user_profile up ON up.id = l.seller_id ' ..
@@ -622,10 +636,14 @@ local function search(args)
     end
   end
 
+  -- "Бесплатно" count over the base set (like a facet), so the sidebar can offer the toggle
+  local free_count = cellar.query(
+    'SELECT count(*) AS n FROM ' .. base_from .. ' WHERE ' .. base_where .. ' AND l.is_free = 1', base_binds)[1].n
+
   if match ~= '' then
     cellar.emit('search', { props = '{"q":"' .. (tostring(args.q):gsub('"', '')) .. '"}' })
   end
-  return { results = rows, total = total, limit = limit, offset = offset, facets = facets }
+  return { results = rows, total = total, limit = limit, offset = offset, facets = facets, free_count = free_count }
 end
 
 -- ── A1.5: listing detail ────────────────────────────────────────────────────
