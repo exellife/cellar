@@ -50,11 +50,50 @@ instead of working around it silently** — engine problems get fixed in the eng
   `mutation_id` → second response has no `winner`.
 - **filed:** 2026-06-22 by cellar-agent (seed example — known backlog item)
 
+### [OPEN] Gate listing-create + contact-reveal on email_verified (item 7 of the verification ask)
+- **kind:** gap (+ product decision)
+- **severity:** medium — the **6-digit code flow (items 1–6) is SHIPPED** (`45ed373`, see Resolved).
+  What remains is item 7: **require `email_verified` before a user can post a listing or reveal a
+  seller's contact** (browsing stays fully open). Distinct from the code flow, and a live-behavior
+  change on a public site — so it needs the human's product call before it goes on.
+- **what's needed (when approved):**
+  - Reject listing-create and the contact `reveal_contact` rpc for an **unverified** user with a
+    **stable, distinguishable** error — proposal: `403` + `{ error:"email_not_verified" }` — so the
+    client opens the verify prompt instead of showing a generic failure. Bundle-side gate in
+    `apps/classifieds/hooks.lua` (`before(create, listings)` + `reveal_contact`); the engine already
+    carries `email_verified` on the session, exposed to hooks' `who` (or the hook reads `cel_users`).
+- **open product question (for the human, not the engine):** turning this on adds a verify step to the
+  post/contact funnel on the LIVE site (SES is on, so it works) — friction vs. trust. Options: (a) hard
+  gate now; (b) gate only contact-reveal (higher-abuse) but leave posting open; (c) keep soft (trust
+  tiers already scale limits by `email_verified`) and defer the hard gate. **Not enabling unilaterally.**
+- **filed:** 2026-07-04 by frontend-agent (classifieds/Jarchy); items 1–6 resolved 2026-07-04 by cellar-agent.
+
 ---
 
 ## Resolved
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
+
+- **Email verification — 6-digit code (soft, non-blocking)** — SHIPPED `45ed373`. Answers to the two
+  questions first: **(a)** SES **is** enabled for classifieds (jarchy inherits process-wide
+  `no-reply@svngn.com` / SES:2465, no `_mail` override). **(b)** The engine already had verification
+  (`email_verified` on the user, `/auth/verify-email` + `.../resend`) but as a **magic-link token** — so
+  it was rebuilt as the requested **6-digit code**. Contract (frontend items 1–6 all met):
+  - **item 1** `user.email_verified` — already on the register/login user object. ✓
+  - **items 2–3** register auto-sends a code; **`POST /auth/verify-email { code }`** is now **Bearer-
+    authenticated** (the session identifies the user): `200` verifies, `400` on wrong/expired. Code is
+    **6-digit, sha256 at rest, 15-min TTL, single-use, 5-attempt cap** (then dead → resend). ✓
+  - **item 4** **`POST /auth/verify-email/resend`** (Bearer) → `200`; a **server-side ~60s cooldown** is
+    enforced in the engine (`CEL_AUTH_LOCKED` → no send), not just the client timer. ✓
+  - **item 5** **RU** subject/text/html — jarchy's `render_email` hook renders the code in Russian
+    (`ctx.code`); other apps get the engine's plain default. ✓
+  - **item 6** already-verified / OAuth (pre-verified) → no code minted (`CEL_AUTH_CONFLICT`). ✓
+  - Engine internals: `cel_random_code` (bias-free), `cel_email_verifications` re-keyed (v4→v5 migration),
+    `cel_auth_create_email_code` / `cel_auth_verify_email_code`. Tests: `auth_sqlite_test.c` unit cases +
+    the `email_verification` e2e ported to the code flow; **81/81** green. Contract in
+    `docs/frontend-guide.md`. **Endpoint names:** kept the engine's `/auth/verify-email` (+ `/resend`)
+    rather than the proposed `/auth/email/*` — same behavior, wire to these. (**item 7 — the hard gate —
+    is a separate Open item pending a product decision.**)
 
 - **classifieds notifications — "mark read" already exists (contract mismatch)** — WORKING AS INTENDED,
   no engine/bundle change. The badge can be cleared; the client was calling the wrong endpoints
