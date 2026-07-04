@@ -315,6 +315,28 @@ def contact_gate_flow(port, db):
     s, b = req("POST", "/rpc/reveal_contact", {"listing_id": lid}, token=r1)
     chk("verified reveal returns the phone", result(b) and result(b).get("phone") == "+996700000000", str(result(b)))
 
+# per-action split: CLS_REQUIRE_VERIFIED_POST=1 (with CLS_REQUIRE_VERIFIED=0) -> post gated, contact open
+def split_gate_flow(port, db):
+    req = mkreq(port)
+    print(f"== split toggle: post GATED, contact OPEN -> 127.0.0.1:{port} ==")
+    stok = login(req, SELLER); r1 = login(req, R1)
+    car = {"category_id": "cat-cars", "city_id": "ci-bishkek", "attributes": {"make": "Toyota", "year": 2018}}
+
+    verify_user(db, SELLER[0])   # seller must be verified to post the fixture (post gate is ON)
+    s, lid = post_listing(req, stok, "Split item")
+    chk("verified seller posts (post gate on) -> 201", s == 201 and bool(lid), f"status={s}")
+    req("POST", "/rpc/set_listing_contact", {"listing_id": lid, "phone": "+996700000009"}, token=stok)
+
+    # unverified R1: POST blocked (post gate on) ...
+    s, b = req("POST", "/api/listings", dict(car, title="blocked"), token=r1)
+    chk("unverified post BLOCKED (post gate on) -> 400",
+        s == 400 and "email_not_verified" in (b or {}).get("message", ""), f"status={s}")
+    # ... but reveal + chat ALLOWED (contact gate off)
+    s, b = req("POST", "/rpc/reveal_contact", {"listing_id": lid}, token=r1)
+    chk("unverified reveal ALLOWED (contact gate off)", result(b) and result(b).get("phone") == "+996700000009", str(result(b)))
+    s, b = req("POST", "/rpc/start_conversation", {"listing_id": lid}, token=r1)
+    chk("unverified chat ALLOWED (contact gate off)", result(b) and result(b).get("conversation_id"), str(result(b)))
+
 def run(extra_env, fn):
     d = tempfile.mkdtemp(prefix="cls-mod-")
     try:
@@ -337,7 +359,8 @@ def main():
     run({"CLS_REQUIRE_VERIFIED": "0"}, core_flow)
     run({"CLS_REQUIRE_VERIFIED": "0"}, dismiss_flow)
     run({"CLS_REQUIRE_VERIFIED": "0"}, sold_flow)
-    run(None, contact_gate_flow)   # gate ON (default): exercises the verify gate on post + contact
+    run({"CLS_REQUIRE_VERIFIED": "1"}, contact_gate_flow)   # gate ON explicitly (hermetic): post + contact
+    run({"CLS_REQUIRE_VERIFIED": "0", "CLS_REQUIRE_VERIFIED_POST": "1"}, split_gate_flow)   # post-only gate
     run({"CLS_AUTO_HIDE_REPORTS": "2", "CLS_REQUIRE_VERIFIED": "0"}, autohide_flow)
     print(f"\n{'ALL PASS' if fail == 0 else f'FAILED ({fail})'}  ({ok} ok)")
     return 1 if fail else 0

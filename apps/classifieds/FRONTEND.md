@@ -282,8 +282,10 @@ listing detail + an **admin moderation queue** in the admin surface.
 ## Email-verification gate *(participate = verified)*
 
 A verified email is required to **post a listing**, **reveal a seller's contact**, or **start a chat**.
-Browsing/search stays fully open. Admins are exempt. (Server-enforced in the bundle; env
-`CLS_REQUIRE_VERIFIED`, default on.) The signal is the stable string **`email_not_verified`** — key on
+Browsing/search stays fully open. Admins are exempt. Server-enforced in the bundle; togglable per
+action via env — `CLS_REQUIRE_VERIFIED` (both, default on), or `CLS_REQUIRE_VERIFIED_POST` /
+`CLS_REQUIRE_VERIFIED_CONTACT` to gate just one (e.g. require verification to contact but not to post).
+The signal is the stable string **`email_not_verified`** — key on
 it to open the verify prompt instead of showing a generic error. Two response shapes, by path:
 
 - **Posting** (`POST /api/listings`, blocked in the write hook) → **HTTP 400**, body

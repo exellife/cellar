@@ -172,21 +172,28 @@ end
 -- Email-verified gate (item 7): a verified email is required to PARTICIPATE —
 -- post a listing, reveal a seller's contact, or start a chat. Browsing stays fully
 -- open. Admins exempt. The client keys on the stable 'email_not_verified' signal to
--- open the verify prompt. Env-tunable (CLS_REQUIRE_VERIFIED=0 turns the gate off).
-local REQUIRE_VERIFIED = (os.getenv('CLS_REQUIRE_VERIFIED') or '1') ~= '0'
+-- open the verify prompt.
+--
+-- Per-action toggles: CLS_REQUIRE_VERIFIED_POST / CLS_REQUIRE_VERIFIED_CONTACT each
+-- override the shared CLS_REQUIRE_VERIFIED default (all gates on unless set to 0).
+-- e.g. CLS_REQUIRE_VERIFIED=0 CLS_REQUIRE_VERIFIED_POST=1 → gate posting only.
+local REQUIRE_VERIFIED_POST    = (os.getenv('CLS_REQUIRE_VERIFIED_POST')    or os.getenv('CLS_REQUIRE_VERIFIED') or '1') ~= '0'
+local REQUIRE_VERIFIED_CONTACT = (os.getenv('CLS_REQUIRE_VERIFIED_CONTACT') or os.getenv('CLS_REQUIRE_VERIFIED') or '1') ~= '0'
 
--- Predicate: may `who` act? (verified email, or admin, or the gate is disabled.)
-local function is_verified(who)
-  if not REQUIRE_VERIFIED then return true end
+-- Predicate: may `who` do `action` ('post' | 'contact')? True if that action's gate
+-- is off, the caller is an admin, or their email is verified.
+local function is_verified(who, action)
+  local gate_on = (action == 'post') and REQUIRE_VERIFIED_POST or REQUIRE_VERIFIED_CONTACT
+  if not gate_on then return true end
   if who and who.role == 'admin' then return true end
   local u = who and cellar.query('SELECT email_verified_at FROM cel_users WHERE id = ?', { who.user_id })[1]
   return u ~= nil and u.email_verified_at ~= nil
 end
 
--- rpc form: the stable gate error table (for reveal_contact / start_conversation),
--- or nil to proceed.
+-- rpc form for the contact actions (reveal_contact / start_conversation): the stable
+-- gate error table, or nil to proceed.
 local function require_verified(who)
-  if is_verified(who) then return nil end
+  if is_verified(who, 'contact') then return nil end
   return { ok = false, error = 'email_not_verified' }
 end
 
@@ -212,7 +219,7 @@ function before(op, tbl, input, who)
   if tbl ~= 'listings' then return true end
 
   if op == 'create' then
-    if not is_verified(who) then return false, 'email_not_verified' end   -- item 7: verified email to post
+    if not is_verified(who, 'post') then return false, 'email_not_verified' end   -- item 7: verified email to post
     if over_post_limit(who) then return false, 'daily posting limit reached — try again later' end
     input.seller_id  = who.user_id            -- server-owned (anti-spoof); id via column DEFAULT
     input.created_at = now_iso()              -- server-owned (drives the "newest" sort)
