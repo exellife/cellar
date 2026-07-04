@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Minimal one-shot SMTP sink for testing cellar's mailer (no TLS, no auth).
+"""Minimal SMTP sink for testing cellar's mailer (no TLS, no auth).
 
 Speaks just enough SMTP for libcurl: 220 greeting, EHLO/MAIL/RCPT -> 250, DATA ->
 354 then collect until the lone "." -> 250. Writes the captured DATA payload to
-the given file and exits after the first complete message. Accepts in a loop so a
-liveness probe that connects-and-closes doesn't consume the real delivery.
+the given file. Accepts in a loop so a liveness probe that connects-and-closes
+doesn't consume the real delivery.
 
-    mock_smtp.py <port> <capture-file>
+    mock_smtp.py [--forever] <port> <capture-file>
+
+Default: one-shot — overwrites the file and exits after the first message (test
+harnesses). With --forever: stays up and APPENDS every message (dev use, e.g.
+run.sh, so each signup's code is captured).
 """
 import socket, sys
 
 
-def handle(conn, capture_path):
+def handle(conn, capture_path, append=False):
     def reply(s):
         try: conn.sendall(s.encode())
         except OSError: pass
@@ -48,14 +52,19 @@ def handle(conn, capture_path):
             else:                       # MAIL, RCPT, RSET, NOOP, ...
                 reply("250 OK\r\n")
     if got_message:
-        with open(capture_path, "wb") as f:
+        with open(capture_path, "ab" if append else "wb") as f:
+            if append: f.write(b"\r\n----\r\n")
             f.write(b"\r\n".join(captured))
     return got_message
 
 
 def main():
-    port = int(sys.argv[1])
-    capture_path = sys.argv[2]
+    args = sys.argv[1:]
+    forever = False
+    if args and args[0] == "--forever":
+        forever = True; args = args[1:]
+    port = int(args[0])
+    capture_path = args[1]
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", port))
@@ -63,9 +72,9 @@ def main():
     try:
         while True:
             conn, _ = srv.accept()
-            done = handle(conn, capture_path)
+            done = handle(conn, capture_path, append=forever)
             conn.close()
-            if done:
+            if done and not forever:
                 break
     finally:
         srv.close()

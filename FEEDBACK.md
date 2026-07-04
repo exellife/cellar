@@ -50,29 +50,22 @@ instead of working around it silently** — engine problems get fixed in the eng
   `mutation_id` → second response has no `winner`.
 - **filed:** 2026-06-22 by cellar-agent (seed example — known backlog item)
 
-### [OPEN] Gate listing-create + contact-reveal on email_verified (item 7 of the verification ask)
-- **kind:** gap (+ product decision)
-- **severity:** medium — the **6-digit code flow (items 1–6) is SHIPPED** (`45ed373`, see Resolved).
-  What remains is item 7: **require `email_verified` before a user can post a listing or reveal a
-  seller's contact** (browsing stays fully open). Distinct from the code flow, and a live-behavior
-  change on a public site — so it needs the human's product call before it goes on.
-- **what's needed (when approved):**
-  - Reject listing-create and the contact `reveal_contact` rpc for an **unverified** user with a
-    **stable, distinguishable** error — proposal: `403` + `{ error:"email_not_verified" }` — so the
-    client opens the verify prompt instead of showing a generic failure. Bundle-side gate in
-    `apps/classifieds/hooks.lua` (`before(create, listings)` + `reveal_contact`); the engine already
-    carries `email_verified` on the session, exposed to hooks' `who` (or the hook reads `cel_users`).
-- **open product question (for the human, not the engine):** turning this on adds a verify step to the
-  post/contact funnel on the LIVE site (SES is on, so it works) — friction vs. trust. Options: (a) hard
-  gate now; (b) gate only contact-reveal (higher-abuse) but leave posting open; (c) keep soft (trust
-  tiers already scale limits by `email_verified`) and defer the hard gate. **Not enabling unilaterally.**
-- **filed:** 2026-07-04 by frontend-agent (classifieds/Jarchy); items 1–6 resolved 2026-07-04 by cellar-agent.
+_(no open items)_
 
 ---
 
 ## Resolved
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
+
+- **Item 7 — gate contact actions on `email_verified`** — SHIPPED `93168de` (product decision:
+  **contact-reveal only**, posting stays open). `reveal_contact` + `start_conversation` require a
+  verified email; an unverified caller gets a stable **`{ ok:false, error:"email_not_verified" }`** the
+  client keys on to open the verify prompt. Admins exempt. Bundle-side (`require_verified` in
+  `apps/classifieds/hooks.lua`), **env-tunable `CLS_REQUIRE_VERIFIED_CONTACT`** (default on; `=0` off).
+  Listing-create is deliberately NOT gated (avoids signup→post friction on the fresh marketplace).
+  Test: `test_moderation.py` `contact_gate_flow` (unverified blocked on reveal + chat, posting open,
+  verified reveal works). **Live status: deployed to the LOCAL :8080 instance only; jarchy prod pending.**
 
 - **Email verification — 6-digit code (soft, non-blocking)** — SHIPPED `45ed373`. Answers to the two
   questions first: **(a)** SES **is** enabled for classifieds (jarchy inherits process-wide

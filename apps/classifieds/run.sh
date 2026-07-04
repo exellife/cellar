@@ -41,9 +41,27 @@ cp "$HERE/policies.json" "$BUNDLE/policies.json"
 # box (Gmail/Outlook reject it). See dist/cellar.env.example (DELIVERABILITY).
 # Inherited CEL_OAUTH_* / CEL_SMTP_* from the environment pass through below.
 
+# Dev mailer: unless a real CEL_SMTP_URL is set, boot a local mock SMTP sink so
+# email flows (the 6-digit verification code, password reset) actually "send" to a
+# capturable file — the frontend can read the latest verify code from it:
+#   grep -o 'code is: [0-9]\{6\}' "$MAIL_CAP" | tail -1
+MOCK_PID=""; MAIL_CAP=""
+if [ -z "${CEL_SMTP_URL:-}" ] && [ -f "$HERE/../../tests/mock_smtp.py" ]; then
+  MAIL_CAP="$(mktemp /tmp/classifieds-mail.XXXXXX)"
+  # A persistent mock SMTP sink (accept loop) so every signup's 6-digit code is
+  # captured (appended to $MAIL_CAP). Runs until this script exits (trap below).
+  python3 "$HERE/../../tests/mock_smtp.py" --forever "$((PORT + 1))" "$MAIL_CAP" >/dev/null 2>&1 &
+  MOCK_PID=$!
+  export CEL_SMTP_URL="smtp://127.0.0.1:$((PORT + 1))" CEL_SMTP_TLS=none \
+         CEL_MAIL_FROM="no-reply@classifieds.local" CEL_MAIL_CAPTURE="$MAIL_CAP"
+  # Auto-login on register (return a session token) so the client can hit the
+  # authenticated verify endpoint right after signup — matches the frontend flow.
+  export CEL_REGISTER_AUTOLOGIN=1
+fi
+
 env CEL_PORT="$PORT" CEL_APPS_DIR="$APPS" CEL_LOG_LEVEL=info "$BIN" >/tmp/classifieds.log 2>&1 &
 SRV=$!
-trap 'kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null' EXIT
+trap '[ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null; kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null' EXIT
 for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/health" && break; sleep 0.1; done
 
 # Seed the autonomous daily expiry sweep (idempotent — enqueue_job dedups
@@ -67,6 +85,12 @@ for uc in seller buyer; do
     "http://127.0.0.1:$PORT/auth/users"
 done
 
+# Mark the dev seller+buyer email-verified so the (default-on) contact gate lets
+# them reveal/chat out of the box; a NEW self-signup still exercises the gate +
+# the 6-digit code flow (code lands in the mock-mail capture above).
+sqlite3 "$DB" "UPDATE cel_users SET email_verified_at = COALESCE(email_verified_at, strftime('%s','now')) \
+  WHERE email IN ('seller@classifieds.local','buyer@classifieds.local');" 2>/dev/null || true
+
 cat <<EOF
 
   classifieds is live →  http://localhost:$PORT/
@@ -81,6 +105,10 @@ cat <<EOF
 
   Posting a listing needs a logged-in user (see policies.json). Ctrl-C to stop.
   Logs: /tmp/classifieds.log
+  Dev mail sink: ${MAIL_CAP:-<real SMTP configured>}  (6-digit verify codes land here)
+  Contact gate: reveal/chat require a verified email (dev seller/buyer are pre-verified);
+    a new signup auto-logs-in + gets a code in the sink — read the latest:
+    grep -oE 'Jarchy: [0-9]{6}' "${MAIL_CAP:-…}" | tail -1
 
 EOF
 wait "$SRV"
