@@ -124,6 +124,46 @@ driving the existing admin CRUD + the workflow rpcs above; use the **built-in ad
 Next step when resumed: inventory exactly which admin rpcs exist vs. need building + spec the panel's
 data contract (once, for both apps).
 
+## Monetization & account tiers — *(design of record; activate with billing)*
+
+> Noted 2026-07-04. NOT the storefront "Tier-1/Tier-2" decision (that's the *technical* page model,
+> §Storefront). These are **subscription/account tiers** + à-la-carte promotion — the revenue model.
+
+**Guiding principle: people pay to sell *faster*, not to list *more*.** An individual selling one phone
+never hits a listing cap, so a quota is a weak upgrade lever for casual users — it only bites
+professional/high-volume sellers. So the model has **two revenue surfaces**:
+
+1. **À-la-carte promotion (the primary money-maker)** — per-listing paid visibility, sold to *everyone*
+   (free users included), orthogonal to tiers: **bump** (re-sort to top), **featured** (badge +
+   placement), **urgent**, **highlight**. This is where classifieds (OLX/Avito/Lalafo) actually earn.
+2. **Subscription tiers (recurring)** — a *bundle* for professional sellers.
+
+**Tiers: launch with 2, architect for 3.** (Don't ship 3 speculatively — no billing yet, no signal.)
+| Tier (RU) | Audience | Bundle |
+|---|---|---|
+| **Free / Бесплатный** | individuals | base listing quota (the velocity limit today), standard expiry, in-app contact |
+| **Pro / Про** | power sellers | bigger/longer listing quota + auto-renew, **storefront** (Tier-1), **analytics**, **promotion credits**, verified badge |
+| **Business / Бизнес (or Магазин)** *(later)* | dealers, agencies, shops | company/team account + membership, bulk tools, custom storefront/domain, highest quota, priority |
+
+> Naming: **Free / Pro / Business** (audience-named), **not** "Pro Max" (Apple-phone branding that says
+> nothing about *who* it's for). The 3rd tier is the *business/shop* tier — name it so.
+
+**Levers → engine bits that already exist (this is an extension, not a new subsystem):**
+- **Listing quota / velocity** → the progressive-trust `POST_LIMIT_24H` limit (already scaled per user).
+  Extend: `limit = base × plan_multiplier` — `plan` replaces/augments `trust` in the same code path.
+- **Listing duration / auto-renew** → `EXPIRY_DAYS` per plan + the existing renew job.
+- **Storefront** → the Tier-1 config-driven seller page (Phase 5).
+- **Analytics** → `EventSink` (`listing_viewed` / contact events) → a per-seller dashboard rpc.
+- **Verified-business badge** → `email_verified` + a business-verification step.
+- **Promotion** → a `listing_promotion` table `(listing_id, type, expires_at)` + a search-ranking factor +
+  a job to expire it; `EventSink` measures the lift. Sold as one-offs or Pro's monthly credits.
+
+**Dependencies / sequencing:** payments are **not wired** (deferred, roadmap Phase 4). Until then this is a
+*model*, not live: at launch everyone is effectively Free (the velocity limits already give the "basic
+quota"). Activation needs a `plan` field (user/profile column or a `subscription` table, set by billing) +
+the promotion table + ranking hook. **Decision: Free + Pro at launch; promotion à-la-carte is the money-
+maker (not listing count); add Business when demand shows.**
+
 ## 5. Component gaps — what we need to build (ranked)
 
 > Ranked by how central each is to *this* product (discovery + connection), not eBay's.
