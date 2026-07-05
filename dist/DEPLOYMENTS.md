@@ -98,6 +98,16 @@ personal page + web pages). Oracle A1 is dev/demo.
       `dismiss` rpcs (hardened via adversarial review, commit `9ca89cb`). Auto-hide (`CLS_AUTO_HIDE_REPORTS`)
       is **off** by default → manual moderation. **Client UI still to build** (report button + admin queue —
       contract in `apps/classifieds/FRONTEND.md`).
+    - **Full stack LIVE (2026-07-05):** the accumulated classifieds work shipped to prod in one coordinated
+      deploy — new **binary** (6-digit email verification + per-recipient mail throttle + atomic auth-schema
+      migration; auth schema auto-migrated **v4→v6** on first request), full **bundle** (`is_free` +
+      31-subcat taxonomy + the verify **gate** + moderation), the new **frontend**, and `CEL_REGISTER_AUTOLOGIN=1`
+      (drop-in). Verify gate is **on by default** (`CLS_REQUIRE_VERIFIED`) — a real signup now emails a 6-digit
+      code via SES; posting/contact require verification (admins exempt). jarchy had **0 listings**, so the
+      catalog delta (`is_free` ALTER + taxonomy INSERTs + `deal` 3-way) was applied in place after a backup.
+      Deploy = rebuild binary on the box + `cp /usr/local/bin/cellar` + swap bundle + apply delta + publish
+      dist + restart (blips svngn/tandem ~3s). **NOTE:** classifieds still has **no `migrations/` dir** — this
+      delta was hand-applied; adopt migrations before the next schema/taxonomy change so it's `cellar migrate`.
     - **Launch follow-up:** add `jarchy.svngn.com` as an **Authorized JavaScript origin** on the Google
       OAuth client, else the Google button fails (email/password unaffected).
 - **Footgun noted:** `cellar --version` is not a recognized flag → cellar ignores it and **starts a server
