@@ -36,13 +36,38 @@ The current cellar host. **Residential** (power/network not 24/7 — has gone do
     `seller@`/`buyer@classifieds.local`/`test1234` (dev creds; also printed by `apps/classifieds/run.sh`).
 - srvlab's tree is **not** a git checkout — deploy = rsync from a workstation + rebuild (see deploy-srvlab.sh).
 
-### 3. Oracle Ampere A1 — `130.61.21.191`  (aarch64, Always-Free, PAYG account)
-Cloud box, **always-on** (candidate to replace residential srvlab for reliability).
+### 3. Oracle Ampere A1 — `130.61.21.191`  (aarch64, Always-Free, PAYG account)  ★ SECONDARY / DEMO
+Cloud box, **always-on**. Second direct-serve cellar host (has its own public IP — **no relay**).
 - Specs: **4 OCPU / 24 GB**, Ubuntu 24.04 (aarch64), ~45 GB disk. Fits the Always-Free A1 allowance ($0).
 - Access: ssh alias **`oracle-a1`** (`~/.ssh/config`) → user `ubuntu`, key `~/.ssh/id_ed25519`.
-- **Status (2026-07-02): build + test validated only** — cellar compiles cleanly and passes 80/80
-  ctest natively on ARM64. **Not yet running as a service / not serving traffic.**
-- Source at `~/workspace/cellar` (+ sibling `~/workspace/portico`), synced via rsync from the workstation.
+  Passwordless sudo. The `ubuntu` user's VCN default security list already allows ingress `:443`.
+- **cellar RUNNING as a service (2026-07-06):**
+  - `cellar.service` → `/usr/local/bin/cellar`, runs as non-root user **`cellar`** (uid 999), binds **:443**
+    via `AmbientCapabilities=CAP_NET_BIND_SERVICE`. Minimal unit — **no** CORS/OAuth/SMTP drop-ins
+    (clerkhalls is same-origin + admin-provisioned + no email flows). `CEL_APPS_DIR=/var/lib/cellar/apps`
+    (filesystem host routing). Inline `Environment=` in the unit (like Hetzner), not an EnvironmentFile.
+  - **TLS: real LE `*.svngn.com` cert** (DNS-01 via Cloudflare). `certbot` + `python3-certbot-dns-cloudflare`,
+    token at `/root/.secrets/cloudflare.ini` (chmod 600, **reused from Hetzner** — same zone token, copied
+    box-to-box). Cert name `svngn.com`, exp **2026-10-04**, `certbot.timer` auto-renews. Deploy hook
+    `/etc/letsencrypt/renewal-hooks/deploy/cellar.sh` copies `fullchain`/`privkey` →
+    `/etc/cellar/tls/{cert,key}.pem` (chown cellar) + `systemctl restart cellar`.
+  - Local firewall: iptables ACCEPT for tcp/443 inserted before the image's trailing REJECT, persisted
+    via `netfilter-persistent`.
+- **Apps (host-routed bundles under `/var/lib/cellar/apps/`):**
+  - `clerkhalls.svngn.com` — **ClerkHalls** (venue/hall booking SPA + API, same-origin). **LIVE (2026-07-06).**
+    Trilingual EN/KY/RU. Bundle source of truth: `frontend-apps/apps/clerkhalls/bundle/` (its `DEPLOY.md` is
+    the contract). Binary requirement met by rebuild from cellar HEAD (device tokens `1cc0e20` +
+    `cellar.set_password` `13631b5` → PIN fast-sign-in + staff password reset). Provisioned fresh (no seed
+    data): admin `admin@clerkhalls.svngn.com`, read-only `owner@clerkhalls.svngn.com` (both pw in the vault,
+    `app_logins`). **Self-register is OFF** — managers/clerks created from the in-app Staff page. No jobs/
+    email/OAuth. **Deploy backend:** rsync `bundle/` → box; `cellar provision <host> <admin> <pw>` →
+    `sqlite3 data.db < schema.sql` → `cp -r public hooks.lua policies.json` → chown cellar → restart; seed
+    owner via `/auth/users`. **Redeploy client:** `pnpm --filter clerkhalls build` → `cp -r dist/* bundle/public/`
+    → rsync → atomic swap into `public/`.
+- **DNS:** Cloudflare **specific** A record `clerkhalls.svngn.com` → `130.61.21.191` (grey/DNS-only, TTL 300)
+  overrides the `*.svngn.com` wildcard (→ Hetzner). Adding it did **not** disturb svngn/jarchy/tandem.
+- Source at `~/workspace/cellar` (+ sibling `~/workspace/portico`), synced via rsync from the workstation;
+  binary built natively on aarch64 (must build on-box — can't copy the x86-64 Hetzner binary). 80/80 ctest.
 
 ### 4. Hetzner — `89.167.89.235`  ★ PRIMARY / PROD  (x86-64, Helsinki `hel1`, paid ~€/mo)
 Cloud box, **always-on**. Hostname `ubuntu-8gb-hel1-2`. **Designated production host** (jarchy +
