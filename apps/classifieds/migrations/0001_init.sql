@@ -1,3 +1,8 @@
+-- 0001_init.sql — baseline (adopts existing deployments; no-op where already present).
+-- Generated from schema.sql at the point migrations were adopted; every object is
+-- IF NOT EXISTS so this is a full create on a fresh DB and a no-op on a live one.
+-- Do NOT edit once applied (cellar checksums applied migrations).
+
 -- ============================================================================
 -- classifieds — catalog schema (A0.1–A0.3)
 --
@@ -18,13 +23,12 @@
 -- collides the moment we shard/merge regions (the subtle one people regret).
 -- ============================================================================
 
-PRAGMA foreign_keys = ON;
 
 -- ── Layer 1: taxonomy as data ───────────────────────────────────────────────
 
 -- The category tree (self-referential). `slug` is the URL key; `name` is the
 -- default display label, `labels` an optional {"ru":…, "ky":…, "en":…} override.
-CREATE TABLE category (
+CREATE TABLE IF NOT EXISTS category (
   id         TEXT PRIMARY KEY,
   parent_id  TEXT REFERENCES category(id) ON DELETE CASCADE,
   slug       TEXT NOT NULL UNIQUE,
@@ -36,7 +40,7 @@ CREATE TABLE category (
   created_at TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX idx_category_parent ON category (parent_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_category_parent ON category (parent_id, sort_order);
 
 -- Per-category attribute schema. This ONE table generates the post form, the
 -- filter/facet UI, and write-time validation — no per-category code.
@@ -44,7 +48,7 @@ CREATE INDEX idx_category_parent ON category (parent_id, sort_order);
 --   filterable  : 1 => this attr is materialized into listing_facet (a facet)
 --   options     : JSON array of allowed values (for type=enum)
 --   depends_on  : key of a parent attr in the same category (e.g. model→make)
-CREATE TABLE category_attribute (
+CREATE TABLE IF NOT EXISTS category_attribute (
   id         TEXT PRIMARY KEY,
   category_id TEXT NOT NULL REFERENCES category(id) ON DELETE CASCADE,
   key        TEXT NOT NULL,
@@ -66,30 +70,30 @@ CREATE TABLE category_attribute (
 -- Inherently regional (one catalog = one country). city_id/district_id are
 -- first-class FKs on listings; big taxonomies are reference tables, not enums.
 
-CREATE TABLE geo_oblast (
+CREATE TABLE IF NOT EXISTS geo_oblast (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   labels     TEXT,                              -- JSON: localized (nullable)
   sort_order INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE geo_city (
+CREATE TABLE IF NOT EXISTS geo_city (
   id         TEXT PRIMARY KEY,
   oblast_id  TEXT NOT NULL REFERENCES geo_oblast(id) ON DELETE CASCADE,
   name       TEXT NOT NULL,
   labels     TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX idx_geo_city_oblast ON geo_city (oblast_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_geo_city_oblast ON geo_city (oblast_id, sort_order);
 
-CREATE TABLE geo_district (
+CREATE TABLE IF NOT EXISTS geo_district (
   id         TEXT PRIMARY KEY,
   city_id    TEXT NOT NULL REFERENCES geo_city(id) ON DELETE CASCADE,
   name       TEXT NOT NULL,
   labels     TEXT,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX idx_geo_district_city ON geo_district (city_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_geo_district_city ON geo_district (city_id, sort_order);
 
 -- ── Layer 2: listings + derived facet index ─────────────────────────────────
 
@@ -98,7 +102,7 @@ CREATE INDEX idx_geo_district_city ON geo_district (city_id, sort_order);
 -- as a whole-unit INTEGER in `currency` (classifieds prices are whole numbers;
 -- no float). `region` is the shard/country tag baked in now. `locale` is the
 -- language of title/description.
-CREATE TABLE listings (
+CREATE TABLE IF NOT EXISTS listings (
   -- id is minted server-side by SQLite (uuid4), the gen_random_uuid() analogue —
   -- clients never supply it (no trusted ids on a public catalog).
   id          TEXT PRIMARY KEY DEFAULT (
@@ -137,25 +141,25 @@ CREATE TABLE listings (
   updated_at  TEXT NOT NULL DEFAULT '',
   expires_at  TEXT
 );
-CREATE INDEX idx_listings_cat_status   ON listings (category_id, status, created_at);
-CREATE INDEX idx_listings_city_status  ON listings (city_id, status, created_at);
-CREATE INDEX idx_listings_seller       ON listings (seller_id, status);
-CREATE INDEX idx_listings_expiry       ON listings (status, expires_at);  -- expiry sweep (Phase 2)
+CREATE INDEX IF NOT EXISTS idx_listings_cat_status   ON listings (category_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_listings_city_status  ON listings (city_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_listings_seller       ON listings (seller_id, status);
+CREATE INDEX IF NOT EXISTS idx_listings_expiry       ON listings (status, expires_at);  -- expiry sweep (Phase 2)
 
 -- Derived "typed EAV, but only for filterable attrs": one row per filterable
 -- attribute per listing, populated by the facet-sync hook (A0.5) from the JSON.
 -- A numeric attr uses num_value (range queries); enum/text uses text_value.
 -- Derived index, rebuilt idempotently by the facet-sync hook (A0.5, after()).
 -- ON DELETE CASCADE cleans facets when a listing is removed.
-CREATE TABLE listing_facet (
+CREATE TABLE IF NOT EXISTS listing_facet (
   listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   key        TEXT NOT NULL,
   num_value  REAL,
   text_value TEXT,
   PRIMARY KEY (listing_id, key)
 );
-CREATE INDEX idx_facet_key_num  ON listing_facet (key, num_value);
-CREATE INDEX idx_facet_key_text ON listing_facet (key, text_value);
+CREATE INDEX IF NOT EXISTS idx_facet_key_num  ON listing_facet (key, num_value);
+CREATE INDEX IF NOT EXISTS idx_facet_key_text ON listing_facet (key, text_value);
 
 -- ── Full-text search (A1.3) ─────────────────────────────────────────────────
 -- An external-content FTS5 index over listings' title + description, kept in
@@ -166,21 +170,21 @@ CREATE INDEX idx_facet_key_text ON listing_facet (key, text_value);
 -- ru/ky (Cyrillic case folding) and gives word + prefix ("term*") search with
 -- bm25 ranking. (A trigram index for true mid-word substring matching is a
 -- later enhancement; unicode61 + prefix covers the common partial-word case.)
-CREATE VIRTUAL TABLE listings_fts USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS listings_fts USING fts5(
   title, description,
   content='listings', content_rowid='rowid',
   tokenize='unicode61 remove_diacritics 2'
 );
 
-CREATE TRIGGER listings_fts_ai AFTER INSERT ON listings BEGIN
+CREATE TRIGGER IF NOT EXISTS listings_fts_ai AFTER INSERT ON listings BEGIN
   INSERT INTO listings_fts(rowid, title, description)
     VALUES (new.rowid, new.title, new.description);
 END;
-CREATE TRIGGER listings_fts_ad AFTER DELETE ON listings BEGIN
+CREATE TRIGGER IF NOT EXISTS listings_fts_ad AFTER DELETE ON listings BEGIN
   INSERT INTO listings_fts(listings_fts, rowid, title, description)
     VALUES ('delete', old.rowid, old.title, old.description);
 END;
-CREATE TRIGGER listings_fts_au AFTER UPDATE ON listings BEGIN
+CREATE TRIGGER IF NOT EXISTS listings_fts_au AFTER UPDATE ON listings BEGIN
   INSERT INTO listings_fts(listings_fts, rowid, title, description)
     VALUES ('delete', old.rowid, old.title, old.description);
   INSERT INTO listings_fts(rowid, title, description)
@@ -192,7 +196,7 @@ END;
 -- listings, so an anon /api/listings read can't leak the number. Readable only
 -- by the gated reveal_contact rpc (server-side) and the owner; policy denies
 -- direct anon/user access.
-CREATE TABLE listing_contact (
+CREATE TABLE IF NOT EXISTS listing_contact (
   listing_id TEXT PRIMARY KEY REFERENCES listings(id) ON DELETE CASCADE,
   phone      TEXT,
   whatsapp   TEXT,
@@ -203,7 +207,7 @@ CREATE TABLE listing_contact (
 -- whatsapp click is a logged-in user acting on a listing). The richer generic
 -- EventSink + browsing telemetry (views/clicks) is Phase 2; this is the
 -- contact-specific log that powers "responsive seller" badges + demand metrics.
-CREATE TABLE contact_event (
+CREATE TABLE IF NOT EXISTS contact_event (
   id         TEXT PRIMARY KEY DEFAULT (
                lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
                substr(lower(hex(randomblob(2))),2)||'-'||
@@ -216,12 +220,12 @@ CREATE TABLE contact_event (
              CHECK (kind IN ('number_revealed','whatsapp_clicked','chat_started')),
   created_at TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX idx_contact_event_listing ON contact_event (listing_id, created_at);
-CREATE INDEX idx_contact_event_seller  ON contact_event (seller_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_contact_event_listing ON contact_event (listing_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_contact_event_seller  ON contact_event (seller_id, created_at);
 
 -- ── Chat (A1.6 part 2) ──────────────────────────────────────────────────────
 -- A buyer↔seller conversation about a listing (one per listing+buyer).
-CREATE TABLE conversation (
+CREATE TABLE IF NOT EXISTS conversation (
   id         TEXT PRIMARY KEY DEFAULT (
                lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
                substr(lower(hex(randomblob(2))),2)||'-'||
@@ -234,20 +238,20 @@ CREATE TABLE conversation (
   last_message_at TEXT NOT NULL DEFAULT '',
   UNIQUE (listing_id, buyer_id)
 );
-CREATE INDEX idx_conversation_buyer  ON conversation (buyer_id, last_message_at);
-CREATE INDEX idx_conversation_seller ON conversation (seller_id, last_message_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_buyer  ON conversation (buyer_id, last_message_at);
+CREATE INDEX IF NOT EXISTS idx_conversation_seller ON conversation (seller_id, last_message_at);
 
 -- Membership table for the realtime VIA rule + read scoping: one row per
 -- participant. The engine's owner_via scope (message list/get) and the realtime
 -- subscribe membership check both query this — so a user can only read/subscribe
 -- to messages of conversations they belong to (no /api or WS leak).
-CREATE TABLE conversation_member (
+CREATE TABLE IF NOT EXISTS conversation_member (
   conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
   user_id         TEXT NOT NULL,
   PRIMARY KEY (conversation_id, user_id)
 );
 
-CREATE TABLE message (
+CREATE TABLE IF NOT EXISTS message (
   id         TEXT PRIMARY KEY DEFAULT (
                lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
                substr(lower(hex(randomblob(2))),2)||'-'||
@@ -258,23 +262,23 @@ CREATE TABLE message (
   body       TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX idx_message_conv ON message (conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_message_conv ON message (conversation_id, created_at);
 
 -- ── Favorites (A1.7) ────────────────────────────────────────────────────────
 -- A user's saved listings (composite key = the toggle). Accessed via rpcs only.
-CREATE TABLE favorite (
+CREATE TABLE IF NOT EXISTS favorite (
   user_id    TEXT NOT NULL REFERENCES cel_users(id) ON DELETE CASCADE,
   listing_id TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (user_id, listing_id)
 );
-CREATE INDEX idx_favorite_listing ON favorite (listing_id);   -- favorite_count
+CREATE INDEX IF NOT EXISTS idx_favorite_listing ON favorite (listing_id);   -- favorite_count
 
 -- ── Notifications (in-app feed, A2.2) ───────────────────────────────────────
 -- A per-user feed (the bell): persisted source of truth, realtime-enabled so an
 -- online user gets live pushes (owner-scoped, like chat) and an offline user
 -- sees them on next load. Created server-side (hooks/jobs via the notify helper).
-CREATE TABLE notification (
+CREATE TABLE IF NOT EXISTS notification (
   id         TEXT PRIMARY KEY DEFAULT (
                lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
                substr(lower(hex(randomblob(2))),2)||'-'||
@@ -289,13 +293,13 @@ CREATE TABLE notification (
   read_at    TEXT,                            -- NULL = unread
   created_at TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX idx_notification_user   ON notification (user_id, created_at);
-CREATE INDEX idx_notification_unread ON notification (user_id, read_at);
+CREATE INDEX IF NOT EXISTS idx_notification_user   ON notification (user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_notification_unread ON notification (user_id, read_at);
 
 -- ── Saved searches + alerts (A2.3) ──────────────────────────────────────────
 -- A user's saved query (q + category + city). A recurring matcher job finds
 -- listings created since last_run_at that match, and notifies the user.
-CREATE TABLE saved_search (
+CREATE TABLE IF NOT EXISTS saved_search (
   id          TEXT PRIMARY KEY DEFAULT (
                 lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||
                 substr(lower(hex(randomblob(2))),2)||'-'||
@@ -310,13 +314,13 @@ CREATE TABLE saved_search (
   created_at  TEXT NOT NULL DEFAULT '',
   last_run_at TEXT NOT NULL DEFAULT ''     -- cursor: only match listings created after this
 );
-CREATE INDEX idx_saved_search_user ON saved_search (user_id);
+CREATE INDEX IF NOT EXISTS idx_saved_search_user ON saved_search (user_id);
 
 -- App-owned display profile for a cel_users row (the engine's cel_users has only
 -- email/role — no display name). id = cel_users.id. Set via the set_profile rpc;
 -- read by search (seller_name) + the listing seller block. display_name is NULL
 -- until the user sets one (the client shows a placeholder), so no email is exposed.
-CREATE TABLE user_profile (
+CREATE TABLE IF NOT EXISTS user_profile (
   id           TEXT PRIMARY KEY REFERENCES cel_users(id) ON DELETE CASCADE,   -- = cel_users.id
   display_name TEXT,
   created_at   TEXT NOT NULL DEFAULT '',
@@ -330,7 +334,7 @@ CREATE TABLE user_profile (
 -- no-op (INSERT OR IGNORE), so a single account can't inflate a listing's report
 -- count (the anti-brigading property the optional auto-hide relies on). Reports
 -- are never exposed via /api (admin-only there); all access is through the rpcs.
-CREATE TABLE listing_report (
+CREATE TABLE IF NOT EXISTS listing_report (
   id           TEXT PRIMARY KEY,
   listing_id   TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   reporter_id  TEXT,                                    -- cel_users.id (rpc is login-gated)
@@ -347,39 +351,6 @@ CREATE TABLE listing_report (
 -- (listing, reporter) — a repeat while open is a no-op (INSERT OR IGNORE) — but
 -- once a report is resolved (actioned/dismissed) the same reporter CAN file a
 -- fresh 'open' report if the listing reoffends (e.g. seller edits abuse back in).
-CREATE UNIQUE INDEX idx_report_dedupe  ON listing_report (listing_id, reporter_id) WHERE status = 'open';
-CREATE INDEX        idx_report_queue   ON listing_report (status, created_at);
-CREATE INDEX        idx_report_listing ON listing_report (listing_id);
-
--- ── Client-event ingestion rate budget (rpc `track`) ────────────────────────
--- Per-actor, minute-bucketed budget for the high-volume `track` endpoint, so the
--- rate check is a single-row upsert (PK lookup) instead of scanning the append-
--- only `event` log. One row per authed actor, reused across windows. Anon events
--- (actor='') are NOT counted here — they're bounded by the batch cap + the
--- engine's per-IP /rpc limit (CEL_API_RATELIMIT). Internal (not synced).
-CREATE TABLE track_rate (
-  actor_id     TEXT PRIMARY KEY,
-  window_start INTEGER NOT NULL,   -- unix epoch, floored to the minute
-  count        INTEGER NOT NULL DEFAULT 0
-);
-
--- ── Per-user interest profile (recs) ────────────────────────────────────────
--- Durable, cross-session category affinity, (re)built by the recurring
--- `rollup_interest` job draining the `event` stream. The feed LEFT JOINs this on
--- category_id to boost listings in categories a user engages with. Intent-weighted
--- with per-run decay (recency bias). Anon users (actor='') are not profiled.
--- Internal (not synced).
-CREATE TABLE user_interest (
-  user_id     TEXT NOT NULL,
-  category_id TEXT NOT NULL,
-  score       REAL NOT NULL DEFAULT 0,
-  updated_at  TEXT NOT NULL DEFAULT '',
-  PRIMARY KEY (user_id, category_id)
-);
-CREATE INDEX idx_user_interest_user ON user_interest (user_id, score DESC);
-
--- Cursor state for stream-draining rollup jobs (last processed event id).
-CREATE TABLE rollup_state (
-  name   TEXT PRIMARY KEY,
-  cursor INTEGER NOT NULL DEFAULT 0
-);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_report_dedupe  ON listing_report (listing_id, reporter_id) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS        idx_report_queue   ON listing_report (status, created_at);
+CREATE INDEX IF NOT EXISTS        idx_report_listing ON listing_report (listing_id);

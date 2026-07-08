@@ -417,6 +417,8 @@ function job(name, payload)
     cellar.log.info('job expire_listings: expired ' .. tostring(#due) .. ' listing(s)')
   elseif name == 'match_saved_searches' then
     match_saved_searches()               -- global (defined below); alerts on new matches
+  elseif name == 'rollup_interest' then
+    rollup_interest()                    -- global (defined below); event stream → interest profile
   end
 end
 
@@ -625,7 +627,13 @@ local function category_subtree(arg)
   return ids
 end
 
-local function search(args)
+-- Minimal JSON string-content escaper: escape backslash + double-quote, and
+-- neutralize control chars (raw control bytes are invalid in JSON; UTF-8 multibyte
+-- is untouched since %c matches only ASCII controls). Enough for opaque telemetry
+-- props/values; not a general encoder.
+local function json_str(s) return (tostring(s or ''):gsub('[\\"]', '\\%0'):gsub('%c', ' ')) end
+
+local function search(args, who)
   args = args or {}
   local match = fts_query(args.q)
 
@@ -719,8 +727,16 @@ local function search(args)
   local free_count = cellar.query(
     'SELECT count(*) AS n FROM ' .. base_from .. ' WHERE ' .. base_where .. ' AND l.is_free = 1', base_binds)[1].n
 
-  if match ~= '' then
-    cellar.emit('search', { props = '{"q":"' .. (tostring(args.q):gsub('"', '')) .. '"}' })
+  -- Behavioral capture for interest inference / recs (drained later by a rollup).
+  -- Fire on a text query OR a category browse — a category browse is the strongest
+  -- interest signal, and was previously dropped. Not fired on the bare home feed.
+  -- Capture the actor (empty for anon) + intent (q/category/city). Can't backfill.
+  if match ~= '' or (args.category and args.category ~= '') then
+    cellar.emit('search', {
+      actor = (who and who.user_id) or '',
+      props = '{"q":"' .. json_str(args.q) .. '","category":"' .. json_str(args.category)
+              .. '","city":"' .. json_str(args.city) .. '"}'
+    })
   end
   return { results = rows, total = total, limit = limit, offset = offset, facets = facets, free_count = free_count }
 end
@@ -999,6 +1015,69 @@ function match_saved_searches()
   end
 end
 
+-- ── Interest-profile rollup (recs) ──────────────────────────────────────────
+-- Drain the EventSink `event` stream by id cursor and fold it into per-user
+-- category affinity (user_interest). Intent-weighted; existing scores decay each
+-- run (recency bias). ATOMIC: decay + drain + upsert + cursor advance run in one
+-- transaction, so a crash/retry re-processes from the UNCHANGED cursor cleanly
+-- (no double-decay / double-count). Anon (actor='') and category-less events skip.
+local ROLLUP_BATCH  = 5000          -- events processed per run (bounded)
+local ROLLUP_DECAY  = 0.9           -- multiply existing scores each run (~1-week half-life at daily cadence)
+local ROLLUP_WEIGHT = {             -- intent-scaled contribution per event type
+  contact = 5.0, favorite = 3.0, search = 2.0, search_view = 2.0,
+  result_click = 1.5, listing_viewed = 1.0, dwell = 1.0,
+  card_view = 0.1, impression = 0.1,
+}
+
+local function rollup_drain()
+  local st = cellar.query("SELECT cursor FROM rollup_state WHERE name = 'user_interest'")[1]
+  local cursor = st and tonumber(st.cursor) or 0
+  cellar.exec('UPDATE user_interest SET score = score * ?', { ROLLUP_DECAY })   -- decay (recency bias)
+  local rows = cellar.query(
+    'SELECT id, type, actor_id, subject_id, props FROM event WHERE id > ? ORDER BY id LIMIT ?',
+    { cursor, ROLLUP_BATCH })
+  local last, ts = cursor, now_iso()
+  for _, e in ipairs(rows) do
+    last = e.id
+    local w, actor = ROLLUP_WEIGHT[e.type], e.actor_id
+    if w and actor and actor ~= '' then
+      local cat                                        -- searches carry the category in props; others via the listing
+      if e.type == 'search' or e.type == 'search_view' then
+        local c = cellar.query("SELECT json_extract(?, '$.category') AS c", { e.props })[1]
+        local raw = c and c.c
+        if raw and raw ~= '' then                       -- props.category is CLIENT-supplied (id OR slug OR junk):
+          local m = cellar.query('SELECT id FROM category WHERE id = ? OR slug = ? LIMIT 1', { raw, raw })[1]
+          cat = m and m.id                              -- canonicalize to a real category_id; unknown → skip
+        end                                             -- (keeps the feed join valid + blocks arbitrary-row injection)
+      elseif e.subject_id and e.subject_id ~= '' then
+        local l = cellar.query('SELECT category_id FROM listings WHERE id = ?', { e.subject_id })[1]
+        cat = l and l.category_id
+      end
+      if cat and cat ~= '' then
+        cellar.exec(
+          'INSERT INTO user_interest(user_id, category_id, score, updated_at) VALUES (?,?,?,?) ' ..
+          'ON CONFLICT(user_id, category_id) DO UPDATE SET score = score + ?, updated_at = ?',
+          { actor, cat, w, ts, w, ts })
+      end
+    end
+  end
+  if st then cellar.exec("UPDATE rollup_state SET cursor = ? WHERE name = 'user_interest'", { last })
+  else       cellar.exec("INSERT INTO rollup_state(name, cursor) VALUES ('user_interest', ?)", { last }) end
+  return #rows, last
+end
+
+function rollup_interest()
+  cellar.exec('BEGIN')
+  local ok, a, b = pcall(rollup_drain)
+  if ok then
+    cellar.exec('COMMIT')
+    cellar.log.info('job rollup_interest: processed ' .. tostring(a) .. ' event(s), cursor -> ' .. tostring(b))
+  else
+    cellar.exec('ROLLBACK')
+    error(a)                                            -- propagate → job fails → retry from unchanged cursor
+  end
+end
+
 -- ── A2.2: notification feed rpcs ────────────────────────────────────────────
 local function my_notifications(args, who)
   if not (who and who.authenticated) then return nil end
@@ -1180,6 +1259,88 @@ local function dismiss_reports(args, who)
   return { ok = true, listing_id = lid }
 end
 
+-- ── Client behavioral event ingestion (recs telemetry) ──────────────────────
+-- POST /rpc/track { events = [ {type, subject, props}, ... ] } — client-only signals
+-- (impressions / clicks / dwell) the server can't observe. HARD invariants:
+--   * server STAMPS the actor (client can NEVER set it) → no spoofing another user
+--   * TYPE ALLOWLIST → client can't forge server-authoritative events (contact/
+--     favorite/takedown) that trust / velocity / moderation depend on
+--   * self-reported → recs/analytics ONLY, never a security signal
+-- Fire-and-forget: invalid events are DROPPED, never fatal. Returns accepted/dropped.
+local TRACK_TYPES     = { impression = true, result_click = true, card_view = true,
+                          dwell = true, search_view = true }
+local TRACK_BATCH_MAX = 20     -- events accepted per call
+local TRACK_SCAN_MAX  = 100    -- max array slots scanned/call — events[i] is O(i) on the cJSON list,
+                               -- so an uncapped scan of a huge client array is O(n^2) (anon CPU-DoS guard)
+local TRACK_PROPS_MAX = 512    -- bytes of props JSON per event
+local TRACK_RATE_1MIN = 300    -- per-actor track events / minute (authed only)
+
+-- Coerce client props to a bounded, VALID JSON object string. Contract: props is a
+-- JSON *string* (client serializes it); validated via SQLite json_valid + size cap
+-- and stored verbatim (opaque). Anything else → '{}'. No Lua JSON encoder needed.
+local function track_props(p)
+  if type(p) ~= 'string' or #p == 0 or #p > TRACK_PROPS_MAX then return '{}' end
+  local v = cellar.query('SELECT json_valid(?) AS v', { p })[1]
+  return (v and tonumber(v.v) == 1) and p or '{}'
+end
+
+-- Reserve up to `want` track slots for `actor` this minute; returns granted count.
+-- Single-row PK upsert on track_rate (no event-log scan). Anon (actor='') isn't
+-- counted here — bounded by the batch cap + the engine per-IP /rpc limit.
+local function track_grant(actor, want)
+  if want <= 0 then return 0 end
+  if actor == '' then return want end
+  local now = os.time(); local wstart = now - (now % 60)
+  local row = cellar.query('SELECT window_start AS w, count AS c FROM track_rate WHERE actor_id = ?', { actor })[1]
+  local used  = (row and tonumber(row.w) == wstart) and tonumber(row.c) or 0
+  local grant = TRACK_RATE_1MIN - used
+  if grant < 0 then grant = 0 end
+  if grant > want then grant = want end
+  if grant > 0 then
+    if row then
+      cellar.exec('UPDATE track_rate SET window_start = ?, count = ? WHERE actor_id = ?', { wstart, used + grant, actor })
+    else
+      cellar.exec('INSERT INTO track_rate(actor_id, window_start, count) VALUES (?,?,?)', { actor, wstart, grant })
+    end
+  end
+  return grant
+end
+
+local function track(args, who)
+  local actor  = (who and who.user_id) or ''
+  local events = args and args.events
+  if type(events) ~= 'table' then return { ok = true, accepted = 0, dropped = 0 } end
+  -- Fire-and-forget: a DB hiccup (e.g. SQLITE_BUSY in track_props/track_grant) must
+  -- never surface as a 400 — pcall the whole body and fall back to a no-op result.
+  local ok, res = pcall(function()
+    -- Iterate by index until nil: the args proxy's __len is NOT honored for tables
+    -- under LuaJIT (5.1 semantics), so #events is unreliable (cf. add_facet_conds).
+    -- A boxed object/array element IS a Lua table; a scalar element is not → dropped.
+    -- Bound the scan at TRACK_SCAN_MAX (events[i] is O(i) → uncapped is O(n^2)).
+    local valid, dropped, i = {}, 0, 1
+    while i <= TRACK_SCAN_MAX do
+      local e = events[i]
+      if e == nil then break end
+      i = i + 1
+      if #valid >= TRACK_BATCH_MAX then dropped = dropped + 1
+      elseif type(e) ~= 'table' or not TRACK_TYPES[e.type] then dropped = dropped + 1
+      else
+        local subj = (type(e.subject) == 'string') and e.subject or ''
+        if #subj > 64 then subj = subj:sub(1, 64) end
+        valid[#valid + 1] = { type = e.type, subject = subj, props = track_props(e.props) }
+      end
+    end
+    local grant = track_grant(actor, #valid)
+    for j = 1, grant do
+      local v = valid[j]
+      cellar.emit(v.type, { actor = actor, subject = v.subject, props = v.props })
+    end
+    return { ok = true, accepted = grant, dropped = dropped + (#valid - grant) }
+  end)
+  if ok then return res end
+  return { ok = true, accepted = 0, dropped = 0 }
+end
+
 -- ── repair / ops primitive ──────────────────────────────────────────────────
 -- POST /rpc/rebuild_facets {"id": "<listing-id>"}  (admin) — reconcile one
 -- listing's facets if an after() fault ever left them stale.
@@ -1193,7 +1354,10 @@ end
 --     checking who.role == 'admin') are now defense-in-depth, not the primary gate.
 function rpc(name, args, who)
   if name == 'search' then
-    return search(args)
+    return search(args, who)
+  end
+  if name == 'track' then
+    return track(args, who)
   end
   if name == 'listing' then
     return get_listing(args, who)

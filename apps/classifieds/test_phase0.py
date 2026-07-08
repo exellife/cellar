@@ -639,6 +639,91 @@ def run_checks(port, db):
         evs is not None and any(r[0] == one.get("id") for r in evs), str(evs)[:100] if evs is not None else "no event table")
     facet_search(q="toyota", category="cat-cars")
     chk("EventSink: search emits event", len(rows_of("SELECT 1 FROM event WHERE type='search'") or []) >= 1, "")
+    # actor + intent captured: a category browse (NO query) by a known user must emit a
+    # search event stamped with that user's id + the category in props. (Previously a
+    # no-query browse emitted nothing, and search events had no actor — both fixed.)
+    req("POST", "/rpc/search", {"category": "cat-cars"}, token=seller)
+    ev = rows_of("SELECT actor_id, props FROM event WHERE type='search' ORDER BY id DESC LIMIT 1")
+    chk("EventSink: search event captures actor",
+        bool(ev) and ev[0][0] == seller_id, str(ev)[:120] if ev else "no event")
+    chk("EventSink: category browse emits + props carries category",
+        bool(ev) and bool(ev[0][1]) and "cat-cars" in ev[0][1], str(ev)[:120] if ev else "no event")
+    # escaper: a query with JSON-hostile chars (embedded quote + backslash) must still
+    # produce VALID, parseable props with the query round-tripping intact.
+    nasty = 'sony "x\\y" z'
+    req("POST", "/rpc/search", {"q": nasty, "category": "cat-cars"}, token=seller)
+    ev = rows_of("SELECT props FROM event WHERE type='search' ORDER BY id DESC LIMIT 1")
+    try:
+        parsed = json.loads(ev[0][0]) if ev else {}
+        json_safe = parsed.get("q") == nasty and parsed.get("category") == "cat-cars"
+    except Exception:
+        json_safe = False
+    chk("EventSink: search props JSON-safe w/ quote+backslash", json_safe, str(ev)[:160] if ev else "no event")
+
+    # ---- rpc track: client behavioral event ingestion ----
+    lsub = one.get("id")
+    # valid batch (authed): accepted + emitted, actor SERVER-stamped (client 'actor' ignored)
+    s, b = req("POST", "/rpc/track", {"events": [
+        {"type": "impression",   "subject": lsub, "props": '{"pos":1,"ctx":"feed"}', "actor": "SPOOFED"},
+        {"type": "result_click", "subject": lsub, "props": '{"pos":1}'},
+    ]}, token=seller)
+    r = (b or {}).get("result") or {}
+    chk("track: valid batch accepted (2/0)", r.get("accepted") == 2 and r.get("dropped") == 0, str(r))
+    tev = rows_of("SELECT actor_id, type FROM event WHERE type IN ('impression','result_click') ORDER BY id DESC LIMIT 2")
+    chk("track: emitted w/ server actor (spoof ignored)",
+        bool(tev) and len(tev) == 2 and all(row[0] == seller_id for row in tev), str(tev)[:140])
+    # disallowed types dropped (can't forge server-authoritative events like 'contact')
+    s, b = req("POST", "/rpc/track", {"events": [
+        {"type": "contact", "subject": lsub}, {"type": "evil", "subject": lsub},
+        {"type": "dwell",   "subject": lsub, "props": '{"ms":1200}'},
+    ]}, token=seller)
+    r = (b or {}).get("result") or {}
+    chk("track: disallowed types dropped, allowed kept (1/2)", r.get("accepted") == 1 and r.get("dropped") == 2, str(r))
+    # invalid props string -> coerced to '{}'
+    req("POST", "/rpc/track", {"events": [{"type": "card_view", "subject": lsub, "props": "not json"}]}, token=seller)
+    tev = rows_of("SELECT props FROM event WHERE type='card_view' ORDER BY id DESC LIMIT 1")
+    chk("track: invalid props coerced to {}", bool(tev) and tev[0][0] == "{}", str(tev)[:100])
+    # batch cap: 25 events -> 20 accepted, 5 dropped
+    s, b = req("POST", "/rpc/track", {"events": [{"type": "impression", "subject": lsub} for _ in range(25)]}, token=seller)
+    r = (b or {}).get("result") or {}
+    chk("track: batch capped at 20 (20/5)", r.get("accepted") == 20 and r.get("dropped") == 5, str(r))
+    # anon allowed: no token -> accepted, actor stamped empty
+    s, b = req("POST", "/rpc/track", {"events": [{"type": "search_view", "subject": lsub, "props": '{"q":"x"}'}]})
+    r = (b or {}).get("result") or {}
+    tev = rows_of("SELECT actor_id FROM event WHERE type='search_view' ORDER BY id DESC LIMIT 1")
+    chk("track: anon accepted, actor empty",
+        r.get("accepted") == 1 and bool(tev) and (tev[0][0] == "" or tev[0][0] is None), str(r) + " " + str(tev)[:60])
+
+    # ---- rollup_interest: event stream -> per-user category affinity ----
+    s, b = req("POST", "/rpc/enqueue_job", {"type": "rollup_interest"}, token=tok)   # admin
+    chk("rollup: enqueue -> id", s == 200 and ((b or {}).get("result") or {}).get("id", 0) > 0, str(b))
+    req("POST", "/jobs/run", {}, token=tok)
+    ui = rows_of("SELECT category_id, score FROM user_interest WHERE user_id = ? ORDER BY score DESC", (seller_id,))
+    chk("rollup: seller has category affinity", bool(ui) and any(row[1] > 0 for row in ui), str(ui)[:160])
+    chk("rollup: cat-cars affinity present (from seller searches)",
+        bool(ui) and any(row[0] == "cat-cars" and row[1] > 0 for row in ui), str(ui)[:160])
+    # cursor persisted + advanced (a second run with no new events doesn't move it)
+    cur1 = rows_of("SELECT cursor FROM rollup_state WHERE name='user_interest'")
+    req("POST", "/rpc/enqueue_job", {"type": "rollup_interest"}, token=tok)
+    req("POST", "/jobs/run", {}, token=tok)
+    cur2 = rows_of("SELECT cursor FROM rollup_state WHERE name='user_interest'")
+    chk("rollup: cursor persisted, stable w/ no new events",
+        bool(cur1) and bool(cur2) and cur1[0][0] > 0 and cur2[0][0] == cur1[0][0], f"{cur1}->{cur2}")
+    # track scan ceiling: a 150-event batch is bounded at TRACK_SCAN_MAX(100) -> 20 accepted,
+    # 80 dropped (positions 21-100); the rest aren't even scanned (the O(n^2) DoS guard).
+    s, b = req("POST", "/rpc/track", {"events": [{"type": "impression", "subject": lsub} for _ in range(150)]}, token=seller)
+    r = (b or {}).get("result") or {}
+    chk("track: scan ceiling bounds huge batch (20/80)", r.get("accepted") == 20 and r.get("dropped") == 80, str(r))
+    # rollup category canonicalization: a search by SLUG keys the canonical id; a junk
+    # category creates NO row (blocks arbitrary user_interest injection via props.category).
+    req("POST", "/rpc/search", {"category": "cars"}, token=seller)             # slug, not the id
+    req("POST", "/rpc/search", {"category": "zzz-nonexistent"}, token=seller)  # junk
+    req("POST", "/rpc/enqueue_job", {"type": "rollup_interest"}, token=tok)
+    req("POST", "/jobs/run", {}, token=tok)
+    cats = [row[0] for row in (rows_of("SELECT category_id FROM user_interest WHERE user_id = ?", (seller_id,)) or [])]
+    chk("rollup: slug search canonicalized to id (cat-cars)", "cat-cars" in cats, str(cats))
+    chk("rollup: junk category not keyed (no injection)",
+        "zzz-nonexistent" not in cats and "cars" not in cats, str(cats))
 
     # JobQueue: an expire sweep flips a past-expiry active listing to 'expired'
     s, b = req("POST", "/api/listings",

@@ -50,6 +50,7 @@
   "_comment_rpc": "The engine ENFORCES this _rpc whitelist (fail-closed): an unlisted or unauthorized rpc is denied (401/403) before hooks.lua runs; superusers still need the fn listed. search/category_form/listing are public via the \"anon\" role. The hook-side self-guards (e.g. rebuild_facets checking role=admin) are now belt-and-suspenders.",
   "_rpc": {
     "search": { "roles": ["anon", "user"] },
+    "track": { "roles": ["anon", "user"] },
     "category_form": { "roles": ["anon", "user"] },
     "listing": { "roles": ["anon", "user"] },
     "set_listing_contact": { "roles": ["user"] },
