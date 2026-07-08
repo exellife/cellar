@@ -50,28 +50,26 @@ instead of working around it silently** — engine problems get fixed in the eng
   `mutation_id` → second response has no `winner`.
 - **filed:** 2026-06-22 by cellar-agent (seed example — known backlog item)
 
-### [OPEN] No way to localize enum **option values** + search `highlights` (attribute filter values stay RU)
-- **kind:** gap
-- **severity:** medium
-- **what I was doing:** localizing attribute filter values (e.g. Коробка → Автомат/Механика) and the
-  card key-spec preview for the KY UI. NB: attribute **labels** already carry `labels?` and the
-  frontend uses them — this is specifically about the enum **option values** and `highlights`.
-- **expected:** a client-side hook to translate enum option values — e.g. `CategoryAttribute.options`
-  carries per-option labels (`[{ value, labels }]`) or a parallel `option_labels` map — and search
-  `highlights` either composed from localized values or returned as raw values the client can map.
-- **actual:** `options` is a plain `string[]` of Russian display values with no labels, and
-  `highlights` arrive as pre-composed Russian strings. So filter checkboxes, facet values, and card
-  spec previews stay Russian in the KY UI with no client-side way to translate them.
-- **repro:** `category_form` for `cars` → `transmission.options = ["Автомат","Механика",…]` (bare
-  strings, no labels); a search row's `highlights = ["2019","78 000 км","Автомат"]` (composed
-  server-side).
-- **filed:** 2026-07-08 by Jarchy frontend (classifieds)
-
 ---
 
 ## Resolved
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
+
+- **Enum option-value + `highlights` localization — decoupled i18n model** — SHIPPED (localization slice).
+  Root cause: option values were RU strings that were ALSO the stored/faceted value (RU baked in as
+  canonical). Now an enum's `options` is **`[{code, labels}]`** — `code` is the language-neutral canonical
+  value (what the client sends + what's stored/faceted); `labels` is the per-locale display map (`{ky,ru,…}`),
+  **no language privileged**. **Back-compat:** legacy bare-string options (`["A"]`) still validate (the string
+  IS the code, `labels:null`) and normalize to `[{code,labels}]` in `category_form`, so the seed migrates
+  incrementally. Listing validation now checks the **code** — a display label is rejected, so display strings
+  never leak into stored data. `before_category_attribute` validates codes non-empty + unique (both formats).
+  For card specs: added **`highlights_kv`** = raw `[{key,value}]` (the stored value/code) alongside the legacy
+  composed `highlights` (RU), so the client composes + localizes client-side. category/attribute `name`/`label`
+  stay as a display **fallback** (Option A). **No schema change** (labels live inside the options JSON) →
+  bundle-only, sync+restart. Tests: `test_phase0.py` (new-format accept; reject codeless/dupe; category_form
+  `[{code,labels}]`; legacy normalize; code validates / display-label rejected). **⚠ client contract change:**
+  `options` is now `[{code,labels}]`, not `string[]` — see frontend `FROM-BACKEND.md`.
 
 - **`category_form` — `labels` now on `category` + every `breadcrumb` node** — SHIPPED (localization slice).
   The `category` node already carried `labels`; the fix adds it to the **breadcrumb** (the parent-walk

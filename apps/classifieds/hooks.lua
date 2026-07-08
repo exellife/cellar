@@ -119,10 +119,14 @@ local function validate_attrs(category_id, attrs)
       elseif t == 'bool' then
         if type(v) ~= 'boolean' then return false, d.key .. ' must be true/false' end
       elseif t == 'enum' then
-        -- membership check stays in SQL (json_each over the stored options array)
+        -- Membership check in SQL. Options are EITHER bare strings ["A"] (legacy: the
+        -- string IS the code) OR objects [{code,labels}] (decoupled i18n: match the
+        -- code, NOT a localized label). COALESCE(code, value) handles both formats, so
+        -- the canonical stored value is always the code — never a display string.
         local ok = cellar.query(
           'SELECT 1 AS ok FROM category_attribute ' ..
-          'WHERE id = ? AND EXISTS (SELECT 1 FROM json_each(options) WHERE value = ?)',
+          "WHERE id = ? AND EXISTS (SELECT 1 FROM json_each(options) je " ..
+          "WHERE (CASE WHEN je.type='object' THEN json_extract(je.value,'$.code') ELSE je.value END) = ?)",
           { d.id, tostring(v) })
         if #ok == 0 then return false, 'invalid value for ' .. d.key end
       end
@@ -266,8 +270,23 @@ local function before_category_attribute(op, input)
     local r = cellar.query('SELECT json_valid(?) AS v, json_type(?) AS t, json_array_length(?) AS n',
                            { input.options, input.options, input.options })[1]
     if not r or r.v ~= 1 or r.t ~= 'array' or (tonumber(r.n) or 0) < 1 then
-      return false, 'options must be a non-empty JSON array, e.g. ["A","B"]'
+      return false, 'options must be a non-empty JSON array — ["A","B"] or [{"code":"a","labels":{"ky":"…"}}]'
     end
+    -- Each option is a bare string (legacy: the string IS the code) OR an object with a
+    -- non-empty string `code`; codes must be UNIQUE. (labels, if present, is display-only —
+    -- never validated as the value, so display strings never leak into the stored data.)
+    local c = cellar.query(
+      "SELECT " ..
+      "(SELECT count(*) FROM json_each(?) je WHERE " ..
+      "   CASE WHEN je.type='object' " ..
+      "        THEN (json_extract(je.value,'$.code') IS NULL OR json_extract(je.value,'$.code') = '') " ..
+      "        ELSE (je.value IS NULL OR je.value = '') END) AS bad, " ..
+      "(SELECT count(DISTINCT CASE WHEN je.type='object' THEN json_extract(je.value,'$.code') ELSE je.value END) " ..
+      "   FROM json_each(?) je) AS uniq, " ..
+      "json_array_length(?) AS n",
+      { input.options, input.options, input.options })[1]
+    if tonumber(c.bad) > 0 then return false, 'every option needs a non-empty `code` (or be a bare string)' end
+    if tonumber(c.uniq) ~= tonumber(c.n) then return false, 'option codes must be unique' end
   end
   -- enum needs options — on create OR when a PATCH sets type='enum' (else a PATCH
   -- {type:"enum"} on a text attr would land a choiceless enum that bricks its category).
@@ -482,11 +501,16 @@ local function category_form(arg)
       unit = d.unit, depends_on = d.depends_on,
     }
     if d.type == 'enum' then
+      -- Options as [{code, labels}]: `code` is the canonical value the client sends
+      -- back; `labels` is the per-locale display map (JSON string, or nil). Legacy
+      -- bare-string options normalize to {code=<string>, labels=nil} — the client falls
+      -- back to the code for display. No language is privileged.
       local opts = cellar.query(
-        'SELECT value AS v FROM category_attribute, json_each(category_attribute.options) ' ..
-        'WHERE category_attribute.id = ?', { d.id })
+        "SELECT CASE WHEN je.type='object' THEN json_extract(je.value,'$.code') ELSE je.value END AS code, " ..
+        "CASE WHEN je.type='object' THEN json_extract(je.value,'$.labels') END AS labels " ..
+        'FROM category_attribute ca, json_each(ca.options) je WHERE ca.id = ?', { d.id })
       local list = {}
-      for _, o in ipairs(opts) do list[#list + 1] = o.v end
+      for _, o in ipairs(opts) do list[#list + 1] = { code = o.code, labels = o.labels } end
       a.options = list
     end
     attrs[#attrs + 1] = a
@@ -610,6 +634,24 @@ local function highlights_for(cat_id, fmap)
   return (#out > 0) and out or nil
 end
 
+-- Raw card highlights for i18n: [{key, value}] with the STORED value (a number, or an
+-- enum `code`) — NOT a composed/localized string. The client localizes: number → format
+-- + unit client-side; enum code → option label (from category_form). Sits alongside the
+-- legacy composed `highlights` (which stays for back-compat until the client switches).
+local function highlights_kv_for(cat_id, fmap)
+  local keys = HL_KEYS[cat_id]; if not keys or not fmap then return nil end
+  local out = {}
+  for _, k in ipairs(keys) do
+    local fv = fmap[k]
+    if fv and fv.num ~= nil then
+      out[#out+1] = { key = k, value = fv.num }
+    elseif fv and fv.text ~= nil and fv.text ~= '' then
+      out[#out+1] = { key = k, value = fv.text }
+    end
+  end
+  return (#out > 0) and out or nil
+end
+
 -- Expand a category id-or-slug to itself + all descendants (marketplace subtree
 -- browse: clicking a parent like "Транспорт" must return the whole subtree — its
 -- leaves hold the listings, the parent holds none). Returns a list of ids, empty
@@ -700,7 +742,10 @@ local function search(args, who)
   -- card highlights: one facet query for the page, composed per category
   local ids = {}; for _, r in ipairs(rows) do ids[#ids+1] = r.id end
   local fmap = facets_for(ids)
-  for _, r in ipairs(rows) do r.highlights = highlights_for(r.category_id, fmap[r.id]) end
+  for _, r in ipairs(rows) do
+    r.highlights = highlights_for(r.category_id, fmap[r.id])
+    r.highlights_kv = highlights_kv_for(r.category_id, fmap[r.id])
+  end
 
   -- sidebar facet counts (per category's filterable attrs, over the base set)
   local facets = nil
@@ -799,7 +844,10 @@ local function feed(args, who)
 
   local ids = {}; for _, r in ipairs(rows) do ids[#ids+1] = r.id end
   local fmap = facets_for(ids)
-  for _, r in ipairs(rows) do r.highlights = highlights_for(r.category_id, fmap[r.id]) end
+  for _, r in ipairs(rows) do
+    r.highlights = highlights_for(r.category_id, fmap[r.id])
+    r.highlights_kv = highlights_kv_for(r.category_id, fmap[r.id])
+  end
 
   -- Cards = search's card columns + highlights + `feed_score` (the blended ranking
   -- score). feed_score is an INTENTIONAL feed-only field (search has no ranking score):

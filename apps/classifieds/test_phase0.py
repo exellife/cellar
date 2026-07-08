@@ -142,8 +142,9 @@ def run_checks(port, db):
         str(((b or {}).get("result") or {}).get("category")))
     attrs = {a["key"]: a for a in form.get("attributes", [])}
     chk("form has make attr", "make" in attrs and attrs["make"]["required"] is True, str(list(attrs)))
-    chk("make options is array w/ Toyota", "Toyota" in (attrs.get("make", {}).get("options") or []),
-        str(attrs.get("make", {}).get("options")))
+    chk("make options are [{code,labels}] incl Toyota",
+        "Toyota" in [o.get("code") for o in (attrs.get("make", {}).get("options") or [])],
+        str(attrs.get("make", {}).get("options"))[:120])
 
     car = {"category_id": "cat-cars", "title": "Toyota Camry", "price": 150000,
            "city_id": "ci-bishkek", "district_id": "di-leninsky"}
@@ -245,6 +246,42 @@ def run_checks(port, db):
     chk("PATCH type->enum without options -> 400", s == 400, f"status={s}")
     s, _ = req("PATCH", "/api/category_attribute/ca-x5", {"depends_on": "kind"}, token=tok)
     chk("PATCH depends_on without category_id -> 400", s == 400, f"status={s}")
+
+    # ---- decoupled enum-option localization (FEEDBACK issue 2): options = [{code,labels}] ----
+    OPTS = json.dumps([{"code": "automatic", "labels": {"ky": "Автомат", "ru": "Автомат"}},
+                       {"code": "manual",    "labels": {"ky": "Кол",     "ru": "Механика"}}])
+    s, b = req("POST", "/api/category_attribute",
+               {"id": "ca-gb", "category_id": "cat-test-x", "key": "gearbox", "label": "Коробка",
+                "type": "enum", "options": OPTS, "filterable": 1}, token=tok)
+    chk("decoupled: new-format options accepted -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
+    s, _ = req("POST", "/api/category_attribute",
+               {"id": "ca-gb2", "category_id": "cat-test-x", "key": "g2", "label": "G2", "type": "enum",
+                "options": json.dumps([{"labels": {"ky": "x"}}])}, token=tok)            # object w/o code
+    chk("decoupled: option object without code -> 400", s == 400, f"status={s}")
+    s, _ = req("POST", "/api/category_attribute",
+               {"id": "ca-gb3", "category_id": "cat-test-x", "key": "g3", "label": "G3", "type": "enum",
+                "options": json.dumps([{"code": "x"}, {"code": "x"}])}, token=tok)        # duplicate codes
+    chk("decoupled: duplicate option codes -> 400", s == 400, f"status={s}")
+    # category_form returns options as [{code,labels}]; legacy strings normalize to {code, labels:None}
+    def _lky(lbl):
+        if isinstance(lbl, str):
+            try: lbl = json.loads(lbl)
+            except Exception: lbl = {}
+        return (lbl or {}).get("ky")
+    s, b = req("POST", "/rpc/category_form", {"category": "test-x"}, token=tok)
+    fattrs = {a["key"]: a for a in ((b or {}).get("result") or {}).get("attributes", [])}
+    gmap = {o.get("code"): o.get("labels") for o in ((fattrs.get("gearbox") or {}).get("options") or [])}
+    chk("decoupled: category_form options are [{code,labels}]",
+        "automatic" in gmap and "manual" in gmap and _lky(gmap.get("automatic")) == "Автомат", str(gmap)[:160])
+    kopts = (fattrs.get("kind") or {}).get("options") or []
+    chk("decoupled: legacy string options normalize to {code, labels:None}",
+        any(o.get("code") == "A" and not o.get("labels") for o in kopts), str(kopts)[:120])
+    # listing validation: the CODE is the canonical stored value; a display label is rejected
+    base_x = {"category_id": "cat-test-x", "title": "i18n test", "city_id": "ci-bishkek"}
+    s, _ = req("POST", "/api/listings", dict(base_x, attributes={"gearbox": "automatic"}), token=tok)
+    chk("decoupled: listing with option CODE -> 201", s == 201, f"status={s}")
+    s, _ = req("POST", "/api/listings", dict(base_x, attributes={"gearbox": "Автомат"}), token=tok)   # display, not code
+    chk("decoupled: listing with display label (not code) -> 400", s == 400, f"status={s}")
 
     # ---- A1.1 photos attach + validation ----
     pid_a, pid_b = "a" * 32, "b" * 32
