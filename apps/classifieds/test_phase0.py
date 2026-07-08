@@ -725,6 +725,27 @@ def run_checks(port, db):
     chk("rollup: junk category not keyed (no injection)",
         "zzz-nonexistent" not in cats and "cars" not in cats, str(cats))
 
+    # ---- rpc feed: ranked home feed (non-personalized + personalized) ----
+    def feed_of(token=None, **kw):
+        s, b = req("POST", "/rpc/feed", kw, token=token)
+        return s, (b or {}).get("result") or {}
+    s, anon_feed = feed_of(limit=50)
+    chk("feed: anon returns ranked active listings",
+        s == 200 and (anon_feed.get("total") or 0) > 0 and len(anon_feed.get("results") or []) > 0, str(anon_feed.get("total")))
+    chk("feed: anon is non-personalized", anon_feed.get("personalized") is False, str(anon_feed.get("personalized")))
+    chk("feed: cards carry feed_score + card shape",
+        bool(anon_feed.get("results")) and all(("feed_score" in r and "title" in r and "saved_count" in r) for r in anon_feed["results"]),
+        str((anon_feed.get("results") or [{}])[0])[:140])
+    s, pers_feed = feed_of(token=seller, limit=50)
+    chk("feed: authed is personalized", pers_feed.get("personalized") is True, str(pers_feed.get("personalized")))
+    # affinity effect: the seller has cat-moto affinity (built by the rollup); a cat-moto
+    # listing must score STRICTLY higher in the seller's feed than the anon feed (aff>0 vs 0).
+    def smap(res): return {r["id"]: (r.get("feed_score") or 0, r.get("category_id")) for r in (res.get("results") or [])}
+    am, pm = smap(anon_feed), smap(pers_feed)
+    moto_boosted = any(pm[i][0] > am[i][0] for i in pm if i in am and pm[i][1] == "cat-moto")
+    chk("feed: personalization boosts the affine category (cat-moto)", moto_boosted,
+        f"moto listings: {[i for i in pm if pm[i][1]=='cat-moto']}")
+
     # JobQueue: an expire sweep flips a past-expiry active listing to 'expired'
     s, b = req("POST", "/api/listings",
                {"category_id": "cat-cars", "title": "Will expire", "city_id": "ci-bishkek",

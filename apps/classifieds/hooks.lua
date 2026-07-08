@@ -741,6 +741,72 @@ local function search(args, who)
   return { results = rows, total = total, limit = limit, offset = offset, facets = facets, free_count = free_count }
 end
 
+-- ── Home feed (non-personalized + personalized) ─────────────────────────────
+-- POST /rpc/feed {city?, limit?, offset?} — the "what to show when you open the app"
+-- surface (no query/facets — that's search). Ranks ACTIVE listings by a blended,
+-- BOUNDED score (pure arithmetic — no SQLite math-ext dependency):
+--   fresh = 1/(1 + age_days/TAU)                                    ∈ (0,1]
+--   near  = same-city-as-viewer boost                              ∈ {0,1}
+--   pop   = raw/(raw+K), raw = 3·favs + 5·contacts + 1·views       ∈ [0,1)
+--   aff   = s/(s+K), s = user_interest.score for the listing's cat ∈ [0,1)
+-- Logged in → the affinity term personalizes; anon (uid '') → the user_interest join
+-- misses → aff=0 → non-personalized. Same rpc serves both.
+-- Scale note: scores the whole active set per call (correlated pop subqueries) — fine at
+-- launch volume; promote to a rollup-maintained popularity counter if it gets hot.
+local FEED_LIMIT_DEF = 20
+local FEED_FRESH_TAU = 7.0     -- days
+local FEED_POP_K     = 5.0     -- popularity saturation constant
+local FEED_AFF_K     = 5.0     -- affinity saturation constant
+local FEED_W_FRESH   = 1.0
+local FEED_W_NEAR    = 0.6
+local FEED_W_POP     = 0.8
+local FEED_W_AFF     = 1.2     -- personalization pulls hard when a profile exists
+
+local FEED_SCORE = string.format(
+  '( %s*(1.0/(1.0 + (julianday(\'now\') - julianday(l.created_at))/%s)) '
+  .. '+ %s*(CASE WHEN ? <> \'\' AND l.city_id = ? THEN 1.0 ELSE 0.0 END) '
+  .. '+ %s*(CAST(l.raw_pop AS REAL)/(l.raw_pop + %s)) '
+  .. '+ %s*(COALESCE(ui.score,0)/(COALESCE(ui.score,0) + %s)) ) AS feed_score',
+  FEED_W_FRESH, FEED_FRESH_TAU, FEED_W_NEAR, FEED_W_POP, FEED_POP_K, FEED_W_AFF, FEED_AFF_K)
+
+local function feed(args, who)
+  args = args or {}
+  local limit = tonumber(args.limit) or FEED_LIMIT_DEF
+  if limit < 1 or limit > 50 then limit = FEED_LIMIT_DEF end
+  local offset = tonumber(args.offset) or 0
+  if offset < 0 then offset = 0 end
+  local city = (type(args.city) == 'string') and args.city or ''
+  local uid  = (who and who.user_id) or ''
+
+  local total = cellar.query("SELECT count(*) AS n FROM listings WHERE status = 'active'")[1].n
+
+  local rows = cellar.query(
+    'SELECT l.id, l.title, l.price, l.currency, l.category_id, l.city_id, l.district_id, ' ..
+    'l.condition, l.price_negotiable, l.is_free, l.seller_id, l.photos, l.created_at, ' ..
+    'up.display_name AS seller_name, ' ..
+    '(SELECT count(*) FROM favorite fav WHERE fav.listing_id = l.id) AS saved_count, ' ..
+    FEED_SCORE .. ' ' ..
+    'FROM ( SELECT l0.*, ' ..
+    '         (3*(SELECT count(*) FROM favorite f      WHERE f.listing_id  = l0.id) ' ..
+    '        + 5*(SELECT count(*) FROM contact_event ce WHERE ce.listing_id = l0.id) ' ..
+    "        + 1*(SELECT count(*) FROM event ev WHERE ev.type = 'listing_viewed' AND ev.subject_id = l0.id)) AS raw_pop " ..
+    "       FROM listings l0 WHERE l0.status = 'active' ) l " ..
+    'LEFT JOIN user_interest ui ON ui.user_id = ? AND ui.category_id = l.category_id ' ..
+    'LEFT JOIN user_profile up ON up.id = l.seller_id ' ..
+    'ORDER BY feed_score DESC, l.created_at DESC LIMIT ? OFFSET ?',
+    { city, city, uid, limit, offset })
+
+  local ids = {}; for _, r in ipairs(rows) do ids[#ids+1] = r.id end
+  local fmap = facets_for(ids)
+  for _, r in ipairs(rows) do r.highlights = highlights_for(r.category_id, fmap[r.id]) end
+
+  -- Cards = search's card columns + highlights + `feed_score` (the blended ranking
+  -- score). feed_score is an INTENTIONAL feed-only field (search has no ranking score):
+  -- a strict superset of the search card, derived only from public signals + the
+  -- caller's own affinity (no cross-user leak). raw_pop stays inside the subquery.
+  return { results = rows, total = total, limit = limit, offset = offset, personalized = (uid ~= '') }
+end
+
 -- ── A1.5: listing detail ────────────────────────────────────────────────────
 -- POST /rpc/listing {"id": "..."} → one listing for the detail page. Active
 -- listings are also readable directly via GET /api/listings/<id> (policy grants
@@ -1358,6 +1424,9 @@ function rpc(name, args, who)
   end
   if name == 'track' then
     return track(args, who)
+  end
+  if name == 'feed' then
+    return feed(args, who)
   end
   if name == 'listing' then
     return get_listing(args, who)
