@@ -132,14 +132,11 @@ def run_checks(port, db):
             except Exception: l = {}
         return (l or {}).get("ky")
     _bc = form.get("breadcrumb") or []
-    _tn = next((n for n in _bc if n.get("slug") == "transport"), {})
-    # transport is seeded with a ky label -> it must now flow into the breadcrumb (the fix).
-    chk("category_form: breadcrumb carries labels (transport ky)", _ky(_tn) == "Транспорт", str(_tn))
-    # a category WITH a label also exposes it on the category node (call it directly).
-    s, b = req("POST", "/rpc/category_form", {"category": "transport"}, token=tok)
+    _cn = next((n for n in _bc if n.get("slug") == "cars"), {})
+    # cat-cars is seeded with a ky label -> it must flow into the breadcrumb (the labels fix).
+    chk("category_form: breadcrumb carries labels (cars ky)", _ky(_cn) == "Автоунаалар", str(_cn))
     chk("category_form: category node carries ky label",
-        _ky(((b or {}).get("result") or {}).get("category") or {}) == "Транспорт",
-        str(((b or {}).get("result") or {}).get("category")))
+        _ky(form.get("category") or {}) == "Автоунаалар", str(form.get("category")))
     attrs = {a["key"]: a for a in form.get("attributes", [])}
     chk("form has make attr", "make" in attrs and attrs["make"]["required"] is True, str(list(attrs)))
     chk("make options are [{code,labels}] incl Toyota",
@@ -152,8 +149,8 @@ def run_checks(port, db):
     # ---- valid car create -> 201 + facets for the filterable attrs ----
     s, b = req("POST", "/api/listings",
                dict(car, attributes={"make": "Toyota", "year": 2015, "mileage": 120000,
-                                     "transmission": "Автомат", "fuel": "Бензин",
-                                     "body": "Седан"}), token=tok)
+                                     "transmission": "automatic", "fuel": "petrol",
+                                     "body": "sedan"}), token=tok)
     chk("valid car create -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
     row = (b or {}).get("row", {}); lid = row.get("id")
     chk("server set seller_id", bool(row.get("seller_id")), str(row.get("seller_id")))
@@ -163,7 +160,7 @@ def run_checks(port, db):
     chk("facet make (text)", f.get("make") == (None, "Toyota"), str(f.get("make")))
     chk("facet year (num)",  f.get("year") == (2015.0, None), str(f.get("year")))
     chk("facet mileage (num)", f.get("mileage") == (120000.0, None), str(f.get("mileage")))
-    chk("facet transmission (text)", f.get("transmission") == (None, "Автомат"), str(f.get("transmission")))
+    chk("facet transmission (text)", f.get("transmission") == (None, "automatic"), str(f.get("transmission")))
     chk("optional model not faceted (absent)", "model" not in f, str(list(f.keys())))
 
     # ---- missing required attr -> 400 (year is required for cars) ----
@@ -172,9 +169,9 @@ def run_checks(port, db):
     chk("missing required -> 400", s == 400, f"status={s}")
     chk("reason mentions year", "year" in (b or {}).get("message", ""), str(b))
 
-    # ---- bad enum -> 400 (Жигуль not in the make list) ----
+    # ---- bad enum -> 400 (notabrand not in the make list) ----
     s, b = req("POST", "/api/listings",
-               dict(car, attributes={"make": "Жигуль", "year": 2015}), token=tok)
+               dict(car, attributes={"make": "notabrand", "year": 2015}), token=tok)
     chk("bad enum -> 400", s == 400, f"status={s}")
     chk("reason mentions make", "make" in (b or {}).get("message", ""), str(b))
 
@@ -185,9 +182,9 @@ def run_checks(port, db):
 
     # ---- non-filterable attr excluded (apartment.total_floors, filterable=0) ----
     s, b = req("POST", "/api/listings",
-               {"category_id": "cat-apartments", "title": "2-комн квартира", "price": 80000,
+               {"category_id": "cat-apartments", "title": "2-room apartment", "price": 80000,
                 "city_id": "ci-bishkek",
-                "attributes": {"deal": "Аренда долгосрочная", "rooms": 2, "area": 55.5, "floor": 3,
+                "attributes": {"deal": "long-term-rent", "rooms": 2, "area": 55.5, "floor": 3,
                                "total_floors": 9, "furnished": True}}, token=tok)
     chk("valid apartment -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
     aid = (b or {}).get("row", {}).get("id")
@@ -204,11 +201,11 @@ def run_checks(port, db):
     chk("new subcat category_form (clothing)",
         (cf.get("category") or {}).get("slug") == "clothing" and cattrs.get("gender", {}).get("required") is True, str(list(cattrs)))
     s, b = req("POST", "/api/listings",
-               {"category_id": "cat-clothing", "title": "Куртка", "city_id": "ci-bishkek",
-                "attributes": {"gender": "Мужская", "size": "L"}}, token=tok)
+               {"category_id": "cat-clothing", "title": "Jacket", "city_id": "ci-bishkek",
+                "attributes": {"gender": "men", "size": "L"}}, token=tok)
     cid = (b or {}).get("row", {}).get("id")
     chk("post in new subcat (clothing) -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
-    chk("new subcat facet (gender)", (facets(db, cid) if cid else {}).get("gender") == (None, "Мужская"), "")
+    chk("new subcat facet (gender)", (facets(db, cid) if cid else {}).get("gender") == (None, "men"), "")
     s, _ = req("POST", "/api/listings",
                {"category_id": "cat-clothing", "title": "No gender", "city_id": "ci-bishkek",
                 "attributes": {"size": "L"}}, token=tok)
@@ -216,7 +213,7 @@ def run_checks(port, db):
 
     # ---- admin taxonomy writes + validation (FEEDBACK ask 3) ----
     s, b = req("POST", "/api/category",
-               {"id": "cat-test-x", "slug": "test-x", "name": "Тест", "parent_id": "cat-home"}, token=tok)
+               {"id": "cat-test-x", "slug": "test-x", "name": "Test", "parent_id": "cat-home"}, token=tok)
     chk("admin create category -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
     s, _ = req("POST", "/api/category", {"id": "cat-bad", "slug": "BadSlug", "name": "x"}, token=tok)
     chk("category bad slug -> 400", s == 400, f"status={s}")
@@ -224,22 +221,22 @@ def run_checks(port, db):
     chk("category bad parent -> 400", s == 400, f"status={s}")
     # attribute integrity
     s, _ = req("POST", "/api/category_attribute",
-               {"id": "ca-x1", "category_id": "cat-test-x", "key": "kind", "label": "Тип", "type": "enum"}, token=tok)
+               {"id": "ca-x1", "category_id": "cat-test-x", "key": "kind", "label": "Kind", "type": "enum"}, token=tok)
     chk("enum without options -> 400", s == 400, f"status={s}")
     s, _ = req("POST", "/api/category_attribute",
-               {"id": "ca-x2", "category_id": "cat-test-x", "key": "kind", "label": "Тип", "type": "enum", "options": "not json"}, token=tok)
+               {"id": "ca-x2", "category_id": "cat-test-x", "key": "kind", "label": "Kind", "type": "enum", "options": "not json"}, token=tok)
     chk("bad options JSON -> 400", s == 400, f"status={s}")
     s, _ = req("POST", "/api/category_attribute",
                {"id": "ca-x6", "category_id": "cat-test-x", "key": "z", "label": "Z", "type": "bogus"}, token=tok)
     chk("bad attribute type -> 400", s == 400, f"status={s}")
     s, b = req("POST", "/api/category_attribute",
-               {"id": "ca-x3", "category_id": "cat-test-x", "key": "kind", "label": "Тип", "type": "enum", "options": "[\"A\",\"B\"]", "filterable": 1}, token=tok)
+               {"id": "ca-x3", "category_id": "cat-test-x", "key": "kind", "label": "Kind", "type": "enum", "options": "[\"A\",\"B\"]", "filterable": 1}, token=tok)
     chk("valid enum attribute -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
     s, _ = req("POST", "/api/category_attribute",
-               {"id": "ca-x4", "category_id": "cat-test-x", "key": "sub", "label": "Под", "type": "text", "depends_on": "nope"}, token=tok)
+               {"id": "ca-x4", "category_id": "cat-test-x", "key": "sub", "label": "Sub", "type": "text", "depends_on": "nope"}, token=tok)
     chk("depends_on nonexistent key -> 400", s == 400, f"status={s}")
     s, b = req("POST", "/api/category_attribute",
-               {"id": "ca-x5", "category_id": "cat-test-x", "key": "sub", "label": "Под", "type": "text", "depends_on": "kind"}, token=tok)
+               {"id": "ca-x5", "category_id": "cat-test-x", "key": "sub", "label": "Sub", "type": "text", "depends_on": "kind"}, token=tok)
     chk("depends_on existing key -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
     # ask-3 update-path hardening (review): enum-flip needs options; depends_on needs category_id
     s, _ = req("PATCH", "/api/category_attribute/ca-x5", {"type": "enum"}, token=tok)
@@ -248,15 +245,15 @@ def run_checks(port, db):
     chk("PATCH depends_on without category_id -> 400", s == 400, f"status={s}")
 
     # ---- decoupled enum-option localization (FEEDBACK issue 2): options = [{code,labels}] ----
-    OPTS = json.dumps([{"code": "automatic", "labels": {"ky": "Автомат", "ru": "Автомат"}},
-                       {"code": "manual",    "labels": {"ky": "Кол",     "ru": "Механика"}}])
+    OPTS = json.dumps([{"code": "automatic", "labels": {"en": "Automatic"}},
+                       {"code": "manual",    "labels": {"en": "Manual"}}])
     s, b = req("POST", "/api/category_attribute",
-               {"id": "ca-gb", "category_id": "cat-test-x", "key": "gearbox", "label": "Коробка",
+               {"id": "ca-gb", "category_id": "cat-test-x", "key": "transmission", "label": "Transmission",
                 "type": "enum", "options": OPTS, "filterable": 1}, token=tok)
     chk("decoupled: new-format options accepted -> 201", s == 201, f"status={s} {b if s!=201 else ''}")
     s, _ = req("POST", "/api/category_attribute",
                {"id": "ca-gb2", "category_id": "cat-test-x", "key": "g2", "label": "G2", "type": "enum",
-                "options": json.dumps([{"labels": {"ky": "x"}}])}, token=tok)            # object w/o code
+                "options": json.dumps([{"labels": {"en": "x"}}])}, token=tok)            # object w/o code
     chk("decoupled: option object without code -> 400", s == 400, f"status={s}")
     s, _ = req("POST", "/api/category_attribute",
                {"id": "ca-gb3", "category_id": "cat-test-x", "key": "g3", "label": "G3", "type": "enum",
@@ -270,17 +267,22 @@ def run_checks(port, db):
         return (lbl or {}).get("ky")
     s, b = req("POST", "/rpc/category_form", {"category": "test-x"}, token=tok)
     fattrs = {a["key"]: a for a in ((b or {}).get("result") or {}).get("attributes", [])}
-    gmap = {o.get("code"): o.get("labels") for o in ((fattrs.get("gearbox") or {}).get("options") or [])}
+    gmap = {o.get("code"): o.get("labels") for o in ((fattrs.get("transmission") or {}).get("options") or [])}
+    def _len(lbl):
+        if isinstance(lbl, str):
+            try: lbl = json.loads(lbl)
+            except Exception: lbl = {}
+        return (lbl or {}).get("en")
     chk("decoupled: category_form options are [{code,labels}]",
-        "automatic" in gmap and "manual" in gmap and _lky(gmap.get("automatic")) == "Автомат", str(gmap)[:160])
+        "automatic" in gmap and "manual" in gmap and _len(gmap.get("automatic")) == "Automatic", str(gmap)[:160])
     kopts = (fattrs.get("kind") or {}).get("options") or []
     chk("decoupled: legacy string options normalize to {code, labels:None}",
         any(o.get("code") == "A" and not o.get("labels") for o in kopts), str(kopts)[:120])
     # listing validation: the CODE is the canonical stored value; a display label is rejected
     base_x = {"category_id": "cat-test-x", "title": "i18n test", "city_id": "ci-bishkek"}
-    s, _ = req("POST", "/api/listings", dict(base_x, attributes={"gearbox": "automatic"}), token=tok)
+    s, _ = req("POST", "/api/listings", dict(base_x, attributes={"transmission": "automatic"}), token=tok)
     chk("decoupled: listing with option CODE -> 201", s == 201, f"status={s}")
-    s, _ = req("POST", "/api/listings", dict(base_x, attributes={"gearbox": "Автомат"}), token=tok)   # display, not code
+    s, _ = req("POST", "/api/listings", dict(base_x, attributes={"transmission": "Automatic"}), token=tok)   # display, not code
     chk("decoupled: listing with display label (not code) -> 400", s == 400, f"status={s}")
 
     # ---- A1.1 photos attach + validation ----
@@ -330,7 +332,7 @@ def run_checks(port, db):
     s, _ = mklisting("Toyota Camry 2015", "cat-cars", {"make": "Toyota", "year": 2015})
     chk("search seed car1 -> 201", s == 201, f"status={s}")
     mklisting("Тойота Королла", "cat-cars", {"make": "Toyota", "year": 2016})
-    s, apt_id = mklisting("Квартира в центре города", "cat-apartments", {"deal": "Продажа", "rooms": 3})
+    s, apt_id = mklisting("Apartment downtown", "cat-apartments", {"deal": "sale", "rooms": 3})
     chk("search seed apt -> 201", s == 201, f"status={s}")
 
     def search(q, **kw):
@@ -350,8 +352,8 @@ def run_checks(port, db):
     s, r = search("королл")
     chk("prefix 'королл' matches Королла", "Тойота Королла" in titles(r), str(titles(r)))
 
-    s, r = search("квартира")
-    chk("'квартира' finds apartment", "Квартира в центре города" in titles(r), str(titles(r)))
+    s, r = search("apartment")
+    chk("'квартира' finds apartment", "Apartment downtown" in titles(r), str(titles(r)))
 
     # category narrowing
     s, r = search("тойота", category="cat-cars")
@@ -381,17 +383,17 @@ def run_checks(port, db):
     chk("fts injection safe -> 200", s == 200, f"status={s}")
 
     # trigger sync on UPDATE: retitle the apartment, old term gone, new term found
-    s, _ = req("PATCH", f"/api/listings/{apt_id}", {"title": "Студия уютная"}, token=tok)
+    s, _ = req("PATCH", f"/api/listings/{apt_id}", {"title": "Cozy studio"}, token=tok)
     chk("retitle apartment -> 200", s == 200, f"status={s}")
-    s, r = search("квартира")
-    chk("old title no longer matches", "Студия уютная" not in titles(r) and apt_id not in [x["id"] for x in r.get("results", [])], str(titles(r)))
-    s, r = search("студия")
-    chk("new title matches after update", "Студия уютная" in titles(r), str(titles(r)))
+    s, r = search("apartment")
+    chk("old title no longer matches", "Cozy studio" not in titles(r) and apt_id not in [x["id"] for x in r.get("results", [])], str(titles(r)))
+    s, r = search("studio")
+    chk("new title matches after update", "Cozy studio" in titles(r), str(titles(r)))
 
     # trigger sync on DELETE: removed from the index
     s, _ = req("DELETE", f"/api/listings/{apt_id}", token=tok)
     chk("delete listing -> 200", s == 200, f"status={s}")
-    s, r = search("студия")
+    s, r = search("studio")
     chk("deleted listing gone from search", apt_id not in [x["id"] for x in r.get("results", [])], str(titles(r)))
 
     # ---- A1.4 faceted filtering (fresh category cat-moto for exact counts) ----
@@ -937,7 +939,7 @@ def run_checks(port, db):
     chk("update attrs bad enum -> 400", s == 400, f"status={s}")
     # a valid category+attributes change succeeds
     s, _ = req("PATCH", f"/api/listings/{hid}",
-               {"category_id": "cat-apartments", "attributes": {"deal": "Аренда долгосрочная", "rooms": 2}}, token=seller)
+               {"category_id": "cat-apartments", "attributes": {"deal": "long-term-rent", "rooms": 2}}, token=seller)
     chk("valid category+attrs change -> 200", s == 200, f"status={s}")
     # a PATCH touching neither category nor attributes is unaffected
     s, _ = req("PATCH", f"/api/listings/{hid}", {"title": "Just a title edit"}, token=seller)

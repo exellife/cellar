@@ -32,7 +32,7 @@ PRICE = {
     'cat-phones': (3_000, 160_000), 'cat-computers': (5_000, 300_000),
 }
 MODELS = ['Pro', 'Lux', 'Sport', 'Classic', 'GT', 'X', 'Plus', 'Mini', 'Max', 'S', 'L']
-ADJ = ['отличное', 'срочно', 'новое', 'недорого', 'торг', 'идеальное', 'выгодно']
+ADJ = ['great', 'urgent', 'new', 'cheap', 'negotiable', 'perfect', 'bargain']
 
 def gen_attr(a, rnd):
     """A valid value for one category_attribute row `a` = (key,type,options)."""
@@ -51,12 +51,12 @@ def gen_attr(a, rnd):
 
 def title_for(cat_id, cat_name, attrs, rnd):
     if cat_id in ('cat-cars', 'cat-moto'):
-        return f"{attrs.get('make','Авто')} {rnd.choice(MODELS)} {attrs.get('year','')}".strip()
+        return f"{attrs.get('make','Car')} {rnd.choice(MODELS)} {attrs.get('year','')}".strip()
     if cat_id in ('cat-apartments', 'cat-houses'):
         r = attrs.get('rooms', '')
-        return f"{r}-комн {cat_name.lower()}".strip('- ')
+        return f"{r}-room {cat_name.lower()}".strip('- ')
     if cat_id == 'cat-phones':
-        return f"{attrs.get('brand','Телефон')} {attrs.get('storage','')}ГБ".strip()
+        return f"{attrs.get('brand','Phone')} {attrs.get('storage','')}GB".strip()
     return f"{cat_name} — {rnd.choice(ADJ)}"
 
 def main():
@@ -93,7 +93,7 @@ def main():
     for cid in cats:
         rows = cur.execute('SELECT key, type, required, filterable, options FROM category_attribute '
                            'WHERE category_id=? ORDER BY sort_order', (cid,)).fetchall()
-        schema[cid] = [(k, t, req, filt, json.loads(o) if o else None) for k, t, req, filt, o in rows]
+        schema[cid] = [(k, t, req, filt, ([ (x.get('code') if isinstance(x, dict) else x) for x in json.loads(o) ] if o else None)) for k, t, req, filt, o in rows]
     cities = [r[0] for r in cur.execute('SELECT id FROM geo_city')]
     distr = {}
     for cid, did in cur.execute('SELECT city_id, id FROM geo_district'):
@@ -150,9 +150,9 @@ def main():
                      if media_pool else '[]'
             rows.append((
                 str(uuid.uuid4()), a.region, seller, cid,
-                title_for(cid, cat_name.get(cid, 'Объявление'), attrs, rnd),
+                title_for(cid, cat_name.get(cid, 'Listing'), attrs, rnd),
                 rnd.choice(ADJ).capitalize() + '.', rnd.randint(plo, phi), 1 if rnd.random() < 0.3 else 0,
-                'KGS', 'ru', city, dist, rnd.choice(('new', 'used', None)), 'active',
+                'KGS', 'ky', city, dist, rnd.choice(('new', 'used', None)), 'active',
                 1, 1, 1 if rnd.random() < 0.3 else 0, photos, json.dumps(attrs, ensure_ascii=False),
                 iso(ts), iso(ts), iso(ts + 30 * 86400),
             ))

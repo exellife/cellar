@@ -156,7 +156,7 @@ end
 
 -- price is optional, but if present must be a whole, non-negative number (soms).
 local function valid_price(p)
-  if p == nil then return true end                       -- unpriced ("договорная")
+  if p == nil then return true end                       -- unpriced ("negotiable")
   return type(p) == 'number' and p > 0 and p == math.floor(p)   -- positive whole; 0 is invalid (use is_free)
 end
 
@@ -321,10 +321,10 @@ function before(op, tbl, input, who)
     input.created_at = now_iso()              -- server-owned (drives the "newest" sort)
     input.updated_at = input.created_at
     input.expires_at = iso_in(EXPIRY_DAYS)    -- server-owned
-    -- "Бесплатно": normalize to 0/1; a free listing carries no price.
+    -- "Free": normalize to 0/1; a free listing carries no price.
     input.is_free = to_bool01(input.is_free)
     if input.is_free == 1 then input.price = nil; input.price_negotiable = 0 end
-    if not valid_price(input.price) then return false, 'price must be a whole positive number (omit for «договорная», or set is_free)' end
+    if not valid_price(input.price) then return false, 'price must be a whole positive number (omit for a negotiable price, or set is_free)' end
     local pok, perr = validate_photos(input.photos)
     if not pok then return false, perr end
     return validate_attrs(input.category_id, input.attributes)
@@ -339,7 +339,7 @@ function before(op, tbl, input, who)
     elseif type(input.price) == 'number' and input.price > 0 then
       input.is_free = 0                        -- a priced update is definitionally not free (clears a stale is_free)
     end
-    if not valid_price(input.price) then return false, 'price must be a whole positive number (omit for «договорная», or set is_free)' end
+    if not valid_price(input.price) then return false, 'price must be a whole positive number (omit for a negotiable price, or set is_free)' end
     local pok, perr = validate_photos(input.photos)
     if not pok then return false, perr end
     -- before() sees only the PATCH body (no row id / no stored attributes), so a
@@ -398,7 +398,7 @@ function after(op, tbl, row, who)
         'SELECT user_id FROM conversation_member WHERE conversation_id = ? AND user_id <> ?',
         { row.conversation_id, row.sender_id })
       for _, m in ipairs(others) do
-        notify(m.user_id, 'message', 'Новое сообщение', utf8_trunc(row.body, 80), row.conversation_id)
+        notify(m.user_id, 'message', 'New message', utf8_trunc(row.body, 80), row.conversation_id)
       end
     end
     return
@@ -430,8 +430,8 @@ function job(name, payload)
       "WHERE status='active' AND expires_at <> '' AND expires_at < ?", { ts })
     for _, l in ipairs(due) do
       cellar.exec("UPDATE listings SET status='expired', updated_at=? WHERE id=?", { ts, l.id })
-      notify(l.seller_id, 'listing_expired', 'Объявление истекло',
-             'Срок размещения вашего объявления истёк', l.id)
+      notify(l.seller_id, 'listing_expired', 'Listing expired',
+             'Your listing has expired', l.id)
     end
     cellar.log.info('job expire_listings: expired ' .. tostring(#due) .. ' listing(s)')
   elseif name == 'match_saved_searches' then
@@ -449,18 +449,18 @@ function render_email(kind, ctx)
   if kind == 'verify_email' and ctx and ctx.code then
     local code = tostring(ctx.code)
     return {
-      subject = 'Код подтверждения Jarchy: ' .. code,
-      text = 'Ваш код подтверждения: ' .. code ..
-             '\r\n\r\nВведите его в приложении, чтобы подтвердить адрес эл. почты. ' ..
-             'Код действителен 15 минут.\r\n\r\n' ..
-             'Если вы не регистрировались на Jarchy, проигнорируйте это письмо.\r\n',
+      subject = 'Jarchy verification code: ' .. code,
+      text = 'Your verification code: ' .. code ..
+             '\r\n\r\nEnter it in the app to confirm your email address. ' ..
+             'The code is valid for 15 minutes.\r\n\r\n' ..
+             'If you did not sign up for Jarchy, please ignore this email.\r\n',
       html = '<div style="font-family:sans-serif;max-width:420px;margin:0 auto;color:#1c1917">' ..
              '<h2 style="color:#c2410c;margin:0 0 12px">Jarchy</h2>' ..
-             '<p>Ваш код подтверждения:</p>' ..
+             '<p>Your verification code:</p>' ..
              '<p style="font-size:30px;font-weight:700;letter-spacing:6px;margin:8px 0">' .. code .. '</p>' ..
-             '<p style="color:#57534e">Введите его в приложении. Код действителен 15 минут.</p>' ..
+             '<p style="color:#57534e">Enter it in the app. The code is valid for 15 minutes.</p>' ..
              '<p style="color:#a8a29e;font-size:12px;margin-top:20px">' ..
-             'Если вы не регистрировались на Jarchy, проигнорируйте это письмо.</p></div>',
+             'If you did not sign up for Jarchy, please ignore this email.</p></div>',
     }
   end
   return nil
@@ -598,7 +598,7 @@ local HL_KEYS = {
   ['cat-phones']     = { 'brand', 'storage' },
   ['cat-computers']  = { 'kind', 'ram' },
 }
-local HL_UNIT = { mileage='км', area='м²', engine_cc='см³', land='сот', storage='ГБ', ram='ГБ', rooms='комн', floor='эт' }
+local HL_UNIT = { mileage='km', area='m²', engine_cc='cc', land='sotka', storage='GB', ram='GB', rooms='rooms', floor='fl' }
 local function grp3(n)   -- 78000 -> "78 000"
   local s = tostring(math.floor(n)); local out, c = '', 0
   for i = #s, 1, -1 do out = s:sub(i, i) .. out; c = c + 1; if c % 3 == 0 and i > 1 then out = ' ' .. out end end
@@ -623,7 +623,7 @@ local function highlights_for(cat_id, fmap)
   for _, k in ipairs(keys) do
     local fv = fmap[k]
     if fv and fv.num ~= nil then
-      -- unit-bearing numbers get a thousands separator (78 000 км); unitless ones
+      -- unit-bearing numbers get a thousands separator (78 000 km); unitless ones
       -- (e.g. year) render plain so 2019 doesn't become "2 019".
       local u = HL_UNIT[k]
       out[#out+1] = u and (grp3(fv.num) .. ' ' .. u) or tostring(math.floor(fv.num))
@@ -653,7 +653,7 @@ local function highlights_kv_for(cat_id, fmap)
 end
 
 -- Expand a category id-or-slug to itself + all descendants (marketplace subtree
--- browse: clicking a parent like "Транспорт" must return the whole subtree — its
+-- browse: clicking a parent like "Transport" must return the whole subtree — its
 -- leaves hold the listings, the parent holds none). Returns a list of ids, empty
 -- if the category is unknown. The tree is small and idx_category_parent covers
 -- the recursion. Accepts a slug too (id OR slug), like category_form.
@@ -715,7 +715,7 @@ local function search(args, who)
   for i = 1, #binds do base_binds[i] = binds[i] end
 
   add_facet_conds(args.filters, conds, binds)
-  if args.free then conds[#conds+1] = 'l.is_free = 1' end   -- "Бесплатно" filter (facet-like; free_count is over the base set)
+  if args.free then conds[#conds+1] = 'l.is_free = 1' end   -- "Free" filter (facet-like; free_count is over the base set)
   local where = table.concat(conds, ' AND ')
 
   -- ordering: relevance only with a query; else newest. price sorts push NULLs last.
@@ -769,7 +769,7 @@ local function search(args, who)
     end
   end
 
-  -- "Бесплатно" count over the base set (like a facet), so the sidebar can offer the toggle
+  -- "Free" count over the base set (like a facet), so the sidebar can offer the toggle
   local free_count = cellar.query(
     'SELECT count(*) AS n FROM ' .. base_from .. ' WHERE ' .. base_where .. ' AND l.is_free = 1', base_binds)[1].n
 
@@ -1119,7 +1119,7 @@ function match_saved_searches()
       'SELECT l.id, l.title, l.created_at FROM ' .. from .. ' WHERE ' .. table.concat(conds, ' AND ') ..
       ' ORDER BY l.created_at LIMIT 50', binds)
     for _, r in ipairs(rows) do
-      notify(ss.user_id, 'saved_search', 'Новое по вашему поиску', r.title, r.id)
+      notify(ss.user_id, 'saved_search', 'New match for your search', r.title, r.id)
     end
     -- Advance the cursor only as far as we actually processed. If we hit the page
     -- limit there may be more matches between the last row and now, so park the
@@ -1325,8 +1325,8 @@ local function takedown_listing(args, who)
   cellar.exec("UPDATE listing_report SET status='actioned', resolved_at=?, resolved_by=? " ..
               "WHERE listing_id = ? AND status = 'open'", { ts, who.user_id, lid })
   cellar.emit('listing_takedown', { actor = who.user_id, subject = lid })
-  notify(l.seller_id, 'listing_removed', 'Объявление удалено модератором',
-         utf8_trunc(args.note or 'Ваше объявление удалено за нарушение правил площадки.', 500), lid)
+  notify(l.seller_id, 'listing_removed', 'Listing removed by a moderator',
+         utf8_trunc(args.note or 'Your listing was removed for violating the marketplace rules.', 500), lid)
   return { ok = true, listing_id = lid, status = 'removed' }
 end
 
@@ -1353,8 +1353,8 @@ local function reinstate_listing(args, who)
     "updated_at=? WHERE id=?", { restore, ts, iso_in(EXPIRY_DAYS), ts, lid })
   cellar.exec("UPDATE listing_report SET status='dismissed', resolved_at=?, resolved_by=? " ..
               "WHERE listing_id = ? AND status = 'open'", { ts, who.user_id, lid })
-  notify(l.seller_id, 'listing_reinstated', 'Объявление восстановлено',
-         'Ваше объявление снова активно.', lid)
+  notify(l.seller_id, 'listing_reinstated', 'Listing reinstated',
+         'Your listing is active again.', lid)
   return { ok = true, listing_id = lid, status = restore }
 end
 

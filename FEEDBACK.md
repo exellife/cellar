@@ -56,6 +56,19 @@ instead of working around it silently** — engine problems get fixed in the eng
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
 
+- **Taxonomy de-Russianed → English-canonical** — SHIPPED. Root ask: enum option `code`s were Russian
+  display-strings. Now the **entire classifieds taxonomy is English-canonical**, generated from the frontend's
+  `taxonomy/*.md` (en) + `ky-taxonomy.draft.json` (ky): every enum option `code` is an English slug
+  (`sedan`,`manual`,`long-term-rent`,`lpg`…), `labels` carry per-locale display (`{en, ky}`), category/attribute
+  names + geo are English/romanized (Bishkek·Chuy·Osh·Jalal-Abad…), and hooks strings (notifications, verify
+  email, units, errors) are English too. **Zero Russian** in `seed.sql`/`hooks.lua` (KY labels are Kyrgyz-Cyrillic,
+  which stays). Also corrected a couple of trap terms (Газ→**lpg** not "gas"; a few labels polished: Deal→Listing
+  type, Body→Body type, Screen→Screen size). Since there's no data to preserve, this ships as a **seed rewrite +
+  fresh re-provision** (no in-place migration). Tests updated to slugs (`test_phase0` 219 ok; siblings green).
+  **NB (frontend):** stop the runtime `labels.ky` PATCH loader — labels are ephemeral that way (wiped on re-seed,
+  never reach prod). Labels now live in the **seed** (canonical). Enum-option KY is your Phase 2 (add to the specs
+  → regenerate). See frontend `FROM-BACKEND.md`.
+
 - **Enum option-value + `highlights` localization — decoupled i18n model** — SHIPPED (localization slice).
   Root cause: option values were RU strings that were ALSO the stored/faceted value (RU baked in as
   canonical). Now an enum's `options` is **`[{code, labels}]`** — `code` is the language-neutral canonical
