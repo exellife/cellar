@@ -131,8 +131,25 @@ personal page + web pages). Oracle A1 is dev/demo.
       code via SES; posting/contact require verification (admins exempt). jarchy had **0 listings**, so the
       catalog delta (`is_free` ALTER + taxonomy INSERTs + `deal` 3-way) was applied in place after a backup.
       Deploy = rebuild binary on the box + `cp /usr/local/bin/cellar` + swap bundle + apply delta + publish
-      dist + restart (blips svngn/tandem ~3s). **NOTE:** classifieds still has **no `migrations/` dir** — this
-      delta was hand-applied; adopt migrations before the next schema/taxonomy change so it's `cellar migrate`.
+      dist + restart (blips svngn/tandem ~3s). *(This `is_free`/taxonomy delta was hand-applied — the LAST
+      hand-applied one; the bundle adopted a `migrations/` dir in the recs-slice deploy below.)*
+    - **Behavioral tracking + recs rollup + migrations LIVE (2026-07-08, commit `fb5ab84`):** the
+      "personalization-ready" slice — per-user event capture (`search` now stamps the actor + fires on a
+      category browse, not just a text query), a **`track` rpc** (client impression/result_click/card_view/
+      dwell/search_view ingestion; **server-stamps the actor**, type allowlist, batch(20)/props(512B)/rate
+      (300-per-min) caps, anon-allowed, fire-and-forget), and a daily **`rollup_interest`** job folding the
+      EventSink stream into per-user category affinity (`user_interest`, cursor in `rollup_state`).
+      Adversarially reviewed (18 agents → 3 findings fixed: O(n²) scan-DoS, category-injection, pcall).
+      **classifieds now has a `migrations/` dir** — `0001_init` (idempotent baseline that adopts live DBs) +
+      `0002_recs_tracking` (the 3 new tables) — and this shipped via **`cellar migrate`, the first migrate-based
+      prod deploy** (the hand-applied-SQL era is over). **Deploy recipe:** sync bundle (`hooks.lua`/`policies.json`/
+      `schema.sql`/`migrations/`) → `systemctl stop cellar` → `CEL_APPS_DIR=… cellar migrate <host>` **run as the
+      `cellar` user** (VACUUM-INTO backup to `<bundle>/.backups/`, tracked in `_schema_migrations` w/ checksum +
+      drift detection, idempotent) → `systemctl start cellar` → seed `rollup_interest` (`repeat_every` 86400).
+      `dist/cellar-migrate.sh` wraps stop→migrate→start, **but runs migrate as the invoking user** — invoke it as
+      `cellar` (or migrate manually as `cellar`) so `data.db`/WAL/backup ownership stays correct. **No feed
+      consumer yet** (reads `user_interest` to rank) — deferred until real traffic; the profile accrues meanwhile.
+      **`track` client contract (endpoint / 5 event types / `props` as a JSON string / batch ≤20) → FEEDBACK.**
     - **Launch follow-up:** add `jarchy.svngn.com` as an **Authorized JavaScript origin** on the Google
       OAuth client, else the Google button fails (email/password unaffected).
 - **Footgun noted:** `cellar --version` is not a recognized flag → cellar ignores it and **starts a server
