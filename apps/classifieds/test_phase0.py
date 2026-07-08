@@ -123,6 +123,23 @@ def run_checks(port, db):
     chk("breadcrumb root->leaf",
         [c.get("slug") for c in form.get("breadcrumb", [])] == ["transport", "cars"],
         str(form.get("breadcrumb")))
+    # localization (FEEDBACK issue 1): every breadcrumb node carries `labels` (KY-first UI
+    # renders labels[locale] ?? name). cat-transport is seeded with a ky label; verify it flows.
+    def _ky(node):
+        l = node.get("labels")
+        if isinstance(l, str):
+            try: l = json.loads(l)
+            except Exception: l = {}
+        return (l or {}).get("ky")
+    _bc = form.get("breadcrumb") or []
+    _tn = next((n for n in _bc if n.get("slug") == "transport"), {})
+    # transport is seeded with a ky label -> it must now flow into the breadcrumb (the fix).
+    chk("category_form: breadcrumb carries labels (transport ky)", _ky(_tn) == "Транспорт", str(_tn))
+    # a category WITH a label also exposes it on the category node (call it directly).
+    s, b = req("POST", "/rpc/category_form", {"category": "transport"}, token=tok)
+    chk("category_form: category node carries ky label",
+        _ky(((b or {}).get("result") or {}).get("category") or {}) == "Транспорт",
+        str(((b or {}).get("result") or {}).get("category")))
     attrs = {a["key"]: a for a in form.get("attributes", [])}
     chk("form has make attr", "make" in attrs and attrs["make"]["required"] is True, str(list(attrs)))
     chk("make options is array w/ Toyota", "Toyota" in (attrs.get("make", {}).get("options") or []),

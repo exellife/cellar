@@ -50,11 +50,36 @@ instead of working around it silently** — engine problems get fixed in the eng
   `mutation_id` → second response has no `winner`.
 - **filed:** 2026-06-22 by cellar-agent (seed example — known backlog item)
 
+### [OPEN] No way to localize enum **option values** + search `highlights` (attribute filter values stay RU)
+- **kind:** gap
+- **severity:** medium
+- **what I was doing:** localizing attribute filter values (e.g. Коробка → Автомат/Механика) and the
+  card key-spec preview for the KY UI. NB: attribute **labels** already carry `labels?` and the
+  frontend uses them — this is specifically about the enum **option values** and `highlights`.
+- **expected:** a client-side hook to translate enum option values — e.g. `CategoryAttribute.options`
+  carries per-option labels (`[{ value, labels }]`) or a parallel `option_labels` map — and search
+  `highlights` either composed from localized values or returned as raw values the client can map.
+- **actual:** `options` is a plain `string[]` of Russian display values with no labels, and
+  `highlights` arrive as pre-composed Russian strings. So filter checkboxes, facet values, and card
+  spec previews stay Russian in the KY UI with no client-side way to translate them.
+- **repro:** `category_form` for `cars` → `transmission.options = ["Автомат","Механика",…]` (bare
+  strings, no labels); a search row's `highlights = ["2019","78 000 км","Автомат"]` (composed
+  server-side).
+- **filed:** 2026-07-08 by Jarchy frontend (classifieds)
+
 ---
 
 ## Resolved
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
+
+- **`category_form` — `labels` now on `category` + every `breadcrumb` node** — SHIPPED (localization slice).
+  The `category` node already carried `labels`; the fix adds it to the **breadcrumb** (the parent-walk
+  query now selects `labels` and each node includes it), so KY-first headings + breadcrumbs localize
+  (`labels[locale] ?? name`). Categories without a `labels` row simply omit the key → the client's
+  existing `?? name` fallback applies. Bundle-only (`apps/classifieds/hooks.lua`). Test: `test_phase0.py`
+  (seeded `cat-transport` ky label flows into the breadcrumb + the category node). (Enum-option-value +
+  `highlights` localization is the separate Open item below.)
 
 - **Classifieds catalog — taxonomy + `is_free` + admin-managed taxonomy** — SHIPPED (`6b4d7c7` is_free,
   `54e8a09` taxonomy, `fdfcd96` validation, `e867b7e` review hardening). All three asks:

@@ -460,12 +460,13 @@ local function category_form(arg)
   local cat = rows[1]
   if not cat then return nil end
 
-  -- breadcrumb: walk parents up, then reverse to root→leaf
+  -- breadcrumb: walk parents up, then reverse to root→leaf. Carry `labels` on every
+  -- node (KY-first UI renders labels[locale] ?? name for headings + breadcrumbs).
   local chain, cur, guard = {}, cat, 0
   while cur and guard < 16 do
-    table.insert(chain, 1, { id = cur.id, slug = cur.slug, name = cur.name })
+    table.insert(chain, 1, { id = cur.id, slug = cur.slug, name = cur.name, labels = cur.labels })
     if not cur.parent_id then break end
-    local p = cellar.query('SELECT id, parent_id, slug, name FROM category WHERE id = ?', { cur.parent_id })
+    local p = cellar.query('SELECT id, parent_id, slug, name, labels FROM category WHERE id = ?', { cur.parent_id })
     cur = p[1]; guard = guard + 1
   end
 
