@@ -25,6 +25,19 @@ fi
 cp "$HERE/hooks.lua" "$BUNDLE/hooks.lua"
 cp "$HERE/policies.json" "$BUNDLE/policies.json"
 
+# Keep the .run DB schema current across restarts. run.sh re-copies hooks/policies on
+# every start but NOT the schema — so a .run DB provisioned before a schema change would
+# drift ("no such table: …"). Copy the migrations and apply any pending ones (idempotent;
+# a no-op on a fresh/current DB). The server isn't started yet → no write-lock contention.
+if [ -d "$HERE/migrations" ]; then
+  rm -rf "$BUNDLE/migrations"; cp -r "$HERE/migrations" "$BUNDLE/migrations"
+  if ! CEL_APPS_DIR="$APPS" "$BIN" migrate "$APP"; then
+    echo "!! cellar migrate failed (see above) — refusing to start on an un-migrated DB" >&2; exit 1
+  fi
+  # migrate snapshots the DB before each apply; keep only the newest 5 so .backups/ stays tidy.
+  ls -1dt "$BUNDLE/.backups"/pre-migrate-* 2>/dev/null | tail -n +6 | xargs -r rm -f
+fi
+
 # --- Auth (A1.8) -----------------------------------------------------------
 # Password + session login works out of the box (self_register=user). The engine
 # also supports OAuth/OIDC and email magic-link — both CONFIG-ONLY (no bundle
