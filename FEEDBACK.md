@@ -56,6 +56,19 @@ instead of working around it silently** — engine problems get fixed in the eng
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
 
+- **Attribute display moved from `label` (JSON) → `labels`** — FIXED (migration `0004_attr_labels.sql`).
+  You were right: attributes were inconsistent with categories/options. The de-Russian pass (0001 baseline)
+  stored each attribute's `{en,ky}` map as a JSON string inside **`label`** (the plain-text fallback) and left
+  the dedicated **`labels`** column NULL — so `labels.ky ?? label` fell back to the raw JSON. The **schema and
+  `category_form` already supported `label`+`labels`** (like categories/options) — this was a pure data bug.
+  `0004` moves the JSON into `labels` and reduces `label` to the plain English string
+  (`label:"Body type"`, `labels:{"en":"Body type","ky":"Денеси"}`); idempotent (once `label` is a plain string
+  it won't re-run), display-columns-only (no listing data). Verified the migration output is **byte-identical**
+  to a fresh provision. seed.sql regenerated to the correct two-column shape; `gen_ky_labels.py` now emits it
+  (and is seed-only — migrations are hand-authored history so a re-run can't clobber a shipped one).
+  `test_phase0` 219 ok; applied + verified live on local :8080 (`category_form` → `label` plain, `labels`
+  populated) and prod jarchy.
+
 - **Kyrgyz display labels regenerated from the bilingual `taxonomy/*.md`** — SHIPPED. `labels.ky` is now set
   on **all three** levels — categories, attribute labels, AND **enum options** (which had *no* KY before) —
   parsed from the `English [KY]` specs (ky = the `[bracket]`, else the English word; bare tokens same in both).
