@@ -134,9 +134,9 @@ def run_checks(port, db):
     _bc = form.get("breadcrumb") or []
     _cn = next((n for n in _bc if n.get("slug") == "cars"), {})
     # cat-cars is seeded with a ky label -> it must flow into the breadcrumb (the labels fix).
-    chk("category_form: breadcrumb carries labels (cars ky)", _ky(_cn) == "Автоунаалар", str(_cn))
+    chk("category_form: breadcrumb carries labels (cars ky)", _ky(_cn) == "Унаалар", str(_cn))
     chk("category_form: category node carries ky label",
-        _ky(form.get("category") or {}) == "Автоунаалар", str(form.get("category")))
+        _ky(form.get("category") or {}) == "Унаалар", str(form.get("category")))
     attrs = {a["key"]: a for a in form.get("attributes", [])}
     chk("form has make attr", "make" in attrs and attrs["make"]["required"] is True, str(list(attrs)))
     chk("make options are [{code,labels}] incl Toyota",

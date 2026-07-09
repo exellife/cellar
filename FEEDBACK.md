@@ -56,6 +56,21 @@ instead of working around it silently** — engine problems get fixed in the eng
 
 _Engine fixes that came out of dogfooding (the loop working). New resolutions go on top._
 
+- **Kyrgyz display labels regenerated from the bilingual `taxonomy/*.md`** — SHIPPED. `labels.ky` is now set
+  on **all three** levels — categories, attribute labels, AND **enum options** (which had *no* KY before) —
+  parsed from the `English [KY]` specs (ky = the `[bracket]`, else the English word; bare tokens same in both).
+  Fixed the stale-draft KY too: long calques trimmed (`cat-trucks` «Жүк унаалары жана атайын техника» → «Жүк
+  унаа»), the three top cats (transport/realestate/electronics) filled, and Russian `ь` removed («Компьютерлер»
+  → «Компютерлер», «Модель» → «Модел»). **Zero `ь`/`ъ`** in any ky. English + codes untouched. Caught a trap:
+  the specs are **not** in cellar option order (`transmission` spec = Automatic·Manual·… but the codes are
+  manual,automatic,…) — options are matched by **English label ↔ code**, not position, with a hard-fail on any
+  unmatched option, so no code is ever mislabeled. The specs now live in the bundle at
+  `apps/classifieds/taxonomy/`; a generator (`gen_ky_labels.py`) rewrites `seed.sql` **and** emits
+  `migrations/0003_ky_labels.sql` from one parse (so they can't drift). Shipped as a **data-preserving
+  migration** (label columns only — listing attribute *values* are codes, untouched), so live DBs get it
+  without a re-provision. Applied + verified on local :8080 (`category_form` breadcrumb + attr + option KY all
+  flow); `test_phase0.py` 219 ok (fresh-provision path also correct). See frontend `FROM-BACKEND.md`.
+
 - **Taxonomy de-Russianed → English-canonical** — SHIPPED. Root ask: enum option `code`s were Russian
   display-strings. Now the **entire classifieds taxonomy is English-canonical**, generated from the frontend's
   `taxonomy/*.md` (en) + `ky-taxonomy.draft.json` (ky): every enum option `code` is an English slug
