@@ -66,6 +66,20 @@ int        cel_hook_set_password(const char *email, const char *new_password, ch
 typedef int (*cel_hook_set_password_fn)(const char *email, const char *new_password, char *err, int errlen);
 void       cel_hooks_set_password_setter(cel_hook_set_password_fn fn);
 
+/* Enable/disable a login account (cellar.set_user_active) → 0, or -1 + err. Wired by
+ * the engine at boot (same decoupling); unwired it returns -1. The bundle's rpc
+ * enforces who-may-disable-whom; the wired adapter refuses touching a superuser. */
+int        cel_hook_set_user_active(const char *email, int active, char *err, int errlen);
+typedef int (*cel_hook_set_active_fn)(const char *email, int active, char *err, int errlen);
+void       cel_hooks_set_user_activator(cel_hook_set_active_fn fn);
+
+/* Hard-delete a login account + all its cel_* rows (cellar.delete_user) → 0, or
+ * -1 + err. Wired at boot; unwired returns -1. The bundle's rpc enforces
+ * who-may-delete-whom; the wired adapter refuses deleting a superuser. */
+int        cel_hook_delete_user(const char *email, char *err, int errlen);
+typedef int (*cel_hook_delete_user_fn)(const char *email, char *err, int errlen);
+void       cel_hooks_set_user_deleter(cel_hook_delete_user_fn fn);
+
 /* Claim + dispatch up to `budget` due jobs from `q` (job_queue_t*) to the Lua
  * `job` hook on this thread's state; completes/retries per result. The caller
  * binds a db connection (cel_hooks_set_db) for the handlers. Returns # processed. */

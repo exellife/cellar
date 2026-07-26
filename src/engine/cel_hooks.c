@@ -321,6 +321,45 @@ int cel_hook_set_password(const char *email, const char *new_password, char *err
     return g_set_password(email, new_password, err, errlen);
 }
 
+/* Enable/disable + hard-delete an account, exposed as cellar.set_user_active /
+ * cellar.delete_user. Same shape as set_password: the bundle rpc decides WHO may
+ * act on WHOM (read the target role via cellar.query); the wired adapters refuse a
+ * superuser and provide the primitives (flip is_active + revoke, or DELETE + cascade). */
+static cel_hook_set_active_fn  g_set_active  = NULL;
+void cel_hooks_set_user_activator(cel_hook_set_active_fn fn) { g_set_active = fn; }
+static cel_hook_delete_user_fn g_delete_user = NULL;
+void cel_hooks_set_user_deleter(cel_hook_delete_user_fn fn) { g_delete_user = fn; }
+
+int cel_hook_set_user_active(const char *email, int active, char *err, int errlen) {
+    if (err && errlen) err[0] = '\0';
+    if (!email || !email[0]) { if (err && errlen) snprintf(err, errlen, "email is required"); return -1; }
+    /* Takes the app write lock (cel_auth_set_active); before/after/resolve/job
+     * already hold it, so re-locking would self-deadlock — rpc-only. */
+    if (app_db_in_write_lock()) {
+        if (err && errlen) snprintf(err, errlen, "set_user_active is only available from an rpc hook (not before/after/resolve/job)");
+        return -1;
+    }
+    if (!g_set_active) {
+        if (err && errlen) snprintf(err, errlen, "account status change is not available in this context");
+        return -1;
+    }
+    return g_set_active(email, active, err, errlen);
+}
+
+int cel_hook_delete_user(const char *email, char *err, int errlen) {
+    if (err && errlen) err[0] = '\0';
+    if (!email || !email[0]) { if (err && errlen) snprintf(err, errlen, "email is required"); return -1; }
+    if (app_db_in_write_lock()) {
+        if (err && errlen) snprintf(err, errlen, "delete_user is only available from an rpc hook (not before/after/resolve/job)");
+        return -1;
+    }
+    if (!g_delete_user) {
+        if (err && errlen) snprintf(err, errlen, "account deletion is not available in this context");
+        return -1;
+    }
+    return g_delete_user(email, err, errlen);
+}
+
 /* ---- the prelude: FFI cdef + `cellar` sugar + per-hook trampolines ---------
  * Loaded into every state before its hooks.lua. The trampolines box the raw
  * cel_val_t* (passed from C as a lightuserdata) into table-like proxies, call the
@@ -357,6 +396,8 @@ static const char *PRELUDE =
 "  long long  cel_hook_notify(const char*, const char*, const char*, const char*, const char*);\n"
 "  int        cel_hook_create_user(const char*, const char*, const char*, char*, int, char*, int);\n"
 "  int        cel_hook_set_password(const char*, const char*, char*, int);\n"
+"  int        cel_hook_set_user_active(const char*, int, char*, int);\n"
+"  int        cel_hook_delete_user(const char*, char*, int);\n"
 "]]\n"
 "local C = ffi.C\n"
 "local NUL, BOOL, NUM, STR, OBJ, ARR = 0,1,2,3,4,5\n"
@@ -445,6 +486,24 @@ static const char *PRELUDE =
 "function cellar.set_password(email, new_password)\n"
 "  local errbuf = ffi.new('char[256]')\n"
 "  local rc = C.cel_hook_set_password(tostring(email), tostring(new_password), errbuf, 256)\n"
+"  if rc ~= 0 then return nil, ffi.string(errbuf) end\n"
+"  return true\n"
+"end\n"
+"-- Enable/disable an account: cellar.set_user_active(email, active) -> true, or nil+err.\n"
+"-- Disabling drops the target's sessions + device tokens (login stops immediately);\n"
+"-- the bundle's rpc decides who may act on whom; the engine refuses a superuser.\n"
+"function cellar.set_user_active(email, active)\n"
+"  local errbuf = ffi.new('char[256]')\n"
+"  local rc = C.cel_hook_set_user_active(tostring(email), (active and active ~= 0) and 1 or 0, errbuf, 256)\n"
+"  if rc ~= 0 then return nil, ffi.string(errbuf) end\n"
+"  return true\n"
+"end\n"
+"-- Hard-delete an account: cellar.delete_user(email) -> true, or nil+err. Removes the\n"
+"-- cel_users row + all cel_* children (FK cascade); frees the email for reuse. Pair it\n"
+"-- with removing your own roster row. The engine refuses deleting a superuser.\n"
+"function cellar.delete_user(email)\n"
+"  local errbuf = ffi.new('char[256]')\n"
+"  local rc = C.cel_hook_delete_user(tostring(email), errbuf, 256)\n"
 "  if rc ~= 0 then return nil, ffi.string(errbuf) end\n"
 "  return true\n"
 "end\n"

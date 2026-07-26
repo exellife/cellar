@@ -31,8 +31,18 @@
  * app registry's cap (cel_apps CEL_APPS_MAX) because every routed app is *pinned*
  * (referenced) here and so is never LRU-evicted — the LRU only reclaims unpinned,
  * idle handles (e.g. transient direct app_db_get callers / tests). */
+/* MUST exceed the POOL_DB worker-thread count (see main.c dispatcher config).
+ * INVARIANT — a request handler can hold TWO pool connections at once: an /rpc
+ * request binds one conn across the whole hook (cel_api_rpc, for cellar.query/exec)
+ * while a nested auth primitive it calls (cellar.create_user / set_password /
+ * set_user_active / delete_user) acquires a SECOND. If the pool == worker count,
+ * N threads each holding their rpc conn and each blocking on a nested acquire would
+ * deadlock (acquire waits on a release that can't happen until the hook returns).
+ * Sizing the pool at 2x the worker count lets every worker hold both conns without
+ * contention, so nested acquires never block, let alone deadlock. Bump this if the
+ * POOL_DB thread_count grows. */
 #ifndef CEL_APP_CONNS_PER_APP
-#define CEL_APP_CONNS_PER_APP 4
+#define CEL_APP_CONNS_PER_APP 8
 #endif
 #ifndef CEL_APP_MAX_OPEN
 #define CEL_APP_MAX_OPEN 1024

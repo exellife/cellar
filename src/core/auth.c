@@ -468,6 +468,78 @@ int cel_auth_revoke_user_sessions(const char *email) {
     return n;
 }
 
+int cel_auth_role_of(const char *email, char *out_role, size_t out_role_size) {
+    if (!email || !email[0]) return CEL_AUTH_INVALID;
+    if (out_role && out_role_size) out_role[0] = '\0';
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) return CEL_AUTH_DBERR;
+    const char *p[1] = { email };
+    int f = cel_db_one_text(c, "SELECT role FROM cel_users WHERE email=?1", p, 1,
+                            out_role, out_role_size);
+    int rc = (f < 0) ? CEL_AUTH_DBERR : (f == 0) ? CEL_AUTH_INVALID : CEL_AUTH_OK;
+    app_db_conn_release(app, c);
+    return rc;
+}
+
+int cel_auth_set_active(const char *email, bool active) {
+    if (!email || !*email) return CEL_AUTH_INVALID;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
+    int rc = CEL_AUTH_DBERR;
+    bool in_txn = false;
+    const char *pa[2] = { active ? "1" : "0", email };
+
+    if (!tx(c, "BEGIN")) goto out;
+    in_txn = true;
+    if (!cel_db_exec(c, "UPDATE cel_users SET is_active=?1 WHERE email=?2", pa, 2)) goto out;
+    if (sqlite3_changes(c) == 0) { rc = CEL_AUTH_INVALID; goto out; }   /* no such user */
+    if (!active) {
+        /* Kill access now: drop live sessions + revoke trusted device tokens (a
+         * disabled account otherwise keeps its session until it expires; is_active
+         * gates re-validation, but an open session cache entry could linger). */
+        const char *pe[1] = { email };
+        cel_db_exec(c, "DELETE FROM cel_sessions WHERE user_id="
+                    "(SELECT id FROM cel_users WHERE email=?1)", pe, 1);
+        cel_db_exec(c, "UPDATE cel_device_tokens SET revoked_at=unixepoch() "
+                    "WHERE revoked_at IS NULL AND user_id="
+                    "(SELECT id FROM cel_users WHERE email=?1)", pe, 1);
+    }
+    if (!tx(c, "COMMIT")) goto out;
+    in_txn = false;
+    rc = CEL_AUTH_OK;
+out:
+    if (in_txn) tx(c, "ROLLBACK");
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
+    if (rc == CEL_AUTH_OK && !active) cel_session_cache_clear();
+    return rc;
+}
+
+int cel_auth_delete_user(const char *email) {
+    if (!email || !*email) return CEL_AUTH_INVALID;
+    app_db_t *app = app_db_current();
+    if (!app) return CEL_AUTH_DBERR;
+    app_db_write_lock(app);
+    sqlite3 *c = app_db_conn_acquire(app);
+    if (!c) { app_db_write_unlock(app); return CEL_AUTH_DBERR; }
+    int rc = CEL_AUTH_DBERR;
+    const char *p[1] = { email };
+    /* Single DELETE — foreign_keys=ON (app_db.c) cascades to cel_identities,
+     * cel_sessions, cel_device_tokens, cel_push_subscriptions, cel_password_resets,
+     * cel_email_verifications, cel_mfa, cel_mfa_challenges, cel_mfa_recovery. */
+    if (cel_db_exec(c, "DELETE FROM cel_users WHERE email=?1", p, 1))
+        rc = (sqlite3_changes(c) > 0) ? CEL_AUTH_OK : CEL_AUTH_INVALID;
+    app_db_conn_release(app, c);
+    app_db_write_unlock(app);
+    if (rc == CEL_AUTH_OK) cel_session_cache_clear();
+    return rc;
+}
+
 #define RESET_TTL_SECONDS 3600   /* a password-reset link is good for 1 hour */
 
 int cel_auth_create_password_reset(const char *email, char *out_token, size_t token_size) {

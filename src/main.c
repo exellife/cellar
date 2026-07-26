@@ -865,6 +865,41 @@ static int hook_set_password_adapter(const char *email, const char *new_password
     return 0;
 }
 
+/* Adapter wiring cellar.set_user_active → the auth layer. Superuser floor (mirrors
+ * set_password): a bundle rpc must not be able to disable/re-enable the admin. The
+ * bundle rpc still enforces who-may-disable-whom among non-superusers. */
+static int hook_set_active_adapter(const char *email, int active, char *err, int errlen) {
+    char role[64] = {0};
+    int rc = cel_auth_role_of(email, role, sizeof role);
+    if (rc == CEL_AUTH_INVALID) { if (err && errlen) snprintf(err, (size_t)errlen, "no such user"); return -1; }
+    if (rc != CEL_AUTH_OK)      { if (err && errlen) snprintf(err, (size_t)errlen, "could not look up the user"); return -1; }
+    if (cel_role_is_superuser(role)) {
+        if (err && errlen) snprintf(err, (size_t)errlen, "cannot change a superuser account ('%s') from a hook", role);
+        return -1;
+    }
+    rc = cel_auth_set_active(email, active != 0);
+    if (rc == CEL_AUTH_INVALID) { if (err && errlen) snprintf(err, (size_t)errlen, "no such user"); return -1; }
+    if (rc != CEL_AUTH_OK)      { if (err && errlen) snprintf(err, (size_t)errlen, "could not update the account"); return -1; }
+    return 0;
+}
+
+/* Adapter wiring cellar.delete_user → the auth layer. Same superuser floor. FK
+ * cascade removes the cel_* children; the bundle deletes its own roster row. */
+static int hook_delete_user_adapter(const char *email, char *err, int errlen) {
+    char role[64] = {0};
+    int rc = cel_auth_role_of(email, role, sizeof role);
+    if (rc == CEL_AUTH_INVALID) { if (err && errlen) snprintf(err, (size_t)errlen, "no such user"); return -1; }
+    if (rc != CEL_AUTH_OK)      { if (err && errlen) snprintf(err, (size_t)errlen, "could not look up the user"); return -1; }
+    if (cel_role_is_superuser(role)) {
+        if (err && errlen) snprintf(err, (size_t)errlen, "cannot delete a superuser account ('%s') from a hook", role);
+        return -1;
+    }
+    rc = cel_auth_delete_user(email);
+    if (rc == CEL_AUTH_INVALID) { if (err && errlen) snprintf(err, (size_t)errlen, "no such user"); return -1; }
+    if (rc != CEL_AUTH_OK)      { if (err && errlen) snprintf(err, (size_t)errlen, "could not delete the account"); return -1; }
+    return 0;
+}
+
 /* NotifChannel email adapter — routes to the SMTP transport (mailer.c) behind the
  * notification port. recipient = email address; subject = title, body = body. A no-op
  * (success) when mail is unconfigured, so the fan-out isn't broken by missing SMTP. */
@@ -941,6 +976,8 @@ int main(int argc, char **argv) {
     }
     cel_hooks_set_user_creator(hook_create_user_adapter);   /* wire cellar.create_user → auth */
     cel_hooks_set_password_setter(hook_set_password_adapter); /* wire cellar.set_password → auth */
+    cel_hooks_set_user_activator(hook_set_active_adapter);  /* wire cellar.set_user_active → auth */
+    cel_hooks_set_user_deleter(hook_delete_user_adapter);   /* wire cellar.delete_user → auth */
     cel_metrics_init(CEL_VERSION);            /* /metrics registry: start time + version */
     cel_metrics_set_gauges(metrics_gauges);   /* live gauges sampled at scrape time */
     /* Opt-in session cache: CEL_SESSION_CACHE_TTL>0 skips the per-request auth DB
@@ -1047,6 +1084,9 @@ int main(int argc, char **argv) {
     /* Dispatcher with CPU + DB worker pools (DB pool is used once the engine lands). */
     opcode_pool_config_t pools[] = {
         {POOL_CPU, 2, 1000, "cpu"},
+        /* POOL_DB thread count is coupled to CEL_APP_CONNS_PER_APP (app_db.h): the
+         * pool MUST exceed this, since an /rpc handler holds one conn across its hook
+         * while a nested auth primitive acquires a second — see the invariant there. */
         {POOL_DB,  4, 1000, "db"},
     };
     g_dispatcher = opcode_dispatcher_create(pools, 2);

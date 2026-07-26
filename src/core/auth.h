@@ -203,6 +203,27 @@ int cel_auth_verify_email_code(const char *user_id, const char *code);
  * number of sessions deleted, or -1 on error. */
 int cel_auth_revoke_user_sessions(const char *email);
 
+/* Look up the role of ANY account by email (unlike cel_auth_user_role, which is
+ * password-identity-scoped). CEL_AUTH_OK + role written, CEL_AUTH_INVALID if no
+ * such user, CEL_AUTH_DBERR. */
+int cel_auth_role_of(const char *email, char *out_role, size_t out_role_size);
+
+/* Enable/disable a login account by email (the cel_users.is_active flag the login
+ * + session-validation paths already enforce). Disabling ALSO drops the user's
+ * sessions + revokes their device tokens and clears the session cache, so access
+ * stops immediately; re-enabling restores login. (Revocation is immediate with the
+ * default session cache OFF (CEL_SESSION_CACHE_TTL=0); with the cache on, a verify
+ * racing the clear could re-cache a still-valid entry, so it's best-effort within
+ * one TTL.) CEL_AUTH_OK, CEL_AUTH_INVALID (no such user), CEL_AUTH_DBERR. */
+int cel_auth_set_active(const char *email, bool active);
+
+/* Hard-delete a login account by email. FK ON DELETE CASCADE (foreign_keys=ON)
+ * removes every cel_* child row (identities, sessions, device tokens, push subs,
+ * password resets, email verification, MFA + challenges + recovery); the session
+ * cache is cleared. Does NOT touch app/bundle tables — the bundle removes its own
+ * roster row. CEL_AUTH_OK, CEL_AUTH_INVALID (no such user), CEL_AUTH_DBERR. */
+int cel_auth_delete_user(const char *email);
+
 /* Upsert a user with a given role (first-run seeding). Returns 0 on success. */
 int cel_auth_seed_user(const char *email, const char *password, const char *role);
 /* Convenience: cel_auth_seed_user(email, password, "admin"). */

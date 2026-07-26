@@ -270,6 +270,50 @@ int main(void) {
         CHECK(cel_auth_verify_email_code(id2, code) == CEL_AUTH_OK, "verify works after the v5 migration");
     }
 
+    /* ---- suspend (is_active flip) + hard delete ---- */
+    {
+        char sid[37];
+        CHECK(cel_auth_create_user("suspendme@x.com", "password1", "editor", sid, sizeof sid) == CEL_AUTH_OK,
+              "create user for suspend/delete test");
+        CHECK(cel_auth_login("suspendme@x.com", "password1", tok, sizeof tok, chal, sizeof chal, &u) == CEL_AUTH_OK,
+              "active user logs in");
+        char live_tok[129]; snprintf(live_tok, sizeof live_tok, "%s", tok);
+        CHECK(cel_auth_verify(live_tok, &u) == CEL_AUTH_OK, "session valid before disable");
+
+        /* disable -> login refused AND the live session is revoked immediately */
+        CHECK(cel_auth_set_active("suspendme@x.com", false) == CEL_AUTH_OK, "set_active(false) ok");
+        CHECK(cel_auth_login("suspendme@x.com", "password1", tok, sizeof tok, chal, sizeof chal, &u) == CEL_AUTH_INVALID,
+              "disabled user cannot log in");
+        CHECK(cel_auth_verify(live_tok, &u) == CEL_AUTH_INVALID, "disable revoked the live session");
+
+        /* re-enable -> login works again (reversible) */
+        CHECK(cel_auth_set_active("suspendme@x.com", true) == CEL_AUTH_OK, "set_active(true) ok");
+        CHECK(cel_auth_login("suspendme@x.com", "password1", tok, sizeof tok, chal, sizeof chal, &u) == CEL_AUTH_OK,
+              "re-enabled user logs in again");
+        CHECK(cel_auth_set_active("ghost@x.com", false) == CEL_AUTH_INVALID, "set_active unknown user -> invalid");
+
+        /* hard delete -> login fails; row + cascade gone; email freed */
+        CHECK(cel_auth_delete_user("suspendme@x.com") == CEL_AUTH_OK, "delete_user ok");
+        CHECK(cel_auth_login("suspendme@x.com", "password1", tok, sizeof tok, chal, sizeof chal, &u) == CEL_AUTH_INVALID,
+              "deleted user cannot log in");
+        CHECK(cel_auth_delete_user("suspendme@x.com") == CEL_AUTH_INVALID, "delete_user again -> invalid (already gone)");
+        {
+            sqlite3 *cc = app_db_conn_acquire(app);
+            sqlite3_stmt *st = NULL; int users = -1, idents = -1;
+            if (sqlite3_prepare_v2(cc, "SELECT count(*) FROM cel_users WHERE email='suspendme@x.com'", -1, &st, NULL) == SQLITE_OK
+                && sqlite3_step(st) == SQLITE_ROW) users = sqlite3_column_int(st, 0);
+            sqlite3_finalize(st); st = NULL;
+            if (sqlite3_prepare_v2(cc, "SELECT count(*) FROM cel_identities WHERE provider_uid='suspendme@x.com'", -1, &st, NULL) == SQLITE_OK
+                && sqlite3_step(st) == SQLITE_ROW) idents = sqlite3_column_int(st, 0);
+            sqlite3_finalize(st);
+            app_db_conn_release(app, cc);
+            CHECK(users == 0,  "delete removed the cel_users row");
+            CHECK(idents == 0, "delete cascaded to cel_identities (FK ON DELETE CASCADE)");
+        }
+        CHECK(cel_auth_create_user("suspendme@x.com", "password1", "editor", sid, sizeof sid) == CEL_AUTH_OK,
+              "email reusable after delete");
+    }
+
     app_db_global_shutdown();
     unlink(path);
     { char x[300]; snprintf(x,sizeof x,"%s-wal",path); unlink(x); snprintf(x,sizeof x,"%s-shm",path); unlink(x); }
