@@ -98,6 +98,13 @@ def main():
     s, _ = req("GET", "/api/items/id-b", token=tok)
     chk("deleted row hidden from get -> 404", s == 404, f"status={s}")
 
+    # ---- re-delete an ALREADY-tombstoned row -> idempotent applied, NOT 404 ----
+    # A server-side hook/rpc that soft-deletes a row (e.g. delete_staff's mirror_roster)
+    # can race the client's own db.remove; the redundant `op:del` must be idempotent, not
+    # a 404 that wedges the whole outbox. id-b is already a tombstone from the batch above.
+    s, b = push(tok, [{"op": "del", "table": "items", "id": "id-b"}])
+    chk("re-delete already-tombstoned -> applied (not 404 wedge)", s == 200 and b["results"][0]["status"] == "applied", f"status={s} body={b}")
+
     # ---- batch all-or-nothing: one bad mutation rolls back the whole batch ----
     s, b = push(tok, [
         {"op": "put", "table": "items", "id": "id-c", "values": {"name": "gamma"}},

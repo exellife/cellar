@@ -1175,7 +1175,8 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
 
         if (is_del) {
             if (!cel_policy_allows(t->name, CEL_ACT_DELETE, who->role)) { err_code = 403; snprintf(err, sizeof err, "forbidden"); break; }
-            if (!exists) { status = "applied"; out_rev = 0; }   /* idempotent no-op; no server rev */
+            if (!exists) { status = "applied"; out_rev = 0; }   /* never existed → idempotent no-op; no server rev */
+            else if (cur_del) { status = "applied"; out_rev = cur_rev; }   /* already a tombstone → idempotent no-op. A redundant delete (e.g. a hook/rpc that already soft-deleted the row server-side, like mirror_roster, racing the client's own db.remove) must NOT 404 and wedge the outbox — deleting an already-deleted row is success. */
             else if (!incoming_wins) { status = "conflict"; }   /* server wins → keep */
             else {
                 cJSON *mreq = cJSON_CreateObject();
