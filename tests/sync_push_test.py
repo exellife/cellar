@@ -107,6 +107,20 @@ def main():
     s, _ = req("GET", "/api/items/id-c", token=tok)
     chk("good mutation rolled back with the batch (id-c 404)", s == 404, f"status={s}")
 
+    # ---- id-spoof: a divergent values.id on an update must NOT rename the PK ----
+    # The authoritative id is the mutation top-level id; a client-supplied values.id is
+    # dropped so it can neither reach the UPDATE SET clause (`SET id=Y WHERE id=X`, a
+    # silent PK rename) nor steer a self-merging before() hook. Sneak values.id="id-ghost"
+    # into an update of id-a and prove id-a is updated in place and id-ghost never appears.
+    _, g0 = req("GET", "/api/items/id-a", token=tok)
+    s, b = push(tok, [{"op": "put", "table": "items", "id": "id-a", "base_rev": g0["row"]["rev"],
+                       "values": {"id": "id-ghost", "name": "alpha-spoof"}}])
+    chk("id-spoof update applied", s == 200 and b["results"][0]["status"] == "applied", f"status={s} body={b}")
+    s, g = req("GET", "/api/items/id-a", token=tok)
+    chk("PK intact (id-a not renamed), name updated in place", s == 200 and g["row"]["name"] == "alpha-spoof", str(g.get("row")))
+    s, _ = req("GET", "/api/items/id-ghost", token=tok)
+    chk("spoofed id-ghost never created -> 404", s == 404, f"status={s}")
+
     # ---- unauthenticated ----
     s, _ = req("POST", "/sync/push", {"mutations": []})
     chk("unauthenticated -> 401", s == 401, f"status={s}")

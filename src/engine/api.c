@@ -393,18 +393,30 @@ static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *re
                           cascade_emits_t *cascade) {
     *out_row = NULL;
 
+    /* On an UPDATE the authoritative row id is req["id"] (the mutation top level / the
+     * URL), NEVER `values` — sync clients strip it there. Drop any client-supplied
+     * values.id so it can't (a) reach cel_build_update's SET clause and silently rename
+     * the primary key (`SET id=Y WHERE id=X`), nor (b) steer a self-merging before()
+     * hook onto a different row than the one actually written. Runs regardless of hooks
+     * so the PK stays immutable even for bundles with no before(). CREATE is untouched
+     * (its `values.id` IS the new row id and there is no top-level id). */
+    if (action == CEL_ACT_UPDATE) {
+        cJSON *uv = cJSON_GetObjectItemCaseSensitive(req, "values");
+        if (uv) cJSON_DeleteItemFromObjectCaseSensitive(uv, "id");
+    }
+
     if (hooks) {
         cel_hooks_set_db(c);   /* before()'s cellar.query/exec run on the txn conn */
         cJSON *vals = cJSON_GetObjectItemCaseSensitive(req, "values");   /* mutable; NULL for delete */
-        /* Surface the row id to before()/authorize() as input.id. Clients strip the id
-         * from `values` (it rides at the mutation top level), so an UPDATE patch would
-         * otherwise reach before() without it — leaving a hook unable to self-merge the
-         * current row (e.g. `SELECT … WHERE id = input.id` for a slot/ownership guard).
-         * Fold req["id"] in for the hook call, then strip it again so cel_build_update
-         * never emits a redundant `SET id = id`. CREATE already carries id in `values`,
-         * so injected_id stays 0 there and we leave it in place. */
+        /* Surface the AUTHORITATIVE id to before()/authorize() as input.id so a
+         * self-merging guard (e.g. `SELECT … WHERE id = input.id` for a slot/ownership
+         * check) reads the row actually being written. Clients strip id from `values`
+         * and we just dropped any divergent one above, so fold req["id"] in for the hook
+         * call, then strip it again before the build (cel_build_update reads req["id"]
+         * for the WHERE and must never SET the PK). Update-only: CREATE carries its own
+         * id in `values` and has no top-level id. */
         int injected_id = 0;
-        if (vals && !cJSON_GetObjectItemCaseSensitive(vals, "id")) {
+        if (vals && action == CEL_ACT_UPDATE) {
             const cJSON *rid = cJSON_GetObjectItemCaseSensitive(req, "id");
             if (cJSON_IsString(rid)) { cJSON_AddStringToObject(vals, "id", rid->valuestring); injected_id = 1; }
         }
