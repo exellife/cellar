@@ -396,12 +396,25 @@ static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *re
     if (hooks) {
         cel_hooks_set_db(c);   /* before()'s cellar.query/exec run on the txn conn */
         cJSON *vals = cJSON_GetObjectItemCaseSensitive(req, "values");   /* mutable; NULL for delete */
+        /* Surface the row id to before()/authorize() as input.id. Clients strip the id
+         * from `values` (it rides at the mutation top level), so an UPDATE patch would
+         * otherwise reach before() without it — leaving a hook unable to self-merge the
+         * current row (e.g. `SELECT … WHERE id = input.id` for a slot/ownership guard).
+         * Fold req["id"] in for the hook call, then strip it again so cel_build_update
+         * never emits a redundant `SET id = id`. CREATE already carries id in `values`,
+         * so injected_id stays 0 there and we leave it in place. */
+        int injected_id = 0;
+        if (vals && !cJSON_GetObjectItemCaseSensitive(vals, "id")) {
+            const cJSON *rid = cJSON_GetObjectItemCaseSensitive(req, "id");
+            if (cJSON_IsString(rid)) { cJSON_AddStringToObject(vals, "id", rid->valuestring); injected_id = 1; }
+        }
         char herr[256] = {0};
         int rejected = cel_hooks_before(hooks, opn, t->name, (cel_val_t *)vals,
                                         (const cel_val_t *)who_v, herr, sizeof herr) != 0;
         int denied = !rejected && cel_hooks_authorize(hooks, opn, t->name,
                                                       (const cel_val_t *)vals, (const cel_val_t *)who_v) == 0;
         cel_hooks_set_db(NULL);
+        if (injected_id) cJSON_DeleteItemFromObjectCaseSensitive(vals, "id");
         if (rejected) { snprintf(msg, msglen, "%s", herr[0] ? herr : "rejected by hook"); return 400; }
         if (denied)   { snprintf(msg, msglen, "forbidden"); return 403; }
     }

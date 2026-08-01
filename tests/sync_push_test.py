@@ -66,8 +66,14 @@ def main():
     chk("pull reflects pushed rows", names.get("id-a") == "alpha" and names.get("id-b") == "beta", str(names))
 
     # ---- clean update (base_rev matches current) ----
+    # NB: the update carries `id` at the mutation top level and NOT inside `values`
+    # (the real client shape). before() in sync_push.lua rejects an update whose
+    # input.id is nil, so this case doubles as the regression guard for the engine
+    # folding the row id into before()'s input on updates (fixed 2026-08-02). If that
+    # regresses, this push comes back rejected instead of applied.
     s, b = push(tok, [{"op": "put", "table": "items", "id": "id-a", "base_rev": 1, "values": {"name": "alpha2"}}])
     chk("clean update applied, rev=3", b["results"][0]["status"] == "applied" and b["results"][0]["rev"] == 3, str(b["results"][0]))
+    chk("before() saw input.id on the update (no id-missing rejection)", s == 200, f"status={s} body={b}")
 
     # ---- conflict, LWW default (normal name -> incoming wins) ----
     s, b = push(tok, [{"op": "put", "table": "items", "id": "id-a", "base_rev": 99, "values": {"name": "alpha3"}}])
