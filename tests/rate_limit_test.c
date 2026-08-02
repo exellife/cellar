@@ -2,6 +2,7 @@
 #include "rate_limit.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 
 static int failures = 0;
@@ -53,6 +54,24 @@ int main(void) {
     sleep(2);                                   /* > window: bucket refills */
     chk("refill: allowed again", cel_ratelimit_allow(rf, "k"));
     cel_ratelimit_destroy(rf);
+
+    /* ---- long keys (> the old 64-byte inline buffer) must still throttle and
+     *      stay distinct. Regression for the truncation bug (audit #8): the mail
+     *      limiter keys on a canonical recipient up to ~339 bytes; a truncated
+     *      stored key never matched the full incoming key, so an over-long key
+     *      got a fresh full bucket every call and was never denied. ---- */
+    cel_ratelimit_t *lk = cel_ratelimit_create(2, 60);
+    char k1[300], k2[300];
+    memset(k1, 'a', sizeof k1 - 1); k1[sizeof k1 - 1] = '\0';
+    memcpy(k2, k1, sizeof k2);
+    k2[sizeof k2 - 2] = 'b';   /* differs only at the last byte — far past 64 */
+    chk("long key: 1 ok",  cel_ratelimit_allow(lk, k1));
+    chk("long key: 2 ok",  cel_ratelimit_allow(lk, k1));
+    chk("long key: 3 denied (was allowed under truncation bug)", !cel_ratelimit_allow(lk, k1));
+    chk("long key differing past byte 64 -> separate bucket", cel_ratelimit_allow(lk, k2));
+    chk("long key k2: 2 ok",     cel_ratelimit_allow(lk, k2));
+    chk("long key k2: 3 denied", !cel_ratelimit_allow(lk, k2));
+    cel_ratelimit_destroy(lk);
 
     printf(failures ? "\nFAILED (%d)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;

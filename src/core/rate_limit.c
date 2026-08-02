@@ -12,10 +12,15 @@
  * capacity, so dropping it loses no state. Mirrors session_cache.c's structure. */
 #define NBUCKETS    1024
 #define MAX_ENTRIES 100000
-#define KEYLEN      64
 
+/* key is heap-owned and holds the FULL key: callers pass variable-length keys
+ * (a short client IP, but also a canonical email recipient up to ~339 bytes for
+ * the mail limiter). A fixed inline buffer truncated the stored key while
+ * bucket_of()/strcmp compared the full one, so any over-long key never matched
+ * an existing bucket and got a fresh full-token bucket every call — silently
+ * defeating the throttle (audit 2026-08 #8). Store the whole key, no truncation. */
 typedef struct rl_node {
-    char   key[KEYLEN];
+    char  *key;
     double tokens;
     time_t last;          /* last refill (seconds) */
     struct rl_node *next;
@@ -45,7 +50,7 @@ cel_ratelimit_t *cel_ratelimit_create(int limit, int window_seconds) {
     return rl;
 }
 
-static void free_chain(rl_node_t *n) { while (n) { rl_node_t *nx = n->next; free(n); n = nx; } }
+static void free_chain(rl_node_t *n) { while (n) { rl_node_t *nx = n->next; free(n->key); free(n); n = nx; } }
 
 void cel_ratelimit_destroy(cel_ratelimit_t *rl) {
     if (!rl) return;
@@ -61,7 +66,7 @@ static rl_node_t *sweep_chain(cel_ratelimit_t *rl, rl_node_t *n) {
     rl_node_t *head = NULL, **pp = &head;
     while (n) {
         rl_node_t *nx = n->next;
-        if (n->tokens >= (double)rl->limit) { free(n); rl->count--; }   /* full == idle */
+        if (n->tokens >= (double)rl->limit) { free(n->key); free(n); rl->count--; }   /* full == idle */
         else { *pp = n; pp = &n->next; n->next = NULL; }
         n = nx;
     }
@@ -84,7 +89,8 @@ bool cel_ratelimit_allow(cel_ratelimit_t *rl, const char *key) {
         }
         n = malloc(sizeof *n);
         if (!n) { pthread_mutex_unlock(&rl->lock); return true; }  /* fail open */
-        snprintf(n->key, sizeof n->key, "%s", key);
+        n->key = strdup(key);
+        if (!n->key) { free(n); pthread_mutex_unlock(&rl->lock); return true; }  /* fail open */
         n->tokens = (double)rl->limit;
         n->last = now;
         n->next = rl->buckets[b]; rl->buckets[b] = n; rl->count++;
