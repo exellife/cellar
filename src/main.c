@@ -65,7 +65,8 @@ static opcode_dispatcher_t *g_dispatcher = NULL;
 static volatile sig_atomic_t g_running   = 1;
 static cel_ratelimit_t     *g_auth_rl    = NULL;   /* auth-endpoint throttle */
 static cel_ratelimit_t     *g_api_rl     = NULL;   /* data-API throttle */
-static cel_ratelimit_t     *g_mail_rl    = NULL;   /* per-recipient outbound-mail throttle */
+static cel_ratelimit_t     *g_mail_rl    = NULL;   /* per-recipient outbound-mail throttle (auth mail) */
+static cel_ratelimit_t     *g_notif_rl   = NULL;   /* per-recipient notification-mail throttle (own bucket) */
 
 /* ---- response helpers ------------------------------------------------------ */
 
@@ -905,10 +906,16 @@ static int hook_delete_user_adapter(const char *email, char *err, int errlen) {
  * (success) when mail is unconfigured, so the fan-out isn't broken by missing SMTP. */
 static int notif_email_send(const char *recipient, const cel_notif_msg_t *msg, char *err, int errlen) {
     if (!cel_mail_enabled()) return 0;   /* ops hasn't configured SMTP — skip, not fail */
-    /* Same per-recipient anti-mail-bomb throttle the auth mail paths use (audit): a
-     * hook that loops cellar.notify must not get an ungated path to unlimited email.
-     * Over the cap → drop (return success so the job isn't retried into the wall). */
-    if (!cel_mail_recipient_allowed(recipient)) return 0;
+    /* Per-recipient anti-mail-bomb throttle (audit): a hook that loops cellar.notify
+     * must not get an ungated path to unlimited email. Uses a SEPARATE bucket from
+     * auth mail so notification volume can't starve verification/reset delivery
+     * (re-verify). Over the cap → drop (return success so the job isn't retried into
+     * the wall), but LOG it so a throttled/lost notification is diagnosable. */
+    if (!cel_mail_notif_allowed(recipient)) {
+        LOG_WARN("notify: mail to %s dropped — over the per-recipient notification rate limit "
+                 "(CEL_NOTIF_RATELIMIT)", recipient);
+        return 0;
+    }
     const char *subject = (msg && msg->title) ? msg->title : "Notification";
     const char *body    = (msg && msg->body)  ? msg->body  : "";
     /* per-app From (bundle _mail) — the notif job runs with the app's policy bound
@@ -1023,6 +1030,15 @@ int main(int argc, char **argv) {
         g_mail_rl = cel_ratelimit_create(mail_n, mail_w);
         if (g_mail_rl) LOG_INFO("mail rate limit: %d emails / %ds per recipient", mail_n, mail_w);
         cel_mail_set_ratelimit(g_mail_rl);
+
+        /* Notifications get their OWN, more generous per-recipient budget so app
+         * notification volume can't starve the small auth-mail bucket above
+         * (re-verify). CEL_NOTIF_RATELIMIT="N/W" (default 60/3600); "0" disables. */
+        int notif_n = 60, notif_w = 3600;
+        sscanf(env_str("CEL_NOTIF_RATELIMIT", "60/3600"), "%d/%d", &notif_n, &notif_w);
+        g_notif_rl = cel_ratelimit_create(notif_n, notif_w);
+        if (g_notif_rl) LOG_INFO("notification mail rate limit: %d emails / %ds per recipient", notif_n, notif_w);
+        cel_mail_set_notif_ratelimit(g_notif_rl);
     }
     /* Per-account login lockout (opt-in). CEL_AUTH_LOCKOUT="N/W": after N failed
      * password logins within W seconds, lock the account for W seconds. Unset/"0"
@@ -1180,6 +1196,7 @@ int main(int argc, char **argv) {
     cel_apps_shutdown();          /* frees the per-app catalogs */
     cel_session_cache_cleanup();
     cel_ratelimit_destroy(g_mail_rl);
+    cel_ratelimit_destroy(g_notif_rl);
     cel_ratelimit_destroy(g_auth_rl);
     cel_ratelimit_destroy(g_api_rl);
     cel_oauth_cleanup();

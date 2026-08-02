@@ -238,7 +238,8 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
          * would miss an existing "Alice@Corp.com" for a provider-asserted
          * "alice@corp.com" and auto-provision a duplicate account (identity
          * split-brain, audit medium). NOCASE aligns the two. */
-        int f = cel_db_one_text(c, "SELECT id FROM cel_users WHERE email=?1 COLLATE NOCASE",
+        int f = cel_db_one_text(c, "SELECT id FROM cel_users WHERE email=?1 COLLATE NOCASE "
+                                   "ORDER BY id LIMIT 1",   /* deterministic if a case-variant dup pre-exists */
                                 p, 1, existing, sizeof existing);
         if (f < 0) goto out;
         if (f == 1) {

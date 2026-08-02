@@ -30,10 +30,16 @@ bool cel_mail_enabled(void);
  * trivial aliases of one inbox share a bucket. */
 typedef struct cel_ratelimit cel_ratelimit_t;
 void cel_mail_set_ratelimit(cel_ratelimit_t *rl);
+/* A SEPARATE per-recipient limiter for NOTIFICATION email, so high app-notification
+ * volume can't exhaust the small auth-mail budget and starve verification/reset
+ * delivery (audit re-verify). Independent bucket, same canonical-recipient key. */
+void cel_mail_set_notif_ratelimit(cel_ratelimit_t *rl);
 
 /* True if another email may be sent to `to` right now (canonicalized + rate-checked);
- * true when the throttle is disabled. Callers of the auth-mail paths gate on this. */
+ * true when the throttle is disabled. `_recipient_allowed` gates the auth-mail paths;
+ * `_notif_allowed` gates notification mail against its own bucket. */
 bool cel_mail_recipient_allowed(const char *to);
+bool cel_mail_notif_allowed(const char *to);
 
 /* Send a plain-text/UTF-8 email to a single recipient using the process-wide From
  * (CEL_MAIL_FROM / _FROM_NAME). Returns 0 on success, -1 on failure or when

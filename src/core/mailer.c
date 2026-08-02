@@ -24,9 +24,13 @@ static int  g_tls = TLS_REQUIRE;
 /* Optional per-recipient outbound throttle (set by main.c). Bounds how many
  * verification/reset emails any one mailbox can be sent — an anti-abuse guard so a
  * scripted register/resend loop can't mail-bomb a victim through our sending domain. */
-static cel_ratelimit_t *g_recipient_rl = NULL;
+static cel_ratelimit_t *g_recipient_rl = NULL;   /* auth mail: verification / password reset */
+static cel_ratelimit_t *g_notif_rl     = NULL;   /* notifications — a SEPARATE bucket so app
+                                                  * notification volume can't starve the small
+                                                  * auth-mail budget (audit re-verify) */
 
-void cel_mail_set_ratelimit(cel_ratelimit_t *rl) { g_recipient_rl = rl; }
+void cel_mail_set_ratelimit(cel_ratelimit_t *rl)       { g_recipient_rl = rl; }
+void cel_mail_set_notif_ratelimit(cel_ratelimit_t *rl) { g_notif_rl = rl; }
 
 /* Canonicalize a recipient for throttling so trivial aliases collapse to one key:
  * lowercase; drop a "+tag" from the local part; for gmail/googlemail also drop dots
@@ -50,11 +54,14 @@ static void canon_recipient(const char *to, char *out, size_t cap) {
     }
 }
 
-bool cel_mail_recipient_allowed(const char *to) {
-    if (!g_recipient_rl || !to || !*to) return true;   /* disabled → allow */
+static bool rl_allow(cel_ratelimit_t *rl, const char *to) {
+    if (!rl || !to || !*to) return true;               /* disabled → allow */
     char key[340]; canon_recipient(to, key, sizeof key);
-    return cel_ratelimit_allow(g_recipient_rl, key);
+    return cel_ratelimit_allow(rl, key);
 }
+
+bool cel_mail_recipient_allowed(const char *to) { return rl_allow(g_recipient_rl, to); }
+bool cel_mail_notif_allowed(const char *to)     { return rl_allow(g_notif_rl, to); }
 
 static void setenv_str(char *dst, size_t cap, const char *name) {
     const char *v = getenv(name);
