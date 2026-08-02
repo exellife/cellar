@@ -655,9 +655,13 @@ static int run_export(int argc, char **argv) {
         if (app_db_exec(src, sql, &err) == 0) {
             char snap[1400];
             snprintf(snap, sizeof snap, "%s/data.db", staging);
-            app_db_t *s = app_db_get(snap);            /* strip live sessions from the copy */
-            if (s) app_db_exec(s, "DELETE FROM cel_sessions", NULL);
-            ok = 1;
+            /* Strip live sessions from the copy — and only call the export OK if that
+             * actually happened. The old code set ok=1 unconditionally, so a NULL open
+             * or a failed DELETE shipped an archive still containing cel_sessions,
+             * contradicting the stated guarantee (audit). */
+            app_db_t *s = app_db_get(snap);
+            if (s && app_db_exec(s, "DELETE FROM cel_sessions", NULL) == 0) ok = 1;
+            else LOG_ERROR("export: could not strip live sessions from the snapshot — refusing to ship it");
         } else { LOG_ERROR("export: snapshot failed: %s", err ? err : "?"); }
         if (err) sqlite3_free(err);
     }
@@ -719,7 +723,29 @@ static int run_import(int argc, char **argv) {
 
     char *tar[] = { "tar", "-xzf", argv[3], "-C", target, NULL };
     if (run_argv(tar) != 0) { LOG_ERROR("import: tar extract failed"); logger_shutdown(); return 1; }
-    if (!path_exists(tdb)) { LOG_ERROR("import: archive has no data.db"); logger_shutdown(); return 1; }
+
+    /* Validate the extracted members, not just the target dir: a crafted archive can
+     * make data.db / hooks.lua / policies.json a SYMLINK to another app's file or an
+     * arbitrary path, which cellar would then open/read THROUGH — a cross-tenant DB
+     * bind (data.db is opened AND written below) or arbitrary-file read as hooks/
+     * policies. path_exists() uses stat(), which follows the link and passes; use
+     * lstat() and require a regular file (audit). Clean up the extraction on refusal. */
+    {
+        struct stat mst;
+        int bad = 0;
+        if (lstat(tdb, &mst) != 0 || !S_ISREG(mst.st_mode)) {
+            LOG_ERROR("import: data.db is missing or not a regular file (a symlink? refusing)");
+            bad = 1;
+        }
+        for (const char *f = "hooks.lua"; !bad && f; f = (f[0] == 'h') ? "policies.json" : NULL) {
+            char m[1500]; snprintf(m, sizeof m, "%s/%s", target, f);
+            if (lstat(m, &mst) == 0 && !S_ISREG(mst.st_mode)) {   /* present but not a regular file */
+                LOG_ERROR("import: %s is not a regular file (a symlink? refusing)", f);
+                bad = 1;
+            }
+        }
+        if (bad) { char *rmc[] = { "rm", "-rf", target, NULL }; run_argv(rmc); logger_shutdown(); return 1; }
+    }
 
     /* ensure the identity schema is current (idempotent; bumps PRAGMA user_version
      * if the imported app predates a schema change). */

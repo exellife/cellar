@@ -5,8 +5,8 @@
 set -euo pipefail
 
 BIN="${1:?usage: cli_symlink_test.sh <cellar-binary>}"
-APPS="$(mktemp -d)"; VICTIM="$(mktemp -d)"
-trap 'rm -rf "$APPS" "$VICTIM" /tmp/cli_symlink_$$.tar.gz /tmp/cli_symlink_stolen_$$.tar.gz' EXIT
+APPS="$(mktemp -d)"; VICTIM="$(mktemp -d)"; MAL="$(mktemp -d)"
+trap 'rm -rf "$APPS" "$VICTIM" "$MAL" /tmp/cli_symlink_$$.tar.gz /tmp/cli_symlink_stolen_$$.tar.gz /tmp/cli_symlink_mal_$$.tar.gz' EXIT
 export CEL_LOG_LEVEL=error
 
 fail=0
@@ -33,6 +33,17 @@ ln -s "$VICTIM/secret.txt" "$APPS/t.example/hooks.lua"
 CEL_APPS_DIR="$APPS" "$BIN" provision t.example admin@t secret123 >/dev/null 2>&1 || true
 chk "provision does not follow a symlinked bundle file" \
     "$(grep -q ORIGINAL "$VICTIM/secret.txt" && echo intact || echo clobbered)" "intact"
+
+# A4 (audit low): an archive whose data.db MEMBER is a symlink must be refused
+# AFTER extraction (path_exists used stat(), which follows the link). Build a
+# malicious archive: data.db -> a victim file, stored as a symlink (tar without -h).
+echo "VICTIMDATA" > "$VICTIM/steal.db"
+ln -s "$VICTIM/steal.db" "$MAL/data.db"
+echo "-- hooks" > "$MAL/hooks.lua"
+tar -czf /tmp/cli_symlink_mal_$$.tar.gz -C "$MAL" .
+CEL_APPS_DIR="$APPS" "$BIN" import malbundle.example /tmp/cli_symlink_mal_$$.tar.gz >/dev/null 2>&1 || true
+chk "import refuses a symlinked data.db member" \
+    "$([ -e "$APPS/malbundle.example/data.db" ] && echo leaked || echo blocked)" "blocked"
 
 # sanity: the legit paths still work (a real bundle imports fine)
 CEL_APPS_DIR="$APPS" "$BIN" import clone.example /tmp/cli_symlink_$$.tar.gz >/dev/null 2>&1
