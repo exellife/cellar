@@ -105,6 +105,14 @@ def main():
     push(tok, [{"op": "put", "table": "items", "id": "r2", "mutation_id": "DUP", "values": {"name": "r2"}}])
     chk("reused mutation_id on a different id still applies (not silently dropped)",
         peek("SELECT count(*) FROM items WHERE id IN ('r1','r2')")[0] == 2)
+    # ...and the second reuse must record its OWN dedup key so a retry of it is a
+    # no-op. The old single-column PK ignored the (DUP,items,r2) insert because
+    # (DUP) already existed, so this retry re-applied and bumped the rev (audit #2).
+    r2rev = peek("SELECT rev FROM items WHERE id='r2'")[0]
+    s, b = push(tok, [{"op": "put", "table": "items", "id": "r2", "mutation_id": "DUP", "values": {"name": "r2"}}])
+    chk("retry of the reused-mutation_id row is deduped", b["results"][0].get("deduped") is True, str(b["results"][0]))
+    r2rev_after = peek("SELECT rev FROM items WHERE id='r2'")[0]
+    chk("retry did not re-apply (rev unchanged)", r2rev_after == r2rev, f"{r2rev}->{r2rev_after}")
 
     # ---- _sync_devices is user-scoped: same device_id under two users -> two rows ----
     ed = login(("editor@cellar.dev", "editor-pw"))

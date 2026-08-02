@@ -15,13 +15,19 @@ int cel_sync_ensure_seq(sqlite3 *c) {
         "  id  INTEGER PRIMARY KEY CHECK(id = 1),"
         "  seq INTEGER NOT NULL);"
         "INSERT OR IGNORE INTO _sync_seq(id, seq) VALUES (1, 0);"
+        /* PK is the FULL (mutation_id, tbl, row_id): the read side dedups on that
+         * triple, so the write side's INSERT OR IGNORE must conflict on the same
+         * triple. A single-column mutation_id PK (the old shape, migrated below)
+         * silently dropped the dedup record when a mutation_id was reused for a
+         * different row, so a later retry of that row re-applied (audit #2). */
         "CREATE TABLE IF NOT EXISTS _sync_applied("
-        "  mutation_id TEXT PRIMARY KEY,"
-        "  tbl         TEXT    NOT NULL,"   /* key also bound to (table,id) so a reused */
-        "  row_id      TEXT    NOT NULL,"   /* mutation_id for a different row isn't deduped */
+        "  mutation_id TEXT    NOT NULL,"
+        "  tbl         TEXT    NOT NULL,"
+        "  row_id      TEXT    NOT NULL,"
         "  status      TEXT    NOT NULL,"
         "  rev         INTEGER NOT NULL,"
-        "  at          INTEGER NOT NULL);"
+        "  at          INTEGER NOT NULL,"
+        "  PRIMARY KEY (mutation_id, tbl, row_id));"
         /* user-scoped: a device belongs to its owner, so one user can never touch (and
          * force-advance the cursor of) another user's device row. */
         "CREATE TABLE IF NOT EXISTS _sync_devices("
@@ -35,6 +41,43 @@ int cel_sync_ensure_seq(sqlite3 *c) {
         LOG_ERROR("sync: ensure _sync_* failed: %s", err ? err : sqlite3_errmsg(c));
         sqlite3_free(err);
         return -1;
+    }
+
+    /* Migrate an already-deployed _sync_applied from the old single-column PK
+     * (mutation_id) to the composite (mutation_id, tbl, row_id): CREATE TABLE IF
+     * NOT EXISTS above is a no-op on an existing table, so without this an app
+     * created before the fix keeps the broken dedup. Detect the old shape by
+     * counting PK columns. The table is a disposable idempotency cache (pruned by
+     * TTL, and every apply is still guarded by base_rev/LWW), so rebuilding it
+     * empty is safe — at worst a push in flight across the upgrade re-applies once. */
+    {
+        int pk_cols = -1;
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(c,
+                "SELECT count(*) FROM pragma_table_info('_sync_applied') WHERE pk > 0",
+                -1, &st, NULL) == SQLITE_OK) {
+            if (sqlite3_step(st) == SQLITE_ROW) pk_cols = sqlite3_column_int(st, 0);
+            sqlite3_finalize(st);
+        }
+        if (pk_cols == 1) {
+            rc = sqlite3_exec(c,
+                "DROP TABLE _sync_applied;"
+                "CREATE TABLE _sync_applied("
+                "  mutation_id TEXT    NOT NULL,"
+                "  tbl         TEXT    NOT NULL,"
+                "  row_id      TEXT    NOT NULL,"
+                "  status      TEXT    NOT NULL,"
+                "  rev         INTEGER NOT NULL,"
+                "  at          INTEGER NOT NULL,"
+                "  PRIMARY KEY (mutation_id, tbl, row_id));",
+                NULL, NULL, &err);
+            if (rc != SQLITE_OK) {
+                LOG_ERROR("sync: migrate _sync_applied PK failed: %s", err ? err : sqlite3_errmsg(c));
+                sqlite3_free(err);
+                return -1;
+            }
+            LOG_INFO("sync: migrated _sync_applied to composite PK (mutation_id, tbl, row_id)");
+        }
     }
     return 0;
 }
