@@ -319,10 +319,15 @@ static void cascade_emits_drain(cascade_emits_t *e, int emit) {
  * tombstoned rows are handed to `out` (when non-NULL) so the caller can emit a realtime
  * DELETE for each after commit — otherwise the cascade reaches other devices only via
  * pull, never as a live change event. */
-static void cascade_soft_delete(sqlite3 *c, const cel_table_t *parent,
+/* Returns 0 on success, or -1 if a child soft-delete hit a real error (a deferred
+ * sqlite3_step failure surfaced by finalize, or a failed recursion). The caller
+ * MUST treat -1 as a write failure and roll the whole transaction back — otherwise
+ * a mid-scan step error would silently commit a PARTIAL cascade (some children
+ * tombstoned, others left live), an orphaned-state / consistency hazard (audit). */
+static int cascade_soft_delete(sqlite3 *c, const cel_table_t *parent,
                                 const char *parent_id, int depth, cascade_emits_t *out) {
     const cel_catalog_t *cat = cel_catalog_active();
-    if (!cat || depth >= 8 || !parent_id) return;
+    if (!cat || depth >= 8 || !parent_id) return 0;
 
     for (int i = 0; i < cat->ntables; i++) {
         const cel_table_t *child = &cat->tables[i];
@@ -358,15 +363,23 @@ static void cascade_soft_delete(sqlite3 *c, const cel_table_t *parent,
             if (sqlite3_prepare_v2(c, sql, -1, &st, NULL) != SQLITE_OK) continue;
             sqlite3_bind_text(st, 1, parent_id, -1, SQLITE_TRANSIENT);
             cJSON *rows = cel_stmt_rows_to_json(st, child);   /* steps the UPDATE...RETURNING */
-            sqlite3_finalize(st);
+            int frc = sqlite3_finalize(st);   /* surfaces a deferred step error, as run_rows_on's reset does */
             if (!rows) continue;
+            if (frc != SQLITE_OK) {           /* a mid-scan step error truncated this UPDATE...RETURNING:
+                                               * the tombstone set is incomplete → abort, don't commit a partial cascade */
+                cJSON_Delete(rows);
+                return -1;
+            }
 
             /* recurse into each affected child (the rows are materialized, so the stmt
              * is no longer live), then hand the tombstoned rows to the emit collector. */
             cJSON *r;
             cJSON_ArrayForEach(r, rows) {
                 const cJSON *idj = cJSON_GetObjectItemCaseSensitive(r, pk);
-                if (cJSON_IsString(idj)) cascade_soft_delete(c, child, idj->valuestring, depth + 1, out);
+                if (cJSON_IsString(idj) && cascade_soft_delete(c, child, idj->valuestring, depth + 1, out) != 0) {
+                    cJSON_Delete(rows);
+                    return -1;
+                }
             }
             if (out) {
                 cJSON *next;
@@ -379,6 +392,7 @@ static void cascade_soft_delete(sqlite3 *c, const cel_table_t *parent,
             cJSON_Delete(rows);
         }
     }
+    return 0;
 }
 
 /* The body of a write, run INSIDE an open transaction on connection `c`: before()
@@ -478,7 +492,10 @@ static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *re
      * CASCADE would have removed, so the deletion propagates to every device. */
     if (soft_delete && found) {
         const cJSON *idj = cJSON_GetObjectItemCaseSensitive(req, "id");
-        if (cJSON_IsString(idj)) cascade_soft_delete(c, t, idj->valuestring, 0, cascade);
+        if (cJSON_IsString(idj) && cascade_soft_delete(c, t, idj->valuestring, 0, cascade) != 0) {
+            snprintf(msg, msglen, "cascade delete failed");
+            return 500;   /* abort → the caller rolls back; no partial cascade committed */
+        }
     }
     return 0;
 }
