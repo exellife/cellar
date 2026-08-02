@@ -78,6 +78,14 @@ int main(void) {
         CHECK(rc == CEL_MFA_OK, "verify_login with TOTP");
         CHECK(strcmp(u.id, uid) == 0, "verify_login resolved the user");
         CHECK(cel_auth_verify(tok, &u) == CEL_AUTH_OK, "issued session token is valid");
+
+        /* audit #5 (RFC 6238 §5.2): the SAME code replayed against a freshly minted
+         * challenge is rejected — its time-step was already consumed, so it can't be
+         * reused within its ±window validity. */
+        char chalr[129];
+        CHECK(cel_mfa_create_challenge(uid, chalr, sizeof chalr) == CEL_MFA_OK, "create challenge (replay)");
+        CHECK(cel_mfa_verify_login(chalr, c2, tok, sizeof tok, &u) == CEL_MFA_INVALID,
+              "TOTP code cannot be replayed (step already consumed)");
     }
 
     /* a wrong code on a fresh challenge is rejected */

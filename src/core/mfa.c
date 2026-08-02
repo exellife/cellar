@@ -295,8 +295,22 @@ int cel_mfa_verify_login(const char *challenge, const char *code,
 
     if (load_secret(c, user_id, true, secret, sizeof secret) != CEL_MFA_OK) { rc = CEL_MFA_INVALID; goto out; }
 
-    /* Accept either a valid TOTP code or an unused recovery code (consumed on use). */
-    if (!cel_totp_verify(secret, code, TOTP_WINDOW) && !consume_recovery_code(c, user_id, code)) {
+    /* Accept a single-use TOTP code or an unused recovery code (consumed on use).
+     * A TOTP code stays valid across the ±window (~60-90s), so without remembering
+     * the step it consumed it could be replayed against a freshly minted challenge.
+     * Reject any step <= the last one this user accepted (RFC 6238 §5.2, audit #5). */
+    long long totp_step = cel_totp_verify_step(secret, code, TOTP_WINDOW);
+    bool totp_ok = false;
+    if (totp_step >= 0) {
+        long long last_step = -1;
+        char lbuf[24] = {0};
+        const char *pl[1] = { user_id };
+        if (cel_db_one_text(c, "SELECT last_used_step FROM cel_mfa WHERE user_id=?1",
+                            pl, 1, lbuf, sizeof lbuf) == 1 && lbuf[0])
+            last_step = atoll(lbuf);
+        totp_ok = totp_step > last_step;   /* strictly newer step → not a replay */
+    }
+    if (!totp_ok && !consume_recovery_code(c, user_id, code)) {
         const char *p[1] = { h };
         cel_db_exec(c, "UPDATE cel_mfa_challenges SET attempts=attempts+1 WHERE token=?1", p, 1);
         /* count the failure against the user; lock once the threshold is hit (and
@@ -316,8 +330,15 @@ int cel_mfa_verify_login(const char *challenge, const char *code,
         rc = CEL_MFA_INVALID; goto out;
     }
 
-    /* Success: clear the user's MFA failure state and burn the challenge. */
+    /* Success: record the consumed TOTP step (replay guard — a recovery code has no
+     * step and is already single-use via its used_at), clear the user's MFA failure
+     * state, and burn the challenge. */
     {
+        if (totp_ok) {
+            char sbuf[24]; snprintf(sbuf, sizeof sbuf, "%lld", totp_step);
+            const char *ps[2] = { sbuf, user_id };
+            cel_db_exec(c, "UPDATE cel_mfa SET last_used_step=?1 WHERE user_id=?2", ps, 2);
+        }
         const char *pr[1] = { user_id };
         cel_db_exec(c, "UPDATE cel_mfa SET failed_attempts=0, locked_until=NULL WHERE user_id=?1", pr, 1);
         const char *p[1] = { h };

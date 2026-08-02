@@ -105,6 +105,7 @@ static const char *AUTH_SCHEMA =
     "  confirmed_at    INTEGER,"
     "  failed_attempts INTEGER NOT NULL DEFAULT 0,"  /* per-user MFA-verify failures (M-1) */
     "  locked_until    INTEGER,"                     /* MFA verification locked until (epoch) */
+    "  last_used_step  INTEGER,"                      /* highest TOTP step consumed — replay guard (RFC 6238 §5.2) */
     "  created_at      INTEGER NOT NULL DEFAULT (unixepoch())"
     ");"
 
@@ -127,7 +128,7 @@ static const char *AUTH_SCHEMA =
 /* Bump this when the cel_* infra schema changes, and add the matching ALTER step
  * in cel_auth_schema_apply below. Tracked per app via SQLite's PRAGMA
  * user_version, so a newer cellar can evolve an existing app's bundle in place. */
-#define CEL_AUTH_SCHEMA_VERSION 6
+#define CEL_AUTH_SCHEMA_VERSION 7
 
 /* v1 -> v2: per-user MFA-verify lockout (M-1). A fresh db gets these via the base
  * AUTH_SCHEMA above; only a db already at v1 needs the ALTERs. */
@@ -193,6 +194,12 @@ static const char *AUTH_SCHEMA_V5 =
 static const char *AUTH_SCHEMA_V6 =
     "ALTER TABLE cel_email_verifications ADD COLUMN sends INTEGER NOT NULL DEFAULT 0;";
 
+/* v6 -> v7: cel_mfa gains `last_used_step` — the highest TOTP time-step accepted,
+ * so a code can't be replayed within its ±window validity (RFC 6238 §5.2, audit
+ * #5). Every pre-v7 db lacks it, but a fresh db already has it from the base
+ * schema, so the ALTER is applied conditionally (add only if absent) rather than
+ * gated to one exact version — see maybe_add_last_used_step. NULL = "none yet". */
+
 static long user_version(struct sqlite3 *db) {
     sqlite3_stmt *st = NULL;
     long v = 0;
@@ -211,6 +218,21 @@ static int exec_or_log(struct sqlite3 *db, const char *sql) {
         return -1;
     }
     return 0;
+}
+
+/* Add cel_mfa.last_used_step only if it isn't already there — idempotent so it's
+ * safe on a fresh db (base schema already has it) and on any pre-v7 db that lacks
+ * it, without depending on the exact stored version. */
+static int maybe_add_last_used_step(struct sqlite3 *db) {
+    sqlite3_stmt *st = NULL;
+    int has = 0;
+    if (sqlite3_prepare_v2(db, "SELECT count(*) FROM pragma_table_info('cel_mfa') "
+                               "WHERE name='last_used_step'", -1, &st, NULL) == SQLITE_OK) {
+        if (sqlite3_step(st) == SQLITE_ROW) has = sqlite3_column_int(st, 0);
+        sqlite3_finalize(st);
+    }
+    if (has) return 0;
+    return exec_or_log(db, "ALTER TABLE cel_mfa ADD COLUMN last_used_step INTEGER;");
 }
 
 int cel_auth_schema_apply(struct sqlite3 *db) {
@@ -239,6 +261,10 @@ int cel_auth_schema_apply(struct sqlite3 *db) {
         /* v5 -> v6 adds the `sends` column; ONLY a db stopped exactly at v5 lacks it
          * (fresh + v4->v5 already have it from base/V5), so gate on v == 5. */
         if (v == 5 && (rc = exec_or_log(db, AUTH_SCHEMA_V6)) != 0) break;
+        /* v6 -> v7 adds cel_mfa.last_used_step. Applied conditionally (add-if-absent)
+         * for every pre-v7 db, so it's safe whether or not the base schema already
+         * created the column. */
+        if (v < 7 && (rc = maybe_add_last_used_step(db)) != 0) break;
 
         char stamp[48];
         snprintf(stamp, sizeof stamp, "PRAGMA user_version = %d", CEL_AUTH_SCHEMA_VERSION);

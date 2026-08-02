@@ -87,27 +87,31 @@ int cel_totp_code_at(const char *secret_b32, uint64_t unix_time,
     return rc;
 }
 
-bool cel_totp_verify(const char *secret_b32, const char *code, int window) {
-    if (!secret_b32 || !code || window < 0) return false;
+int64_t cel_totp_verify_step(const char *secret_b32, const char *code, int window) {
+    if (!secret_b32 || !code || window < 0) return -1;
 
     char norm[16];                                           /* strip spaces */
     size_t n = 0;
     for (const char *p = code; *p && n < sizeof norm - 1; p++)
         if (*p != ' ') norm[n++] = *p;
     norm[n] = '\0';
-    if (n != TOTP_DIGITS) return false;
+    if (n != TOTP_DIGITS) return -1;
 
     uint64_t now = (uint64_t)time(NULL);
-    bool ok = false;
+    int64_t matched = -1;
     for (int w = -window; w <= window; w++) {                /* full sweep: constant work */
         uint64_t t = (uint64_t)((int64_t)now + (int64_t)w * TOTP_STEP);
         char expect[8];
         if (cel_totp_code_at(secret_b32, t, expect, sizeof expect) == 0 &&
             sodium_memcmp(expect, norm, TOTP_DIGITS) == 0)
-            ok = true;
+            matched = (int64_t)(t / TOTP_STEP);   /* the code's own step (unique per code) */
         sodium_memzero(expect, sizeof expect);
     }
-    return ok;
+    return matched;
+}
+
+bool cel_totp_verify(const char *secret_b32, const char *code, int window) {
+    return cel_totp_verify_step(secret_b32, code, window) >= 0;
 }
 
 int cel_totp_generate_secret(char *out, size_t out_size) {

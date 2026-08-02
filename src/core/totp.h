@@ -29,6 +29,12 @@ int cel_totp_code_at(const char *secret_b32, uint64_t unix_time,
  * comparison is constant-time. */
 bool cel_totp_verify(const char *secret_b32, const char *code, int window);
 
+/* Like cel_totp_verify, but returns the matched time-step (unix_time / 30) so the
+ * caller can enforce single-use by rejecting a step it already accepted (RFC 6238
+ * §5.2 replay prevention). Returns the matched step (>= 0), or -1 if no window
+ * matched / the code is malformed. Same constant-work sweep as cel_totp_verify. */
+int64_t cel_totp_verify_step(const char *secret_b32, const char *code, int window);
+
 /* Build an `otpauth://totp/...` URI (the string an enrollment QR encodes) into
  * `out`. `issuer` and `account` should be URL-safe. Returns 0 on success. */
 int cel_totp_uri(const char *secret_b32, const char *issuer, const char *account,
