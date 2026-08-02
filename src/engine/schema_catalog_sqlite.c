@@ -46,6 +46,15 @@ static cel_coltype_t affinity_from_decl(const char *decl) {
 
 /* ---- small catalog builders (static; the public free/find live in the PG TU) */
 static cel_table_t *add_table(cel_catalog_t *cat, const char *name) {
+    /* Reject an over-long identifier instead of silently truncating it into the
+     * fixed name buffer: a truncated name collides with any other identifier
+     * sharing its prefix under the strcmp lookups, mis-resolving columns/FKs with
+     * no diagnostic (audit). Fail the catalog build loudly instead. */
+    if (name && strlen(name) >= sizeof ((cel_table_t *)0)->name) {
+        LOG_ERROR("catalog: table identifier too long (max %zu chars): %s",
+                  sizeof ((cel_table_t *)0)->name - 1, name);
+        return NULL;
+    }
     cel_table_t *grown = realloc(cat->tables, (cat->ntables + 1) * sizeof *cat->tables);
     if (!grown) return NULL;
     cat->tables = grown;
@@ -61,6 +70,11 @@ static cel_table_t *find_table(cel_catalog_t *cat, const char *name) {
     return NULL;
 }
 static cel_column_t *add_column(cel_table_t *t, const char *name) {
+    if (name && strlen(name) >= sizeof ((cel_column_t *)0)->name) {   /* see add_table */
+        LOG_ERROR("catalog: column identifier too long (max %zu chars) on '%s': %s",
+                  sizeof ((cel_column_t *)0)->name - 1, t->name, name);
+        return NULL;
+    }
     cel_column_t *grown = realloc(t->cols, (t->ncols + 1) * sizeof *t->cols);
     if (!grown) return NULL;
     t->cols = grown;

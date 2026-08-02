@@ -345,26 +345,32 @@ static int cascade_soft_delete(sqlite3 *c, const cel_table_t *parent,
             char chk[256];
             snprintf(chk, sizeof chk, "SELECT 1 FROM \"%s\" WHERE \"%s\" = ?1 AND deleted = 0 LIMIT 1",
                      child->name, col->name);
+            /* Any FAULT below (a failed probe/UPDATE prepare, a rev-allocation error,
+             * or an OOM serializing the RETURNING) aborts the whole write via -1 —
+             * NOT a silent `continue`, which would tombstone the parent but leave this
+             * child live (an orphaned-state inconsistency that never self-heals). Only
+             * "this child table has nothing to tombstone" (!has_rows) is a legit skip.
+             * Mirrors the main write path's rev<0 -> 500 (audit). */
             sqlite3_stmt *cst = NULL;
-            if (sqlite3_prepare_v2(c, chk, -1, &cst, NULL) != SQLITE_OK) continue;
+            if (sqlite3_prepare_v2(c, chk, -1, &cst, NULL) != SQLITE_OK) return -1;
             sqlite3_bind_text(cst, 1, parent_id, -1, SQLITE_TRANSIENT);
             int has_rows = (sqlite3_step(cst) == SQLITE_ROW);
             sqlite3_finalize(cst);
             if (!has_rows) continue;
 
             long long rev = cel_sync_next_rev(c);
-            if (rev < 0) continue;
+            if (rev < 0) return -1;
             char sql[512];
             snprintf(sql, sizeof sql,
                      "UPDATE \"%s\" SET deleted = 1, rev = %lld "
                      "WHERE \"%s\" = ?1 AND deleted = 0 RETURNING *",
                      child->name, rev, col->name);
             sqlite3_stmt *st = NULL;
-            if (sqlite3_prepare_v2(c, sql, -1, &st, NULL) != SQLITE_OK) continue;
+            if (sqlite3_prepare_v2(c, sql, -1, &st, NULL) != SQLITE_OK) return -1;
             sqlite3_bind_text(st, 1, parent_id, -1, SQLITE_TRANSIENT);
             cJSON *rows = cel_stmt_rows_to_json(st, child);   /* steps the UPDATE...RETURNING */
             int frc = sqlite3_finalize(st);   /* surfaces a deferred step error, as run_rows_on's reset does */
-            if (!rows) continue;
+            if (!rows) return -1;
             if (frc != SQLITE_OK) {           /* a mid-scan step error truncated this UPDATE...RETURNING:
                                                * the tombstone set is incomplete → abort, don't commit a partial cascade */
                 cJSON_Delete(rows);

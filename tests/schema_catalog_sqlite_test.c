@@ -116,6 +116,25 @@ int main(void) {
     free_catalog(cat);
     sqlite3_close(db);
 
+    /* audit low: an identifier that doesn't fit the fixed catalog name buffer must
+     * FAIL the build loudly (return NULL), not silently truncate into a name that
+     * collides with another under the strcmp lookups. */
+    {
+        sqlite3 *db2 = NULL;
+        CHECK(sqlite3_open(":memory:", &db2) == SQLITE_OK, "open in-memory db2");
+        char *e2 = NULL;
+        int rc2 = sqlite3_exec(db2,
+            "CREATE TABLE t(id INTEGER PRIMARY KEY, "
+            "this_is_a_deliberately_very_long_column_name_that_runs_well_past_sixty_three_characters INTEGER);",
+            NULL, NULL, &e2);
+        CHECK(rc2 == SQLITE_OK, "seed over-long-identifier schema");
+        sqlite3_free(e2);
+        cel_catalog_t *cat2 = cel_catalog_build_sqlite(db2);
+        CHECK(cat2 == NULL, "catalog build rejects an over-long identifier (no silent truncation)");
+        if (cat2) free_catalog(cat2);
+        sqlite3_close(db2);
+    }
+
     if (failures) { fprintf(stderr, "\n%d check(s) FAILED\n", failures); return 1; }
     fprintf(stderr, "\nall schema_catalog_sqlite checks passed\n");
     return 0;

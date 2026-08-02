@@ -70,11 +70,13 @@ cJSON *cel_stmt_rows_to_json(sqlite3_stmt *st, const cel_table_t *t) {
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
         cJSON *obj = cJSON_CreateObject();
+        if (!obj) break;   /* OOM — stop building rather than deref NULL */
         for (int c = 0; c < ncols; c++) {
-            const char *name = sqlite3_column_name(st, c);
-            const cel_column_t *col = t ? cel_table_column(t, name) : NULL;
+            const char *name = sqlite3_column_name(st, c);   /* NULL only on OOM */
+            const cel_column_t *col = (t && name) ? cel_table_column(t, name) : NULL;
             cJSON *val = col ? cell_typed(st, c, col->type) : cell_runtime(st, c);
-            cJSON_AddItemToObject(obj, name, val);
+            if (name) cJSON_AddItemToObject(obj, name, val);
+            else      cJSON_Delete(val);   /* AddItemToObject(NULL name) doesn't take ownership → would leak */
         }
         cJSON_AddItemToArray(arr, obj);
     }
@@ -87,8 +89,13 @@ cJSON *cel_stmt_result_to_json(sqlite3_stmt *st) {
     int ncols = sqlite3_column_count(st);
     while (sqlite3_step(st) == SQLITE_ROW) {
         cJSON *obj = cJSON_CreateObject();
-        for (int c = 0; c < ncols; c++)
-            cJSON_AddItemToObject(obj, sqlite3_column_name(st, c), cell_runtime(st, c));
+        if (!obj) break;
+        for (int c = 0; c < ncols; c++) {
+            const char *name = sqlite3_column_name(st, c);
+            cJSON *val = cell_runtime(st, c);
+            if (name) cJSON_AddItemToObject(obj, name, val);
+            else      cJSON_Delete(val);
+        }
         cJSON_AddItemToArray(arr, obj);
     }
     return arr;
