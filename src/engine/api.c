@@ -1165,9 +1165,16 @@ cel_api_result_t cel_api_sync_push(const cel_identity_t *who, const cJSON *req) 
          * (incoming) by default, overridable by the resolve() hook. */
         bool conflict = exists && (base_rev < 0 || base_rev != cur_rev);
         bool incoming_wins = true;
-        if (conflict && hooks)
+        if (conflict && hooks) {
+            /* resolve() runs on the txn conn (like before()): its cellar.query sees
+             * the in-flight batch, and — because the conn is mid-transaction — a
+             * hook side-effect (emit/enqueue/notify) is refused rather than
+             * deadlocking on the WAL write lock (audit #6). */
+            cel_hooks_set_db(c);
             incoming_wins = cel_hooks_resolve(hooks, t->name, is_del ? NULL : (const cel_val_t *)jval,
                                               (const cel_val_t *)current, (const cel_val_t *)who_v) != 0;
+            cel_hooks_set_db(NULL);
+        }
         cJSON_Delete(current);   /* consulted by resolve; the apply doesn't need it */
 
         cJSON *outrow = NULL; int rc = 0; const char *status = "applied"; long long out_rev = cur_rev;

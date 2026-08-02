@@ -112,9 +112,26 @@ long long cel_hook_exec(const char *sql, const cel_val_t *params, char *err, int
     return (long long)sqlite3_changes(t_db);
 }
 
+/* True when this hook's bound connection is inside an open write transaction —
+ * i.e. we're in before()/resolve(), which run on the request's txn connection
+ * while it holds the WAL single-writer lock. A hook side-effect (emit/enqueue/
+ * notify) writes on a SEPARATE connection (EventSink/JobQueue) to the same
+ * data.db, so it would block on that same write lock for the full busy timeout
+ * and then be silently lost — and a few concurrent such requests starve the
+ * small write pool (audit 2026-08 #6). after()/rpc/job run in autocommit (no open
+ * txn), where this is false and the side-effect proceeds normally. */
+static int in_open_write_txn(void) {
+    return t_db && sqlite3_get_autocommit(t_db) == 0;
+}
+
 /* EventSink: append an event onto the current app's log (its own connection,
  * independent of the request txn). Best-effort — telemetry never fails a hook. */
 void cel_hook_emit(const char *type, const char *actor, const char *subject, const char *props) {
+    if (in_open_write_txn()) {
+        LOG_WARN("[hook] emit(%s) skipped: called inside a write transaction "
+                 "(before()/resolve()); emit side-effects from after()/rpc/job", type ? type : "");
+        return;
+    }
     event_sink_t *s = cel_apps_current_events();
     if (!s || !type || !type[0]) return;
     event_t ev = {
@@ -129,6 +146,11 @@ void cel_hook_emit(const char *type, const char *actor, const char *subject, con
 /* JobQueue: enqueue onto the current app's queue. Returns the new id, or -1. */
 long long cel_hook_enqueue(const char *type, const char *payload,
                            long long run_at, long long repeat_every) {
+    if (in_open_write_txn()) {
+        LOG_WARN("[hook] enqueue_job(%s) rejected: called inside a write transaction "
+                 "(before()/resolve()); enqueue from after()/rpc/job", type ? type : "");
+        return -1;
+    }
     job_queue_t *q = cel_apps_current_jobs();
     if (!q || !type || !type[0]) return -1;
     long long id = -1;
@@ -141,6 +163,11 @@ long long cel_hook_enqueue(const char *type, const char *payload,
  * the reserved cel:notif job; cel_hooks_run_jobs fans it out in C. Returns id or -1. */
 long long cel_hook_notify(const char *user_id, const char *title, const char *body,
                           const char *url, const char *data_json) {
+    if (in_open_write_txn()) {
+        LOG_WARN("[hook] notify() rejected: called inside a write transaction "
+                 "(before()/resolve()); notify from after()/rpc/job");
+        return -1;
+    }
     job_queue_t *q = cel_apps_current_jobs();
     if (!q || !user_id || !user_id[0]) return -1;
     cJSON *root = cJSON_CreateObject();

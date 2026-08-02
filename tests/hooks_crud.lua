@@ -14,6 +14,10 @@ function before(op, table, input, who)
     -- with an authorize() deny that follows).
     cellar.exec('INSERT INTO notes(owner_id, title) VALUES (?, ?)',
                 { who.user_id, 'btrace:' .. tostring(input.sku) })
+    -- emit() here is INSIDE the request write txn: it must be refused (not stall
+    -- 5s on the WAL write lock and silently drop) — audit #6. So no 'before_ev'
+    -- event should ever be recorded.
+    cellar.emit('before_ev', { actor = who.user_id, subject = tostring(input.sku) })
     input.name = 'HOOKED:' .. input.name           -- transform, in place
   end
   return true
@@ -38,5 +42,7 @@ function after(op, table, row, who)
   if op == 'create' and table == 'products' then
     cellar.exec('INSERT INTO notes(owner_id, title) VALUES (?, ?)',
                 { who.user_id, 'audit:created:' .. tostring(row.sku) })
+    -- emit() here is POST-commit (after() runs in autocommit): it must land.
+    cellar.emit('after_ev', { actor = who.user_id, subject = tostring(row.sku) })
   end
 end

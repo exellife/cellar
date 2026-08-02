@@ -4,7 +4,7 @@ REST write path. The bundle (hooks_crud.lua, selected via CEL_HOOKS_FILE) hooks
 `products`: before transforms/validates, authorize adds a deny gate, after writes
 an audit note. Booted by run_with_server.
 """
-import http.client, json, sys
+import http.client, json, os, sqlite3, sys, time
 from urllib.parse import urlparse
 
 ADMIN = ("admin@cellar.dev", "s3cret-admin")
@@ -40,9 +40,15 @@ def main():
     chk("login admin", bool(admin))
 
     # ---- before(): transforms the input in place ----
+    # before() also calls cellar.emit (see the bundle). Time this create: without
+    # the audit-#6 guard, the in-txn emit blocks on the WAL write lock for the full
+    # 5s busy_timeout; with the guard it returns immediately.
+    t0 = time.time()
     s, b = req("POST", "/api/products", {"name": "Widget", "sku": "CRUD-1", "price": 2}, token=admin)
+    elapsed = time.time() - t0
     row = (b or {}).get("row", {})
     chk("create -> 201", s == 201, f"status={s}")
+    chk("before()-emit does not stall on the WAL lock (<3s, vs 5s busy_timeout)", elapsed < 3.0, f"{elapsed:.2f}s")
     chk("before transformed name (HOOKED:)", row.get("name") == "HOOKED:Widget", str(row.get("name")))
     widget_id = row.get("id")
 
@@ -96,6 +102,24 @@ def main():
     # the rejected/denied creates left no audit note
     chk("no audit note for blocked/rejected",
         not any("BLOCKED" in t or "CRUD-2" in t for t in titles), str(titles))
+
+    # ---- audit #6: a hook side-effect that writes on a SEPARATE connection
+    # (cellar.emit -> EventSink) must be REFUSED inside the request write txn
+    # (before()), where it would otherwise block on the WAL write lock for 5s and
+    # be silently dropped; from after() (post-commit) it must land. Peek the
+    # engine `event` table directly (not exposed over REST). ----
+    dbp = os.environ.get("CEL_DATA_DB")
+    if dbp:
+        con = sqlite3.connect(dbp)
+        try:
+            before_n = con.execute("SELECT count(*) FROM event WHERE type='before_ev'").fetchone()[0]
+            after_n  = con.execute("SELECT count(*) FROM event WHERE type='after_ev'").fetchone()[0]
+        finally:
+            con.close()
+        chk("emit() from before() (in write txn) is refused (0 events)", before_n == 0, f"count={before_n}")
+        chk("emit() from after() (post-commit) is recorded", after_n >= 1, f"count={after_n}")
+    else:
+        chk("CEL_DATA_DB set for event peek", False, "env missing")
 
     print(f"\n{'PASS' if fail == 0 else 'FAIL'}  ({ok} ok, {fail} failed)")
     return 1 if fail else 0
