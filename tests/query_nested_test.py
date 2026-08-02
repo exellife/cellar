@@ -73,6 +73,16 @@ def main():
     s, _ = req("GET", f"/api/products?id=eq.{pids[0]}&embed={deep}", token=admin)
     chk("over-deep embed -> 400", s == 400, f"status={s}")
 
+    # audit #7: a repeated embed path is de-duped (run once, still nests correctly)…
+    s, b = req("GET", f"/api/products?id=eq.{pids[0]}&embed=categories,categories", token=admin)
+    dup_cat = ((b or {}).get("rows") or [{}])[0].get("categories")
+    chk("duplicate embed path deduped -> 200 + nested once",
+        s == 200 and isinstance(dup_cat, dict) and dup_cat.get("id") == cat, f"status={s}")
+    # …and an oversized embed array is rejected outright (bounded fan-out, not run)
+    many = ",".join(f"rel{i}" for i in range(20))
+    s, _ = req("GET", f"/api/products?id=eq.{pids[0]}&embed={many}", token=admin)
+    chk("oversized embed array -> 400 (bounded)", s == 400, f"status={s}")
+
     # cleanup
     for pid in pids:
         if pid: req("DELETE", f"/api/products/{pid}", token=admin)

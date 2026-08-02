@@ -629,16 +629,26 @@ static int embed_one(const cel_identity_t *who, const cel_table_t *base, cJSON *
     }
 
     cJSON *in = cJSON_CreateArray();                     /* distinct non-null local keys */
+    /* De-dup by comparing each key against the ones already KEPT, whose canonical
+     * strings we retain — not by re-serializing every kept `in` element on every
+     * row. The old form was O(n^2) cJSON_PrintUnformatted allocations over a page
+     * of up to CEL_LIST_MAX_LIMIT rows: a cheap-request CPU/heap DoS (audit #7). */
+    int nrows = cJSON_GetArraySize(rows);
+    char **kept = nrows > 0 ? calloc((size_t)nrows, sizeof *kept) : NULL;
+    int nkept = 0;
     cJSON *brow;
     cJSON_ArrayForEach(brow, rows) {
         const cJSON *kv = cJSON_GetObjectItemCaseSensitive(brow, rel.local_key);
         char *k = join_key(kv);
         if (!k) continue;
-        int seen = 0; const cJSON *e;
-        cJSON_ArrayForEach(e, in) { char *ek = join_key(e); int m = ek && !strcmp(ek, k); free(ek); if (m) { seen = 1; break; } }
-        if (!seen) cJSON_AddItemToArray(in, cJSON_Duplicate(kv, 1));
-        free(k);
+        int dup = 0;
+        for (int i = 0; i < nkept; i++) if (!strcmp(kept[i], k)) { dup = 1; break; }
+        if (dup) { free(k); continue; }
+        cJSON_AddItemToArray(in, cJSON_Duplicate(kv, 1));
+        if (kept) kept[nkept++] = k; else free(k);   /* kept[] owns k until freed below */
     }
+    for (int i = 0; i < nkept; i++) free(kept[i]);
+    free(kept);
 
     if (cJSON_GetArraySize(in) == 0) {                   /* nothing to fetch */
         cJSON_Delete(in);
@@ -667,38 +677,43 @@ static int embed_one(const cel_identity_t *who, const cel_table_t *base, cJSON *
     cJSON_Delete(sreq);
     if (!related) { snprintf(err, errlen, "%s", emsg[0] ? emsg : "embed query failed"); return http; }
 
+    /* Precompute each related row's join key ONCE (O(m)); the old stitch re-serialized
+     * the remote key for every (base, related) pair — O(n*m) allocations over pages
+     * of up to CEL_LIST_MAX_LIMIT each (audit #7). rrows[] aliases the `related`
+     * array (not owned); rkeys[] is owned and freed below. */
+    int nrel = cJSON_GetArraySize(related);
+    char  **rkeys = nrel > 0 ? calloc((size_t)nrel, sizeof *rkeys) : NULL;
+    cJSON **rrows = nrel > 0 ? calloc((size_t)nrel, sizeof *rrows) : NULL;
+    if (nrel > 0 && (!rkeys || !rrows)) {
+        free(rkeys); free(rrows); cJSON_Delete(related);
+        snprintf(err, errlen, "out of memory"); return 500;
+    }
+    { int i = 0; cJSON *e;
+      cJSON_ArrayForEach(e, related) { rkeys[i] = join_key(cJSON_GetObjectItemCaseSensitive(e, rel.remote_key)); rrows[i] = e; i++; } }
+
     cJSON_ArrayForEach(brow, rows) {                     /* stitch matches onto base rows */
         char *k = join_key(cJSON_GetObjectItemCaseSensitive(brow, rel.local_key));
         if (rel.to_many) {
             cJSON *arr = cJSON_CreateArray();
-            if (k) {
-                const cJSON *e;
-                cJSON_ArrayForEach(e, related) {
-                    char *ek = join_key(cJSON_GetObjectItemCaseSensitive(e, rel.remote_key));
-                    if (ek && !strcmp(ek, k)) cJSON_AddItemToArray(arr, cJSON_Duplicate(e, 1));
-                    free(ek);
-                }
-            }
+            if (k) for (int i = 0; i < nrel; i++)
+                if (rkeys[i] && !strcmp(rkeys[i], k)) cJSON_AddItemToArray(arr, cJSON_Duplicate(rrows[i], 1));
             cJSON_AddItemToObject(brow, name, arr);
         } else {
             cJSON *match = NULL;
-            if (k) {
-                const cJSON *e;
-                cJSON_ArrayForEach(e, related) {
-                    char *ek = join_key(cJSON_GetObjectItemCaseSensitive(e, rel.remote_key));
-                    int hit = ek && !strcmp(ek, k); free(ek);
-                    if (hit) { match = cJSON_Duplicate(e, 1); break; }
-                }
-            }
+            if (k) for (int i = 0; i < nrel; i++)
+                if (rkeys[i] && !strcmp(rkeys[i], k)) { match = cJSON_Duplicate(rrows[i], 1); break; }
             cJSON_AddItemToObject(brow, name, match ? match : cJSON_CreateNull());
         }
         free(k);
     }
+    for (int i = 0; i < nrel; i++) free(rkeys[i]);
+    free(rkeys); free(rrows);
     cJSON_Delete(related);
     return 0;
 }
 
 #define CEL_MAX_EMBED_DEPTH 4
+#define CEL_MAX_EMBED       8   /* distinct embed paths per request (DoS bound, audit #7) */
 
 /* Embed a (possibly dotted) relation path like "order_items.product": embed the
  * first relation into `rows`, then recurse into the just-embedded rows for the
@@ -845,9 +860,19 @@ cel_api_result_t cel_api_list(const cel_identity_t *who, const cJSON *req) {
      * related table; every embedded read re-runs the caller's authz + row scope. */
     const cJSON *embed = cJSON_GetObjectItemCaseSensitive(req, "embed");
     if (cJSON_IsArray(embed)) {
+        /* Bound the fan-out: cap the number of DISTINCT embed paths and skip repeats.
+         * Each embed runs a scoped LIST + an in-memory join, so an unbounded (or
+         * duplicated) embed array is a cheap-request CPU/heap amplifier (audit #7). */
+        const char *seen[CEL_MAX_EMBED];
+        int nembed = 0;
         const cJSON *e;
         cJSON_ArrayForEach(e, embed) {
             if (!cJSON_IsString(e)) { cJSON_Delete(rows); return result_error(400, "embed entries must be strings"); }
+            int dup = 0;
+            for (int i = 0; i < nembed; i++) if (!strcmp(seen[i], e->valuestring)) { dup = 1; break; }
+            if (dup) continue;   /* re-embedding the same path is pure waste */
+            if (nembed >= CEL_MAX_EMBED) { cJSON_Delete(rows); return result_error(400, "too many embeds (max 8)"); }
+            seen[nembed++] = e->valuestring;
             char eerr[256] = {0};
             int erc = embed_path(who, t, rows, e->valuestring, 1, eerr, sizeof eerr);
             if (erc) { cJSON_Delete(rows); return result_error(erc, eerr[0] ? eerr : "embed failed"); }
