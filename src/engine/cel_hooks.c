@@ -1,5 +1,6 @@
 /* cellar — the Lua hook dispatcher (design §8). See cel_hooks.h. */
 #include "cel_hooks.h"
+#include "cel_hook_state.h"
 #include "cel_apps.h"
 #include "realtime.h"
 #include "policy.h"
@@ -617,6 +618,20 @@ int cel_hooks_install(cel_lua_t *L, char *errbuf, size_t errlen) {
 }
 
 /* ---- dispatch -------------------------------------------------------------- */
+
+/* Every hook pcall goes through here so cel_hook_app_state knows a VM is live on
+ * this thread's C stack and defers any hot-reload until we unwind — a hook that
+ * calls cellar.rt_emit re-enters cel_hook_app_state via the on_realtime filter,
+ * and closing the executing VM to reload would be a use-after-free (audit #1).
+ * lua_pcall never longjmps past this frame (it catches the error), so the
+ * begin/end bracket is always balanced. */
+static int cel_hook_pcall(lua_State *L, int nargs, int nresults) {
+    cel_hook_exec_begin();
+    int rc = lua_pcall(L, nargs, nresults, 0);
+    cel_hook_exec_end();
+    return rc;
+}
+
 int cel_hooks_authorize(cel_lua_t *Lh, const char *op, const char *table,
                         const cel_val_t *row, const cel_val_t *who) {
     lua_State *L = (lua_State *)cel_lua_state(Lh);
@@ -626,7 +641,7 @@ int cel_hooks_authorize(cel_lua_t *Lh, const char *op, const char *table,
     lua_pushstring(L, table ? table : "");
     lua_pushlightuserdata(L, (void *)row);
     lua_pushlightuserdata(L, (void *)who);
-    if (lua_pcall(L, 4, 1, 0) != 0) {
+    if (cel_hook_pcall(L, 4, 1) != 0) {
         LOG_ERROR("[hook] authorize fault: %s", lua_tostring(L, -1));
         lua_pop(L, 1);
         return 0;       /* fault → deny */
@@ -647,7 +662,7 @@ int cel_hooks_before(cel_lua_t *Lh, const char *op, const char *table,
     lua_pushstring(L, table ? table : "");
     lua_pushlightuserdata(L, (void *)input);
     lua_pushlightuserdata(L, (void *)who);
-    if (lua_pcall(L, 4, 2, 0) != 0) {
+    if (cel_hook_pcall(L, 4, 2) != 0) {
         if (errbuf && errlen) snprintf(errbuf, errlen, "%s", lua_tostring(L, -1));
         LOG_ERROR("[hook] before fault: %s", lua_tostring(L, -1));
         lua_pop(L, 1);
@@ -754,7 +769,7 @@ int cel_hooks_run_jobs(cel_lua_t *Lh, job_queue_t *q, long long now,
         lua_pushstring(L, job.type ? job.type : "");
         lua_pushstring(L, job.payload ? job.payload : "");
         int ok;
-        if (lua_pcall(L, 2, 2, 0) != 0) {
+        if (cel_hook_pcall(L, 2, 2) != 0) {
             LOG_ERROR("[hook] job fault: %s", lua_tostring(L, -1));
             lua_pop(L, 1);
             ok = 0;
@@ -779,7 +794,7 @@ cel_val_t *cel_hooks_rpc(cel_lua_t *Lh, const char *name, const cel_val_t *args,
     lua_pushstring(L, name ? name : "");
     lua_pushlightuserdata(L, (void *)args);
     lua_pushlightuserdata(L, (void *)who);
-    if (lua_pcall(L, 3, 2, 0) != 0) {
+    if (cel_hook_pcall(L, 3, 2) != 0) {
         if (errbuf && errlen) snprintf(errbuf, errlen, "%s", lua_tostring(L, -1));
         LOG_ERROR("[hook] rpc fault: %s", lua_tostring(L, -1));
         lua_pop(L, 1);
@@ -803,7 +818,7 @@ cel_val_t *cel_hooks_render_email(cel_lua_t *Lh, const char *kind, const cel_val
     lua_getglobal(L, "__cel_render_email");
     lua_pushstring(L, kind ? kind : "");
     lua_pushlightuserdata(L, (void *)ctx);
-    if (lua_pcall(L, 2, 1, 0) != 0) {                    /* hook faulted → fall back */
+    if (cel_hook_pcall(L, 2, 1) != 0) {                    /* hook faulted → fall back */
         LOG_ERROR("[hook] render_email fault: %s", lua_tostring(L, -1));
         lua_pop(L, 1);
         return NULL;
@@ -823,7 +838,7 @@ void cel_hooks_after(cel_lua_t *Lh, const char *op, const char *table,
     lua_pushstring(L, table ? table : "");
     lua_pushlightuserdata(L, (void *)row);
     lua_pushlightuserdata(L, (void *)who);
-    if (lua_pcall(L, 4, 0, 0) != 0) {
+    if (cel_hook_pcall(L, 4, 0) != 0) {
         LOG_ERROR("[hook] after fault (ignored; write already committed): %s", lua_tostring(L, -1));
         lua_pop(L, 1);
     }
@@ -835,7 +850,7 @@ int cel_hooks_on_realtime(cel_lua_t *Lh, const cel_val_t *change, const cel_val_
     lua_getglobal(L, "__cel_on_realtime");
     lua_pushlightuserdata(L, (void *)change);
     lua_pushlightuserdata(L, (void *)subscriber);
-    if (lua_pcall(L, 2, 1, 0) != 0) {
+    if (cel_hook_pcall(L, 2, 1) != 0) {
         LOG_ERROR("[hook] on_realtime fault (dropping subscriber): %s", lua_tostring(L, -1));
         lua_pop(L, 1);
         return 0;       /* fault → fail closed (don't deliver) */
@@ -855,7 +870,7 @@ int cel_hooks_resolve(cel_lua_t *Lh, const char *table, const cel_val_t *incomin
     else          lua_pushnil(L);                 /* del has no incoming row */
     lua_pushlightuserdata(L, (void *)current);
     lua_pushlightuserdata(L, (void *)who);
-    if (lua_pcall(L, 4, 1, 0) != 0) {
+    if (cel_hook_pcall(L, 4, 1) != 0) {
         LOG_ERROR("[hook] resolve fault (keeping current): %s", lua_tostring(L, -1));
         lua_pop(L, 1);
         return 0;       /* fault → fail closed: keep current, don't apply a faulted merge */

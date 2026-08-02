@@ -26,6 +26,15 @@ typedef struct thread_entry {
 } thread_entry_t;
 static __thread thread_entry_t *t_states = NULL;
 
+/* Depth of hook pcalls currently executing on this thread (audit #1). While > 0,
+ * some cached lua_State is live on the C stack and must not be closed for a
+ * reload — cel_hook_app_state defers the reload instead. */
+static __thread int t_hook_depth = 0;
+
+void cel_hook_exec_begin(void) { t_hook_depth++; }
+void cel_hook_exec_end(void)   { if (t_hook_depth > 0) t_hook_depth--; }
+int  cel_hook_executing(void)  { return t_hook_depth > 0; }
+
 cel_hook_app_t *cel_hook_app_create(const char *bundle_dir) {
     cel_hook_app_t *a = calloc(1, sizeof *a);
     if (!a) return NULL;
@@ -110,6 +119,15 @@ cel_lua_t *cel_hook_app_state(cel_hook_app_t *a) {
 
     thread_entry_t *e = find_entry(a);
     if (e && e->gen_loaded == g) return e->state;   /* fast path: up to date */
+
+    /* A hook is executing on this thread (this call is reentrant — e.g. a
+     * before()/rpc/job hook called cellar.rt_emit, which re-enters here via the
+     * on_realtime filter). This thread's lua_State is live on the C stack below,
+     * so closing it to hot-reload would free the VM mid-pcall → use-after-free
+     * (audit 2026-08 #1). Defer the reload: hand back the loaded state; the new
+     * hooks.lua takes effect on the next top-level acquisition. gen_loaded is left
+     * unchanged so the reload still happens once we're no longer executing. */
+    if (e && e->state && cel_hook_executing()) return e->state;
 
     /* (re)load this thread's state for the app at generation g */
     if (!e) {

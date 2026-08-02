@@ -37,4 +37,16 @@ cel_lua_t *cel_hook_app_state(cel_hook_app_t *app);
  * reclaims everything), but it keeps shutdown leak-free. */
 void cel_hook_state_thread_cleanup(void);
 
+/* Hook-execution bracket. cel_hook_exec_begin/end must wrap every lua_pcall into
+ * a hook (see cel_hooks.c). While a hook is executing on this thread its
+ * lua_State is live on the C stack, and a hook can re-enter cel_hook_app_state
+ * (e.g. cellar.rt_emit -> on_realtime filter). cel_hook_app_state consults
+ * cel_hook_executing() and DEFERS any hot-reload while a hook runs, so a state is
+ * never closed out from under a live pcall (audit 2026-08 #1). Reentrant-safe:
+ * a nested hook just increments the depth; the reload fires on the next
+ * top-level acquisition. */
+void cel_hook_exec_begin(void);
+void cel_hook_exec_end(void);
+int  cel_hook_executing(void);
+
 #endif /* CEL_HOOK_STATE_H */

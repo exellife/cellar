@@ -98,6 +98,22 @@ int main(void) {
     pthread_join(th, &tr);
     check("worker thread got its own working state", (long)tr == 1, "");
 
+    /* ---- audit #1: a hot-reload must be DEFERRED while a hook is executing on
+     *      this thread. A hook that calls cellar.rt_emit re-enters
+     *      cel_hook_app_state via the on_realtime filter; if that reentrant call
+     *      closed the live VM to reload, it would free a lua_State mid-pcall
+     *      (use-after-free). cel_hook_exec_begin/end bracket the execution; while
+     *      bracketed, cel_hook_app_state returns the SAME state and only reloads
+     *      once we unwind. State is at V2 here (from the per-thread block). ---- */
+    cel_lua_t *live = cel_hook_app_state(app);
+    check("have a live V2 state to pin", live != NULL && rpc_v(app) == 2.0, "");
+    cel_hook_exec_begin();                     /* pretend a hook is running on `live` */
+    write_hooks(V1, 1000000500);               /* edit on disk -> new generation */
+    check("reload deferred while executing (same VM pointer)", cel_hook_app_state(app) == live, "");
+    check("deferred VM keeps old behavior (v==2, not reloaded)", rpc_v(app) == 2.0, "");
+    cel_hook_exec_end();                        /* hook unwinds */
+    check("reload fires once execution unwinds (v==1)", rpc_v(app) == 1.0, "");
+
     cel_hook_state_thread_cleanup();   /* free the main thread's states */
     cel_hook_app_destroy(app);
     unlink(g_hooks);
