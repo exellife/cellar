@@ -396,7 +396,8 @@ if(CELLAR_BUILD_TESTS)
 
     # DB-free CORS origin-policy unit test.
     add_executable(cors_test tests/cors_test.c src/core/cors.c)
-    target_include_directories(cors_test PRIVATE src/core)
+    target_include_directories(cors_test PRIVATE src/core lib/logger/include)
+    target_link_libraries(cors_test logger)
     add_test(NAME cors COMMAND cors_test)
 
     # DB-free base64url unit test (backs the keyset cursor tokens).

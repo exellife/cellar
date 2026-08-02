@@ -47,10 +47,17 @@ int main(void) {
     configure("*", NULL);
     chk("wildcard echoes *", eq(cel_cors_allow_origin("https://anything.test"), "*"));
 
-    /* wildcard WITH credentials -> echo the specific origin (spec: no "*" + creds) */
+    /* wildcard WITH credentials -> refuse the pairing (audit #3): credentials are
+     * dropped and we serve a plain "*", never a reflected origin. */
     configure("*", "1");
-    chk("wildcard+creds echoes origin", eq(cel_cors_allow_origin("https://anything.test"), "https://anything.test"));
-    chk("credentials enabled", cel_cors_allow_credentials());
+    chk("wildcard+creds serves * (no reflection)", eq(cel_cors_allow_origin("https://anything.test"), "*"));
+    chk("wildcard+creds disables credentials", !cel_cors_allow_credentials());
+
+    /* explicit allowlist WITH credentials is still legitimate -> echo + creds on */
+    configure("https://a.test", "1");
+    chk("allowlist+creds echoes listed origin", eq(cel_cors_allow_origin("https://a.test"), "https://a.test"));
+    chk("allowlist+creds unlisted denied", eq(cel_cors_allow_origin("https://evil.test"), NULL));
+    chk("allowlist+creds keeps credentials", cel_cors_allow_credentials());
 
     printf(failures ? "\nFAILED (%d)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;

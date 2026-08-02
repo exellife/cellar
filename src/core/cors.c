@@ -1,5 +1,7 @@
 #include "cors.h"
 
+#include "logger.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +34,19 @@ void cel_cors_init(void) {
     }
     const char *cred = getenv("CEL_CORS_CREDENTIALS");
     g_credentials = cred && (*cred == '1' || *cred == 't' || *cred == 'T' || *cred == 'y' || *cred == 'Y');
+
+    /* Refuse the dangerous wildcard+credentials pairing (audit 2026-08 #3).
+     * Reflecting an arbitrary Origin alongside Access-Control-Allow-Credentials:
+     * true is exactly what the browser's "* + credentials is forbidden" rule
+     * exists to prevent — it yields allow-all-origins-with-credentials and lets
+     * any site read authenticated responses. If an operator wants credentialed
+     * CORS they must name the origins explicitly; with "*" we drop credentials
+     * and serve a plain "*" (safe, and fine for cellar's bearer-token auth). */
+    if (g_wildcard && g_credentials) {
+        LOG_WARN("cors: CEL_CORS_ORIGINS=* with CEL_CORS_CREDENTIALS is unsafe; "
+                 "disabling credentials. Use an explicit origin allowlist for credentialed CORS.");
+        g_credentials = false;
+    }
 }
 
 bool cel_cors_enabled(void) { return g_wildcard || g_norigins > 0; }
@@ -41,8 +56,10 @@ bool cel_cors_allow_credentials(void) { return g_credentials && cel_cors_enabled
 const char *cel_cors_allow_origin(const char *origin) {
     if (!origin || !*origin) return NULL;
     if (g_wildcard) {
-        /* With credentials, "*" is invalid — echo the specific origin instead. */
-        return g_credentials ? origin : "*";
+        /* Always "*", never a reflected origin: init forces g_credentials off
+         * whenever wildcard is set, so this can never be paired with
+         * Allow-Credentials: true (audit 2026-08 #3). */
+        return "*";
     }
     for (int i = 0; i < g_norigins; i++)
         if (!strcmp(g_origins[i], origin)) return g_origins[i];   /* stable echo (not the arg) */
