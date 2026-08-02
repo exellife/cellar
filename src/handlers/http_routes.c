@@ -739,8 +739,9 @@ int cel_http_router(const portico_request_t *req, portico_response_t *res, void 
     (void)user_data;
 
     /* CORS: resolve the allowed origin (NULL = not allowed / CORS off => no headers).
-     * `origin` is held at function scope: cel_cors_allow_origin may return a pointer
-     * into it (the wildcard+credentials echo case), so it must outlive the response. */
+     * cel_cors_allow_origin returns static storage ("*" or an allowlist entry), not a
+     * pointer into `origin`, so its result has no lifetime tie to this buffer; `origin`
+     * is kept at function scope only to parse the request's Origin header into. */
     const char *allow_origin = NULL;
     char origin[256];
     if (cel_cors_enabled()) {

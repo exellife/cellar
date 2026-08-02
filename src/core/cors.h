@@ -25,9 +25,10 @@ bool cel_cors_enabled(void);
 
 /* The Access-Control-Allow-Origin value to send for a request whose Origin header
  * is `origin` (NUL-terminated), or NULL if the origin is not allowed (=> no CORS
- * headers). Returns "*" (wildcard, no credentials), a stable pointer into the
- * configured allowlist, or — in the wildcard+credentials case — the `origin`
- * argument itself; so `origin` must stay alive while the result is used. */
+ * headers). Returns either the static literal "*" (wildcard; credentials are
+ * forced off in that mode, audit 2026-08 #3) or a stable pointer into the
+ * configured allowlist — never the caller's `origin` buffer, so the result does
+ * not depend on `origin` staying alive. */
 const char *cel_cors_allow_origin(const char *origin);
 
 /* True if Access-Control-Allow-Credentials: true should be sent. */
