@@ -676,8 +676,24 @@ int cel_auth_change_password(const char *user_id, const char *current_password,
         if (sqlite3_changes(c) != 1) { rc = CEL_AUTH_INVALID; goto out; }
     }
 
+    /* Revoke sessions + device tokens + pending MFA and clear lockout (audit
+     * 2026-08 #4). A password change is a compromise-recovery action, so it must
+     * invalidate every outstanding credential — mirroring cel_auth_set_password
+     * and cel_auth_perform_password_reset. This revokes ALL sessions including the
+     * caller's own (the identity carries no session id to exempt), so the client
+     * must re-login after changing its own password. */
+    {
+        const char *us[1] = { user_id };
+        cel_db_exec(c, "DELETE FROM cel_sessions WHERE user_id=?1", us, 1);
+        cel_db_exec(c, "DELETE FROM cel_mfa_challenges WHERE user_id=?1", us, 1);
+        cel_db_exec(c, "UPDATE cel_device_tokens SET revoked_at=unixepoch() "
+                    "WHERE user_id=?1 AND revoked_at IS NULL", us, 1);   /* kill trusted devices on recovery */
+        lockout_reset(c, user_id);
+    }
+
     if (!tx(c, "COMMIT")) goto out;
     in_txn = false;
+    cel_session_cache_clear();   /* can't evict by user id — clear and let it refill */
     rc = CEL_AUTH_OK;
 out:
     if (in_txn) tx(c, "ROLLBACK");

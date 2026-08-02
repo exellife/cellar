@@ -71,7 +71,7 @@ Base URL is the app's origin. Every authenticated request carries
 |---|---|---|
 | `POST /auth/login` | `{email, password}` | `{token, user:{id,email,role,…}}` — `token` is a 64-char bearer |
 | `POST /auth/register` | `{email, password, role?}` | `202` (self-service signup; gated by policy) |
-| `POST /auth/password/change` | `{current_password, new_password}` (Bearer) | `200` — in-session change; `401` if the current password is wrong. No email round-trip; the session stays valid. |
+| `POST /auth/password/change` | `{current_password, new_password}` (Bearer) | `200` — in-session change; `401` if the current password is wrong. No email round-trip. **A successful change revokes _all_ of the user's sessions and device tokens — including the one that made the call — so the current token is invalid immediately after; re-login with the new password.** |
 
 ```js
 const r = await fetch("/auth/login", {

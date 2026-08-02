@@ -110,6 +110,10 @@ def main():
     s, _ = req("POST", "/auth/password/change",
                {"current_password": NEW_PW, "new_password": "changed-pw-7"}, token=sess)
     chk("change: correct current -> 200", s == 200, f"status={s}")
+    # a password change is a compromise-recovery action: it must revoke every
+    # outstanding session, including the one that made the change (audit 2026-08 #4).
+    s, _ = req("GET", "/schema", token=sess)
+    chk("change: session revoked after change -> 401", s == 401, f"status={s}")
     chk("change: new password logs in", login("changed-pw-7")[0] == 200)
     chk("change: old (reset) password rejected", login(NEW_PW)[0] == 401)
     s, _ = req("POST", "/auth/password/change",
