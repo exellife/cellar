@@ -669,6 +669,29 @@ static int is_scoped_col(const cel_scope_t *s, const char *col) {
     return 0;
 }
 
+/* True if `col` participates in the caller's row scope for ANY rule kind: the EQ
+ * owner column, any OR (owner_any) column, or the VIA membership key (via_local).
+ * A client must not REASSIGN such a column on UPDATE — the scope predicate is
+ * ANDed into the WHERE and evaluated against the row's OLD values, so an in-scope
+ * caller would otherwise pass the check and then rewrite the ownership/tenant key
+ * to a value it doesn't own (ownership hijack / cross-tenant move). The EQ path
+ * already rejected this; OR/VIA were silently writable (audit 2026-08). Distinct
+ * from is_scoped_col (EQ-only), which drives create's inject-the-scope-value logic. */
+static int is_scope_key_col(const cel_scope_t *s, const char *col) {
+    for (int i = 0; i < scope_count(s); i++) {
+        const cel_scope_rule_t *r = &s->rule[i];
+        if (r->kind == CEL_SCOPE_EQ) {
+            if (r->column && !strcmp(r->column, col)) return 1;
+        } else if (r->kind == CEL_SCOPE_OR) {
+            for (int j = 0; j < r->ncols; j++)
+                if (r->cols[j] && !strcmp(r->cols[j], col)) return 1;
+        } else if (r->kind == CEL_SCOPE_VIA) {
+            if (r->via_local && !strcmp(r->via_local, col)) return 1;
+        }
+    }
+    return 0;
+}
+
 int cel_build_create(const cel_table_t *t, const cJSON *req, const cel_scope_t *scope,
                      cel_query_t *out, char *errbuf, size_t errlen) {
     const cJSON *values = req ? cJSON_GetObjectItemCaseSensitive(req, "values") : NULL;
@@ -738,7 +761,7 @@ int cel_build_update(const cel_table_t *t, const cJSON *req, const cel_scope_t *
     const cJSON *m;
     cJSON_ArrayForEach(m, values) {
         if (!cel_table_column(t, m->string)) FAIL("unknown column '%s'", m->string);
-        if (is_scoped_col(scope, m->string)) FAIL("cannot modify a scoped column");
+        if (is_scope_key_col(scope, m->string)) FAIL("cannot modify a scoped column");
     }
 
     sb_t sql;

@@ -202,6 +202,24 @@ int main(void) {
     expect_reject("create rejects OR", cel_build_create(&tt, req, &or_s, &q, err, sizeof err));
     cel_query_free(&q); cJSON_Delete(req);
 
+    /* SECURITY (audit 2026-08): an in-scope caller must not REASSIGN an owner_any
+     * column on UPDATE. The scope is a WHERE filter over the row's OLD values, so
+     * rewriting rider_id/driver_id would move the row to an owner it can't see. */
+    req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "id", "x1");
+    cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "values"), "rider_id", "victim");
+    expect_reject("update rejects owner_any reassignment", cel_build_update(&tt, req, &or_s, &q, err, sizeof err));
+    cel_query_free(&q); cJSON_Delete(req);
+
+    /* …but a non-scope column still updates fine under OR scope (no over-reject). */
+    req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "id", "x1");
+    cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "values"), "title", "ok");
+    expect("update non-scope col under OR", cel_build_update(&tt, req, &or_s, &q, err, sizeof err), &q,
+           "UPDATE \"trips\" SET \"title\" = ?1 WHERE \"id\" = ?2 AND (\"rider_id\" = ?3 OR \"driver_id\" = ?4) "
+           "RETURNING \"id\", \"tenant_id\", \"rider_id\", \"driver_id\", \"title\"", 4);
+    cel_query_free(&q); cJSON_Delete(req);
+
     /* tenant EQ + OR compose (AND), with correct $N numbering across both */
     cel_scope_t tor = { .count = 2 };
     tor.rule[0].kind = CEL_SCOPE_EQ; tor.rule[0].column = "tenant_id"; tor.rule[0].value = "t1";
@@ -250,6 +268,24 @@ int main(void) {
     req = cJSON_CreateObject();
     cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "values"), "body", "hi");
     expect_reject("create rejects VIA", cel_build_create(&mt, req, &via, &q, err, sizeof err));
+    cel_query_free(&q); cJSON_Delete(req);
+
+    /* SECURITY (audit 2026-08): reassigning the VIA membership key (via_local =
+     * trip_id) on UPDATE would move the row into a group the caller isn't a member
+     * of — reject it. Updating a non-membership column still works. */
+    req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "id", "x1");
+    cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "values"), "trip_id", "other_trip");
+    expect_reject("update rejects owner_via key reassignment", cel_build_update(&mt, req, &via, &q, err, sizeof err));
+    cel_query_free(&q); cJSON_Delete(req);
+
+    req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "id", "x1");
+    cJSON_AddStringToObject(cJSON_AddObjectToObject(req, "values"), "body", "ok");
+    expect("update non-membership col under VIA", cel_build_update(&mt, req, &via, &q, err, sizeof err), &q,
+           "UPDATE \"messages\" SET \"body\" = ?1 WHERE \"id\" = ?2 AND EXISTS (SELECT 1 FROM \"trip_parts\" "
+           "WHERE \"trip_parts\".\"trip_id\" = \"messages\".\"trip_id\" AND \"trip_parts\".\"user_id\" = ?3) "
+           "RETURNING \"id\", \"trip_id\", \"body\"", 3);
     cel_query_free(&q); cJSON_Delete(req);
 
     /* ---- where-tree edge cases: a node that emits no condition must be REJECTED
