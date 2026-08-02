@@ -49,20 +49,30 @@ void cel_auth_set_lockout(int limit, int window_seconds) {
     g_lockout_w = (limit > 0 && window_seconds > 0) ? window_seconds : 0;
 }
 
-/* Record one failed login on connection `c`: extend the streak (or start fresh
- * if the last failure was outside the window), and lock the account once it hits
- * the limit. now/locked_until are computed in C (SQLite has no now()). */
-static void lockout_record_failure(sqlite3 *c, const char *user_id, int failed, long last_failed) {
+/* Record one failed login on connection `c`: extend the streak (or start fresh if
+ * the last failure was outside the window), and lock the account once it hits the
+ * limit. The new count is computed from the row's CURRENT value IN SQL, atomically
+ * under the write lock — NOT from a snapshot read ~100ms earlier (before the Argon2
+ * verify), which let K concurrent wrong guesses all read N and write N+1, collapsing
+ * K failures into a single increment (audit). Thresholds are trusted compile
+ * constants, inlined as literals: a bound text param has no affinity for the numeric
+ * comparisons (same reason as the MFA lockout path). now is computed in C (SQLite
+ * has no now() without a pragma). */
+static void lockout_record_failure(sqlite3 *c, const char *user_id) {
     long now = cel_now_epoch();
-    int newcount = (last_failed == 0 || (now - last_failed) > g_lockout_w) ? 1 : failed + 1;
-    char cnt[16], nowbuf[24], locked[24];
-    snprintf(cnt, sizeof cnt, "%d", newcount);
-    snprintf(nowbuf, sizeof nowbuf, "%ld", now);
-    bool lock = newcount >= g_lockout_n;
-    if (lock) snprintf(locked, sizeof locked, "%ld", now + g_lockout_w);
-    const char *p[4] = { cnt, nowbuf, lock ? locked : NULL, user_id };
-    cel_db_exec(c, "UPDATE cel_users SET failed_login_count=?1, last_failed_login_at=?2, "
-              "locked_until=?3 WHERE id=?4", p, 4);
+    char sql[640];
+    snprintf(sql, sizeof sql,
+        "UPDATE cel_users SET "
+        "  failed_login_count = CASE WHEN last_failed_login_at IS NULL OR %ld - last_failed_login_at > %d "
+        "                            THEN 1 ELSE failed_login_count + 1 END, "
+        "  locked_until = CASE WHEN (CASE WHEN last_failed_login_at IS NULL OR %ld - last_failed_login_at > %d "
+        "                                 THEN 1 ELSE failed_login_count + 1 END) >= %d "
+        "                      THEN %ld ELSE locked_until END, "
+        "  last_failed_login_at = %ld "
+        "WHERE id = ?1",
+        now, g_lockout_w, now, g_lockout_w, g_lockout_n, now + g_lockout_w, now);
+    const char *p[1] = { user_id };
+    cel_db_exec(c, sql, p, 1);
 }
 
 static void lockout_reset(sqlite3 *c, const char *user_id) {
@@ -105,7 +115,7 @@ int cel_auth_login(const char *email, const char *password,
      * shape a federated login uses (provider='google', uid=the 'sub'). */
     char uid[37] = {0}, hash[256] = {0}, role[32] = {0}, uemail[256] = {0};
     bool active = false, email_verified = false, locked = false;
-    int failed = 0; long last_failed = 0;
+    int failed = 0;
     bool found = false;
     {
         const char *p[1] = { email };
@@ -113,7 +123,7 @@ int cel_auth_login(const char *email, const char *password,
         if (cel_db_prep(c,
             "SELECT u.id, i.secret, u.role, u.is_active, u.email, "
             "(u.email_verified_at IS NOT NULL), u.locked_until, "
-            "u.failed_login_count, COALESCE(u.last_failed_login_at, 0) "
+            "u.failed_login_count "
             "FROM cel_identities i JOIN cel_users u ON u.id = i.user_id "
             "WHERE i.provider='password' AND i.provider_uid=?1", p, 1, &st) != SQLITE_OK) {
             app_db_conn_release(app, c); return CEL_AUTH_DBERR;
@@ -131,7 +141,6 @@ int cel_auth_login(const char *email, const char *password,
             if (sqlite3_column_type(st, 6) != SQLITE_NULL)
                 locked = sqlite3_column_int64(st, 6) > cel_now_epoch();
             failed      = sqlite3_column_int(st, 7);
-            last_failed = (long)sqlite3_column_int64(st, 8);
         }
         sqlite3_finalize(st);
     }
@@ -158,7 +167,7 @@ int cel_auth_login(const char *email, const char *password,
         if (!active || !ok) {
             app_db_write_lock(app);
             sqlite3 *wc = app_db_conn_acquire(app);
-            if (wc) { lockout_record_failure(wc, uid, failed, last_failed); app_db_conn_release(app, wc); }
+            if (wc) { lockout_record_failure(wc, uid); app_db_conn_release(app, wc); }
             app_db_write_unlock(app);
             rc = CEL_AUTH_INVALID;
             goto out;
