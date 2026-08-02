@@ -68,6 +68,16 @@ static void setenv_str(char *dst, size_t cap, const char *name) {
     if (v && *v) snprintf(dst, cap, "%s", v);
 }
 
+/* Redact the userinfo (user:pass@) from an SMTP URL for logging — libcurl honors
+ * credentials embedded in the URL (smtp://user:pass@host), so logging it verbatim
+ * would leak the SMTP password to stdout/journald/log files (audit). */
+static void redact_url(const char *url, char *out, size_t cap) {
+    const char *scheme = strstr(url, "://");
+    const char *at = scheme ? strchr(scheme + 3, '@') : NULL;
+    if (scheme && at) snprintf(out, cap, "%.*s***@%s", (int)(scheme + 3 - url), url, at + 1);
+    else              snprintf(out, cap, "%s", url);
+}
+
 void cel_mailer_init(void) {
     setenv_str(g_url,       sizeof g_url,       "CEL_SMTP_URL");
     setenv_str(g_user,      sizeof g_user,      "CEL_SMTP_USER");
@@ -76,7 +86,10 @@ void cel_mailer_init(void) {
     setenv_str(g_from_name, sizeof g_from_name, "CEL_MAIL_FROM_NAME");
     const char *tls = getenv("CEL_SMTP_TLS");
     if (tls) g_tls = !strcmp(tls, "none") ? TLS_NONE : !strcmp(tls, "try") ? TLS_TRY : TLS_REQUIRE;
-    if (cel_mail_enabled()) LOG_INFO("mailer: SMTP via %s (from %s)", g_url, g_from);
+    if (cel_mail_enabled()) {
+        char safe_url[256]; redact_url(g_url, safe_url, sizeof safe_url);
+        LOG_INFO("mailer: SMTP via %s (from %s)", safe_url, g_from);
+    }
 }
 
 bool cel_mail_enabled(void) { return g_url[0] && g_from[0]; }
