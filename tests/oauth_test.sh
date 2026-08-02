@@ -41,10 +41,11 @@ export CEL_OAUTH_TEST_JWKS="http://127.0.0.1:$JPORT/jwks.json"
 export CEL_OAUTH_TEST_TRUSTED_DOMAINS="test.local"   # H-3: only this domain may auto-link
 export CEL_MFA=optional                               # H-2: enable TOTP so OAuth honors it
 export CEL_POLICY_FILE="$DIR/config/policies.taxi.example.json"
-export CEL_SEED_USERS="admin@cellar.dev:s3cret-admin:admin;$LINK_EMAIL:linkpw:rider;$UNTRUSTED_EMAIL:untrustedpw:rider"
+CASE_EMAIL="CaseMix@test.local"   # seeded MIXED-case; OAuth asserts the lowercase variant (audit medium)
+export CEL_SEED_USERS="admin@cellar.dev:s3cret-admin:admin;$LINK_EMAIL:linkpw:rider;$UNTRUSTED_EMAIL:untrustedpw:rider;$CASE_EMAIL:casepw:rider"
 # token-minting inputs for the python side
 export CEL_OAUTH_KEY="$TMP/key.pem" CEL_OAUTH_KID="$KID" OIDC_ISS="$ISS" OIDC_AUD="$AUD"
-export LINK_EMAIL NEW_EMAIL UNTRUSTED_EMAIL
+export LINK_EMAIL NEW_EMAIL UNTRUSTED_EMAIL CASE_EMAIL
 
 # Not exec: keep the EXIT trap so the JWKS server + temp dir are cleaned.
 python3 "$DIR/tests/run_with_server.py" "$BIN" "$DIR/tests/oauth_test.py"

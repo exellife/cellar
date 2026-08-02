@@ -233,7 +233,13 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
     if (!user_id[0] && email_verified && email && *email) {
         char existing[37] = {0};
         const char *p[1] = { email };
-        int f = cel_db_one_text(c, "SELECT id FROM cel_users WHERE email=?1", p, 1, existing, sizeof existing);
+        /* Case-INSENSITIVE match: the trusted-domain gate (oauth.c) already compares
+         * the domain with strcasecmp, so resolving the account case-sensitively here
+         * would miss an existing "Alice@Corp.com" for a provider-asserted
+         * "alice@corp.com" and auto-provision a duplicate account (identity
+         * split-brain, audit medium). NOCASE aligns the two. */
+        int f = cel_db_one_text(c, "SELECT id FROM cel_users WHERE email=?1 COLLATE NOCASE",
+                                p, 1, existing, sizeof existing);
         if (f < 0) goto out;
         if (f == 1) {
             if (!email_link_trusted) { rc = CEL_AUTH_INVALID; goto out; }  /* refuse silent merge */
@@ -246,9 +252,15 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
     }
 
     /* 3. otherwise auto-provision — only if signup is allowed (a role) and we have
-     *    an email. No account + can't provision => INVALID. */
+     *    a VERIFIED email. Requiring email_verified (mirroring the link branch)
+     *    stops a provider from minting an account that squats an arbitrary victim's
+     *    email: cel_users.email is UNIQUE, so a squatted address then blocks the
+     *    owner's own registration and pollutes the table (audit medium). No account
+     *    + can't provision => INVALID. */
     if (!user_id[0]) {
-        if (!provision_role || !*provision_role || !email || !*email) { rc = CEL_AUTH_INVALID; goto out; }
+        if (!provision_role || !*provision_role || !email || !*email || !email_verified) {
+            rc = CEL_AUTH_INVALID; goto out;
+        }
         if (!tx(c, "BEGIN")) goto out;
         char nid[37]; cel_uuid_v4(nid, sizeof nid);
         const char *up[3] = { nid, email, provision_role };
@@ -268,7 +280,7 @@ int cel_auth_oauth_login(const char *provider, const char *sub,
         char now[24]; snprintf(now, sizeof now, "%ld", cel_now_epoch());
         const char *uv[3] = { now, user_id, email };
         cel_db_exec(c, "UPDATE cel_users SET email_verified_at=COALESCE(email_verified_at, ?1) "
-                  "WHERE id=?2 AND email=?3", uv, 3);
+                  "WHERE id=?2 AND email=?3 COLLATE NOCASE", uv, 3);   /* case-insensitive, matches the lookup */
     }
 
     app_db_conn_release(app, c);

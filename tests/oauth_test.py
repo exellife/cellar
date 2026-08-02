@@ -103,6 +103,24 @@ def main():
     s, b = oauth("test", mint("oidc|untrusted-1", UNTRUSTED_EMAIL))
     chk("untrusted-domain email NOT linked -> 403", s == 403, f"status={s} body={b}")
 
+    # 3d. audit medium: a brand-new UNVERIFIED email must NOT auto-provision (a
+    #     provider could otherwise mint an account squatting an arbitrary victim
+    #     email). The same email, VERIFIED, then provisions normally.
+    s, b = oauth("test", mint("oidc|unverif-1", "unverified@test.local", email_verified=False))
+    chk("unverified email -> no provision (403)", s == 403, f"status={s} body={b}")
+    s, b = oauth("test", mint("oidc|unverif-1", "unverified@test.local", email_verified=True))
+    chk("same email verified -> provisions",
+        s == 200 and (b or {}).get("user", {}).get("email") == "unverified@test.local", f"status={s}")
+
+    # 3e. audit medium: OAuth resolves an existing account case-INSENSITIVELY (the
+    #     trusted-domain gate is already case-insensitive), so a provider-asserted
+    #     lowercase email LINKS to the seeded mixed-case account instead of
+    #     provisioning a duplicate. The returned email is the STORED mixed-case one.
+    case_env = os.environ.get("CASE_EMAIL", "CaseMix@test.local")
+    s, b = oauth("test", mint("oidc|case-1", case_env.lower()))
+    chk("case-insensitive link to existing account (no duplicate)",
+        s == 200 and (b or {}).get("user", {}).get("email") == case_env, f"status={s} body={b}")
+
     # 3c. H-2: federated login honors the SAME MFA gate as password login. Enroll
     #     TOTP on the OAuth-provisioned user, then signing in via OAuth must return
     #     an mfa_required challenge (no session), completed via /auth/mfa/verify.
