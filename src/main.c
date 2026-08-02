@@ -905,6 +905,10 @@ static int hook_delete_user_adapter(const char *email, char *err, int errlen) {
  * (success) when mail is unconfigured, so the fan-out isn't broken by missing SMTP. */
 static int notif_email_send(const char *recipient, const cel_notif_msg_t *msg, char *err, int errlen) {
     if (!cel_mail_enabled()) return 0;   /* ops hasn't configured SMTP — skip, not fail */
+    /* Same per-recipient anti-mail-bomb throttle the auth mail paths use (audit): a
+     * hook that loops cellar.notify must not get an ungated path to unlimited email.
+     * Over the cap → drop (return success so the job isn't retried into the wall). */
+    if (!cel_mail_recipient_allowed(recipient)) return 0;
     const char *subject = (msg && msg->title) ? msg->title : "Notification";
     const char *body    = (msg && msg->body)  ? msg->body  : "";
     /* per-app From (bundle _mail) — the notif job runs with the app's policy bound
