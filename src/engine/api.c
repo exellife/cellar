@@ -440,13 +440,27 @@ static int write_txn_body(sqlite3 *c, const cel_identity_t *who, const cJSON *re
             const cJSON *rid = cJSON_GetObjectItemCaseSensitive(req, "id");
             if (cJSON_IsString(rid)) { cJSON_AddStringToObject(vals, "id", rid->valuestring); injected_id = 1; }
         }
+        /* A DELETE carries no `values`, so before()/authorize() would see an empty row and a
+         * self-scoping guard couldn't tell WHICH row is being removed. Synthesize a throwaway
+         * { id = req["id"] } for the hook call (mirror of the UPDATE id-fold above) so the guard
+         * can `SELECT … WHERE id = input.id`. Kept OFF `req` so the tombstone stamping below
+         * still builds its own clean `values` (rev/deleted only), and freed after the call. */
+        cel_val_t *hook_row = (cel_val_t *)vals;
+        cJSON *synth = NULL;
+        if (action == CEL_ACT_DELETE) {
+            const cJSON *rid = cJSON_GetObjectItemCaseSensitive(req, "id");
+            synth = cJSON_CreateObject();
+            if (synth && cJSON_IsString(rid)) cJSON_AddStringToObject(synth, "id", rid->valuestring);
+            hook_row = (cel_val_t *)synth;
+        }
         char herr[256] = {0};
-        int rejected = cel_hooks_before(hooks, opn, t->name, (cel_val_t *)vals,
+        int rejected = cel_hooks_before(hooks, opn, t->name, hook_row,
                                         (const cel_val_t *)who_v, herr, sizeof herr) != 0;
         int denied = !rejected && cel_hooks_authorize(hooks, opn, t->name,
-                                                      (const cel_val_t *)vals, (const cel_val_t *)who_v) == 0;
+                                                      (const cel_val_t *)hook_row, (const cel_val_t *)who_v) == 0;
         cel_hooks_set_db(NULL);
         if (injected_id) cJSON_DeleteItemFromObjectCaseSensitive(vals, "id");
+        if (synth) cJSON_Delete(synth);
         if (rejected) { snprintf(msg, msglen, "%s", herr[0] ? herr : "rejected by hook"); return 400; }
         if (denied)   { snprintf(msg, msglen, "forbidden"); return 403; }
     }
